@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+config_file=${1:-${CONFIG_FILE:-$repo_root/.env}}
+compose=(docker compose --env-file "$config_file")
+caddy_image='caddy:2.11.4-alpine@sha256:6aeddd44c3078b0f9a35206472a11420648a79c184603ef95957d0a20044cb2b'
+backup_tmp_dir=''
+paperclip_was_running=0
+paperclip_restarted=0
+
+fail() {
+  printf 'backup error: %s\n' "$*" >&2
+  exit 1
+}
+
+read_config() {
+  local key=$1
+  grep -E "^${key}=" "$config_file" | tail -n 1 | cut -d= -f2- || true
+}
+
+hash_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1"
+  else
+    shasum -a 256 "$1"
+  fi
+}
+
+cleanup() {
+  if [[ $paperclip_was_running == 1 && $paperclip_restarted == 0 ]]; then
+    "${compose[@]}" up -d paperclip >/dev/null 2>&1 || true
+  fi
+  [[ -z "$backup_tmp_dir" ]] || rm -rf "$backup_tmp_dir"
+}
+trap cleanup EXIT
+
+"$repo_root/scripts/check-config" "$config_file"
+project_name=$(read_config COMPOSE_PROJECT_NAME)
+output_dir=${BACKUP_OUTPUT_DIR:-$(read_config BACKUP_OUTPUT_DIR)}
+[[ -n "$output_dir" ]] || fail "BACKUP_OUTPUT_DIR is not configured"
+mkdir -p "$output_dir"
+chmod 0700 "$output_dir"
+
+paperclip_volume="${project_name}_paperclip_data"
+docker volume inspect "$paperclip_volume" >/dev/null 2>&1 || fail "Paperclip volume does not exist: $paperclip_volume"
+"${compose[@]}" exec -T postgres pg_isready -U paperclip -d paperclip >/dev/null || fail "PostgreSQL is not ready"
+
+if "${compose[@]}" ps --status running --services | grep -qx paperclip; then
+  paperclip_was_running=1
+  "${compose[@]}" stop paperclip
+fi
+
+timestamp=$(date -u +%Y%m%dT%H%M%SZ)
+backup_name="nix-os-${project_name}-${timestamp}"
+backup_tmp_dir=$(mktemp -d /tmp/nix-os-backup.XXXXXX)
+payload_dir="$backup_tmp_dir/$backup_name"
+mkdir -p "$payload_dir"
+
+"${compose[@]}" exec -T postgres pg_dump \
+  --username paperclip \
+  --dbname paperclip \
+  --format custom \
+  --compress 9 \
+  --no-owner \
+  --no-privileges >"$payload_dir/postgres.dump"
+
+"${compose[@]}" exec -T postgres psql --username paperclip --dbname paperclip --tuples-only --no-align \
+  --command "SELECT 'public_tables=' || count(*) FROM information_schema.tables WHERE table_schema = 'public'; SELECT 'companies=' || count(*) FROM companies; SELECT 'issues=' || count(*) FROM issues; SELECT 'documents=' || count(*) FROM documents;" \
+  >"$payload_dir/database-counts.txt"
+
+docker run --rm \
+  --volume "$paperclip_volume:/source:ro" \
+  --volume "$payload_dir:/backup" \
+  "$caddy_image" sh -ec '
+    cd /source
+    find . -type f -exec sha256sum {} \; | sort > /backup/paperclip-files.sha256
+    tar -czf /backup/paperclip-data.tar.gz .
+  '
+
+if [[ $paperclip_was_running == 1 ]]; then
+  if "${compose[@]}" up -d --wait paperclip; then
+    paperclip_restarted=1
+  else
+    printf 'warning: backup captured, but Paperclip did not become healthy after restart\n' >&2
+  fi
+fi
+
+git_commit=$(git -C "$repo_root" rev-parse HEAD 2>/dev/null || printf 'uncommitted')
+file_count=$(wc -l <"$payload_dir/paperclip-files.sha256" | tr -d ' ')
+{
+  printf 'BACKUP_FORMAT_VERSION=1\n'
+  printf 'CREATED_AT=%s\n' "$timestamp"
+  printf 'SOURCE_PROJECT=%s\n' "$project_name"
+  printf 'GIT_COMMIT=%s\n' "$git_commit"
+  printf 'PAPERCLIP_VOLUME=%s\n' "$paperclip_volume"
+  printf 'PAPERCLIP_FILE_COUNT=%s\n' "$file_count"
+} >"$payload_dir/manifest.env"
+"${compose[@]}" config --images >"$payload_dir/images.txt"
+
+(
+  cd "$payload_dir"
+  for payload_file in database-counts.txt images.txt manifest.env paperclip-data.tar.gz paperclip-files.sha256 postgres.dump; do
+    hash_file "$payload_file"
+  done >SHA256SUMS
+)
+
+artifact="$output_dir/${backup_name}.tar.gz"
+tar -C "$backup_tmp_dir" -czf "$artifact" "$backup_name"
+chmod 0600 "$artifact"
+
+if [[ -n ${BACKUP_AGE_RECIPIENT:-} ]]; then
+  command -v age >/dev/null 2>&1 || fail "BACKUP_AGE_RECIPIENT is set but age is not installed"
+  encrypted_artifact="${artifact}.age"
+  age --recipient "$BACKUP_AGE_RECIPIENT" --output "$encrypted_artifact" "$artifact"
+  chmod 0600 "$encrypted_artifact"
+  rm -f "$artifact"
+  artifact=$encrypted_artifact
+else
+  printf 'warning: backup artifact is unencrypted; encrypt it before copying off-host\n' >&2
+fi
+
+artifact_dir=$(dirname "$artifact")
+artifact_basename=$(basename "$artifact")
+(
+  cd "$artifact_dir"
+  hash_file "$artifact_basename" >"${artifact_basename}.sha256"
+)
+chmod 0600 "${artifact}.sha256"
+printf '%s\n' "$artifact"
+
+if [[ $paperclip_was_running == 1 && $paperclip_restarted == 0 ]]; then
+  exit 1
+fi

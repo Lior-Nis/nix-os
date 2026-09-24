@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$repo_root"
+
+for shell_file in \
+  deploy/postgres/10-paperclip.sh \
+  scripts/check-config \
+  scripts/init-secrets \
+  scripts/ops \
+  scripts/backup \
+  scripts/restore-smoke \
+  scripts/ci \
+  tests/smoke/foundation.sh \
+  tests/smoke/backup-restore.sh; do
+  bash -n "$shell_file"
+done
+
+if command -v shellcheck >/dev/null 2>&1; then
+  shellcheck deploy/postgres/10-paperclip.sh scripts/check-config scripts/init-secrets scripts/ops scripts/backup scripts/restore-smoke scripts/ci tests/smoke/foundation.sh tests/smoke/backup-restore.sh
+elif [[ ${REQUIRE_SHELLCHECK:-0} == 1 ]]; then
+  printf 'shellcheck is required but not installed\n' >&2
+  exit 1
+else
+  printf 'shellcheck not installed; bash syntax checks still ran\n' >&2
+fi
+
+tests/smoke/foundation.sh
+
+if [[ ${RUN_DOCKER_SMOKE:-0} == 1 ]]; then
+  tests/smoke/backup-restore.sh
+fi

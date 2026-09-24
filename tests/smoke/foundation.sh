@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+test_tmp_dir=$(mktemp -d /tmp/nix-os-foundation-test.XXXXXX)
+trap 'rm -rf "$test_tmp_dir"' EXIT
+
+postgres_password='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+paperclip_db_password='dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd'
+printf 'POSTGRES_PASSWORD=%s\n' "$postgres_password" >"$test_tmp_dir/postgres.env"
+printf 'PAPERCLIP_DB_PASSWORD=%s\n' "$paperclip_db_password" >>"$test_tmp_dir/postgres.env"
+{
+  printf 'DATABASE_URL=postgresql://paperclip:%s@postgres:5432/paperclip\n' "$paperclip_db_password"
+  printf 'BETTER_AUTH_SECRET=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n'
+  printf 'PAPERCLIP_TOOL_ACTION_SIGNING_SECRET=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n'
+} >"$test_tmp_dir/paperclip.env"
+{
+  printf 'COMPOSE_PROJECT_NAME=nix-os-test\n'
+  printf 'PAPERCLIP_HOSTNAME=paperclip.test\n'
+  printf 'ACME_EMAIL=operator@test.invalid\n'
+  printf 'POSTGRES_ENV_FILE=%s\n' "$test_tmp_dir/postgres.env"
+  printf 'PAPERCLIP_ENV_FILE=%s\n' "$test_tmp_dir/paperclip.env"
+  printf 'PAPERCLIP_AUTH_DISABLE_SIGN_UP=true\n'
+  printf 'BACKUP_OUTPUT_DIR=%s\n' "$test_tmp_dir/backups"
+} >"$test_tmp_dir/test.env"
+chmod 0600 "$test_tmp_dir"/*.env
+
+NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$test_tmp_dir/test.env"
+docker compose --env-file "$test_tmp_dir/test.env" config --format json >"$test_tmp_dir/compose.json"
+python3 "$repo_root/tests/smoke/validate_compose.py" "$test_tmp_dir/compose.json" "$repo_root"
+
+grep -v '^PAPERCLIP_HOSTNAME=' "$test_tmp_dir/test.env" >"$test_tmp_dir/missing.env"
+if NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$test_tmp_dir/missing.env" >/dev/null 2>&1; then
+  printf 'missing required configuration unexpectedly passed\n' >&2
+  exit 1
+fi
+
+if grep -RInE --exclude-dir=.git --exclude='*.md' --exclude='.env.example' \
+  '(ghp_[[:alnum:]]{20,}|github_pat_[[:alnum:]_]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|[0-9]{8,}:[A-Za-z0-9_-]{30,})' \
+  "$repo_root"; then
+  printf 'potential committed secret detected\n' >&2
+  exit 1
+fi
+
+printf 'Foundation configuration tests passed.\n'

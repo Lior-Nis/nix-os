@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+artifact=${1:-}
+caddy_image='caddy:2.11.4-alpine@sha256:6aeddd44c3078b0f9a35206472a11420648a79c184603ef95957d0a20044cb2b'
+restore_tmp_dir=''
+restore_started=0
+
+fail() {
+  printf 'restore smoke error: %s\n' "$*" >&2
+  exit 1
+}
+
+hash_check() {
+  local checksum_file=$1
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum --check "$checksum_file"
+  else
+    shasum -a 256 --check "$checksum_file"
+  fi
+}
+
+cleanup() {
+  if [[ $restore_started == 1 && ${RESTORE_KEEP:-false} != true ]]; then
+    docker compose --env-file "$restore_config" down --volumes --remove-orphans >/dev/null 2>&1 || true
+  fi
+  if [[ ${RESTORE_KEEP:-false} != true && -n "$restore_tmp_dir" ]]; then
+    rm -rf "$restore_tmp_dir"
+  fi
+}
+trap cleanup EXIT
+
+[[ -n "$artifact" ]] || fail "usage: $0 /absolute/path/to/backup.tar.gz[.age]"
+[[ "$artifact" == /* ]] || fail "backup artifact path must be absolute"
+[[ -f "$artifact" ]] || fail "backup artifact does not exist: $artifact"
+
+if [[ -f "${artifact}.sha256" ]]; then
+  (cd "$(dirname "$artifact")" && hash_check "$(basename "$artifact").sha256")
+fi
+
+if [[ -n ${RESTORE_WORK_DIR:-} ]]; then
+  [[ ! -e "$RESTORE_WORK_DIR" ]] || fail "RESTORE_WORK_DIR already exists: $RESTORE_WORK_DIR"
+  mkdir -p "$RESTORE_WORK_DIR"
+  restore_tmp_dir=$RESTORE_WORK_DIR
+else
+  restore_tmp_dir=$(mktemp -d /tmp/nix-os-restore.XXXXXX)
+fi
+archive="$artifact"
+if [[ "$artifact" == *.age ]]; then
+  command -v age >/dev/null 2>&1 || fail "age is required to decrypt $artifact"
+  [[ -n ${AGE_IDENTITY_FILE:-} ]] || fail "set AGE_IDENTITY_FILE to decrypt the backup"
+  archive="$restore_tmp_dir/backup.tar.gz"
+  age --decrypt --identity "$AGE_IDENTITY_FILE" --output "$archive" "$artifact"
+fi
+
+tar -xzf "$archive" -C "$restore_tmp_dir"
+payload_dir=$(find "$restore_tmp_dir" -mindepth 1 -maxdepth 1 -type d -name 'nix-os-*' -print -quit)
+[[ -n "$payload_dir" ]] || fail "backup payload directory is missing"
+(
+  cd "$payload_dir"
+  hash_check SHA256SUMS
+)
+
+source_project=$(grep -E '^SOURCE_PROJECT=' "$payload_dir/manifest.env" | cut -d= -f2-)
+restore_project=${RESTORE_PROJECT_NAME:-nix-os-restore-$$}
+[[ "$restore_project" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || fail "invalid RESTORE_PROJECT_NAME"
+[[ "$restore_project" != "$source_project" ]] || fail "restore project must differ from source project"
+[[ "$restore_project" != nix-os ]] || fail "refusing to use the production project name"
+
+restore_postgres_volume="${restore_project}_postgres_data"
+restore_paperclip_volume="${restore_project}_paperclip_data"
+for restore_volume in "$restore_postgres_volume" "$restore_paperclip_volume"; do
+  if docker volume inspect "$restore_volume" >/dev/null 2>&1; then
+    fail "restore target volume already exists: $restore_volume"
+  fi
+done
+
+postgres_password=$(openssl rand -hex 32)
+paperclip_db_password=$(openssl rand -hex 32)
+better_auth_secret=$(openssl rand -hex 32)
+tool_action_secret=$(openssl rand -hex 32)
+restore_postgres_env="$restore_tmp_dir/postgres.env"
+restore_paperclip_env="$restore_tmp_dir/paperclip.env"
+restore_config="$restore_tmp_dir/restore.env"
+printf 'POSTGRES_PASSWORD=%s\n' "$postgres_password" >"$restore_postgres_env"
+printf 'PAPERCLIP_DB_PASSWORD=%s\n' "$paperclip_db_password" >>"$restore_postgres_env"
+{
+  printf 'DATABASE_URL=postgresql://paperclip:%s@postgres:5432/paperclip\n' "$paperclip_db_password"
+  printf 'BETTER_AUTH_SECRET=%s\n' "$better_auth_secret"
+  printf 'PAPERCLIP_TOOL_ACTION_SIGNING_SECRET=%s\n' "$tool_action_secret"
+} >"$restore_paperclip_env"
+{
+  printf 'COMPOSE_PROJECT_NAME=%s\n' "$restore_project"
+  printf 'PAPERCLIP_HOSTNAME=restore.test\n'
+  printf 'ACME_EMAIL=restore@test.invalid\n'
+  printf 'POSTGRES_ENV_FILE=%s\n' "$restore_postgres_env"
+  printf 'PAPERCLIP_ENV_FILE=%s\n' "$restore_paperclip_env"
+  printf 'PAPERCLIP_AUTH_DISABLE_SIGN_UP=true\n'
+  printf 'BACKUP_OUTPUT_DIR=%s\n' "$restore_tmp_dir/backups"
+} >"$restore_config"
+chmod 0600 "$restore_postgres_env" "$restore_paperclip_env" "$restore_config"
+
+compose_restore=(docker compose --env-file "$restore_config")
+"${compose_restore[@]}" create postgres paperclip >/dev/null
+restore_started=1
+docker run --rm \
+  --volume "$restore_paperclip_volume:/target" \
+  --volume "$payload_dir:/backup:ro" \
+  "$caddy_image" sh -ec 'cd /target && tar -xzf /backup/paperclip-data.tar.gz'
+
+docker run --rm \
+  --volume "$restore_paperclip_volume:/source:ro" \
+  --volume "$restore_tmp_dir:/verify" \
+  "$caddy_image" sh -ec 'cd /source && find . -type f -exec sha256sum {} \; | sort > /verify/restored-paperclip-files.sha256'
+diff -u "$payload_dir/paperclip-files.sha256" "$restore_tmp_dir/restored-paperclip-files.sha256"
+
+"${compose_restore[@]}" up -d --wait postgres
+"${compose_restore[@]}" exec -T postgres pg_restore \
+  --username paperclip \
+  --dbname paperclip \
+  --clean \
+  --if-exists \
+  --no-owner \
+  --no-privileges <"$payload_dir/postgres.dump"
+
+"${compose_restore[@]}" exec -T postgres psql --username paperclip --dbname paperclip --tuples-only --no-align \
+  --command "SELECT 'public_tables=' || count(*) FROM information_schema.tables WHERE table_schema = 'public'; SELECT 'companies=' || count(*) FROM companies; SELECT 'issues=' || count(*) FROM issues; SELECT 'documents=' || count(*) FROM documents;" \
+  >"$restore_tmp_dir/restored-database-counts.txt"
+diff -u "$payload_dir/database-counts.txt" "$restore_tmp_dir/restored-database-counts.txt"
+
+"${compose_restore[@]}" up -d --wait paperclip
+health_json=$("${compose_restore[@]}" exec -T paperclip curl -fsS http://127.0.0.1:3100/api/health)
+grep -q '"status":"ok"' <<<"$health_json" || fail "restored Paperclip health did not report ok"
+
+printf 'Restore smoke passed for isolated project %s.\n' "$restore_project"
+if [[ ${RESTORE_KEEP:-false} == true ]]; then
+  printf 'Restore project retained. Remove it with:\n  docker compose --env-file %s down --volumes\n' "$restore_config"
+  printf 'RESTORE_CONFIG=%s\n' "$restore_config"
+fi

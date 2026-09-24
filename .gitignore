@@ -1,0 +1,33 @@
+# Local secrets. Commit only redacted examples.
+.env
+.env.*
+!.env.example
+secrets/
+**/secrets/
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Runtime state and backups are not source code.
+data/
+state/
+backups/
+workspaces/
+restore-work/
+*.sqlite
+*.sqlite3
+*.db
+*.dump
+*.tar.gz
+*.tar.gz.sha256
+*.age
+
+# Local tooling.
+.DS_Store
+.idea/
+.vscode/
+node_modules/
+dist/
+coverage/
+tmp/

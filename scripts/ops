@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+config_file=${CONFIG_FILE:-$repo_root/.env}
+action=${1:-}
+compose=(docker compose --env-file "$config_file")
+
+usage() {
+  printf 'Usage: CONFIG_FILE=/path/to/.env %s {deploy|upgrade|status|health|logs|restart}\n' "$0" >&2
+  exit 2
+}
+
+case "$action" in
+  deploy)
+    "$repo_root/scripts/check-config" "$config_file"
+    "${compose[@]}" pull
+    "${compose[@]}" up -d --wait
+    "$0" health
+    ;;
+  upgrade)
+    "$repo_root/scripts/check-config" "$config_file"
+    "$repo_root/scripts/backup" "$config_file"
+    "${compose[@]}" pull
+    "${compose[@]}" up -d --wait --remove-orphans
+    "$0" health
+    ;;
+  status)
+    "${compose[@]}" ps
+    ;;
+  health)
+    "$repo_root/scripts/check-config" "$config_file"
+    printf '%s\n' 'Internal Paperclip health:'
+    "${compose[@]}" exec -T paperclip curl -fsS http://127.0.0.1:3100/api/health
+    printf '\n%s\n' 'Public health through Caddy:'
+    hostname=$(grep -E '^PAPERCLIP_HOSTNAME=' "$config_file" | tail -n 1 | cut -d= -f2-)
+    curl --fail --silent --show-error "https://${hostname}/api/health"
+    printf '\n'
+    ;;
+  logs)
+    "${compose[@]}" logs --follow --tail 200 caddy paperclip postgres
+    ;;
+  restart)
+    "$repo_root/scripts/check-config" "$config_file"
+    "${compose[@]}" restart
+    "${compose[@]}" up -d --wait
+    ;;
+  *) usage ;;
+esac

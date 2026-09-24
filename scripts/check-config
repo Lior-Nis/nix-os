@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+config_file=${1:-${CONFIG_FILE:-.env}}
+
+fail() {
+  printf 'configuration error: %s\n' "$*" >&2
+  exit 1
+}
+
+read_config() {
+  local key=$1
+  local value
+  value=$(grep -E "^${key}=" "$config_file" | tail -n 1 | cut -d= -f2- || true)
+  printf '%s' "$value"
+}
+
+require_config() {
+  local key=$1
+  local value
+  value=$(read_config "$key")
+  [[ -n "$value" ]] || fail "$key is missing or empty in $config_file"
+  printf '%s' "$value"
+}
+
+secret_value() {
+  local secret_file=$1
+  local key=$2
+  local value
+  value=$(grep -E "^${key}=" "$secret_file" | tail -n 1 | cut -d= -f2- || true)
+  [[ -n "$value" ]] || fail "$key is missing or empty in $secret_file"
+  printf '%s' "$value"
+}
+
+private_mode() {
+  local secret_file=$1
+  local mode
+  if mode=$(stat -c '%a' "$secret_file" 2>/dev/null); then
+    :
+  else
+    mode=$(stat -f '%Lp' "$secret_file")
+  fi
+  (( (8#$mode & 077) == 0 )) || fail "$secret_file must not be group/world accessible (current mode $mode)"
+}
+
+command -v docker >/dev/null 2>&1 || fail "docker is required"
+docker compose version >/dev/null 2>&1 || fail "Docker Compose v2 is required"
+[[ -f "$config_file" ]] || fail "$config_file does not exist; copy .env.example and replace placeholders"
+
+if grep -Eq '^(POSTGRES_PASSWORD|PAPERCLIP_DB_PASSWORD|DATABASE_URL|BETTER_AUTH_SECRET|PAPERCLIP_TOOL_ACTION_SIGNING_SECRET)=' "$config_file"; then
+  fail "$config_file contains a secret key; put secrets only in the external secret files"
+fi
+
+project_name=$(require_config COMPOSE_PROJECT_NAME)
+hostname=$(require_config PAPERCLIP_HOSTNAME)
+acme_email=$(require_config ACME_EMAIL)
+postgres_env=$(require_config POSTGRES_ENV_FILE)
+paperclip_env=$(require_config PAPERCLIP_ENV_FILE)
+signup_disabled=$(require_config PAPERCLIP_AUTH_DISABLE_SIGN_UP)
+
+[[ "$project_name" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || fail "COMPOSE_PROJECT_NAME must match [a-z0-9][a-z0-9_-]*"
+[[ "$signup_disabled" == "true" || "$signup_disabled" == "false" ]] || fail "PAPERCLIP_AUTH_DISABLE_SIGN_UP must be true or false"
+
+if [[ ${NIX_ALLOW_TEST_CONFIG:-0} != 1 ]]; then
+  [[ "$hostname" != *.invalid && "$hostname" != *.example && "$hostname" != *.example.com ]] || fail "replace the PAPERCLIP_HOSTNAME placeholder"
+  [[ "$acme_email" != *@example.invalid && "$acme_email" != *@example.com ]] || fail "replace the ACME_EMAIL placeholder"
+fi
+
+for secret_file in "$postgres_env" "$paperclip_env"; do
+  [[ "$secret_file" == /* ]] || fail "secret file paths must be absolute: $secret_file"
+  [[ -f "$secret_file" ]] || fail "secret file does not exist: $secret_file"
+  private_mode "$secret_file"
+done
+
+postgres_password=$(secret_value "$postgres_env" POSTGRES_PASSWORD)
+paperclip_db_password=$(secret_value "$postgres_env" PAPERCLIP_DB_PASSWORD)
+database_url=$(secret_value "$paperclip_env" DATABASE_URL)
+better_auth_secret=$(secret_value "$paperclip_env" BETTER_AUTH_SECRET)
+tool_action_secret=$(secret_value "$paperclip_env" PAPERCLIP_TOOL_ACTION_SIGNING_SECRET)
+
+(( ${#postgres_password} >= 32 )) || fail "POSTGRES_PASSWORD must be at least 32 characters"
+(( ${#paperclip_db_password} >= 32 )) || fail "PAPERCLIP_DB_PASSWORD must be at least 32 characters"
+[[ "$postgres_password" != "$paperclip_db_password" ]] || fail "PostgreSQL admin and Paperclip role passwords must differ"
+(( ${#better_auth_secret} >= 32 )) || fail "BETTER_AUTH_SECRET must be at least 32 characters"
+(( ${#tool_action_secret} >= 32 )) || fail "PAPERCLIP_TOOL_ACTION_SIGNING_SECRET must be at least 32 characters"
+[[ "$database_url" == "postgresql://paperclip:${paperclip_db_password}@postgres:5432/paperclip" ]] || fail "DATABASE_URL must use PAPERCLIP_DB_PASSWORD and target paperclip@postgres:5432/paperclip"
+
+docker compose --env-file "$config_file" config --quiet
+printf 'Configuration is valid for Compose project %s.\n' "$project_name"

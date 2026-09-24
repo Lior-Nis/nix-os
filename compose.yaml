@@ -1,0 +1,109 @@
+name: ${COMPOSE_PROJECT_NAME:-nix-os}
+
+services:
+  caddy:
+    image: caddy:2.11.4-alpine@sha256:6aeddd44c3078b0f9a35206472a11420648a79c184603ef95957d0a20044cb2b
+    restart: unless-stopped
+    environment:
+      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL in the Compose environment file}
+      PAPERCLIP_HOSTNAME: ${PAPERCLIP_HOSTNAME:?Set PAPERCLIP_HOSTNAME in the Compose environment file}
+    ports:
+      - target: 80
+        published: "80"
+        protocol: tcp
+      - target: 443
+        published: "443"
+        protocol: tcp
+      - target: 443
+        published: "443"
+        protocol: udp
+    volumes:
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - edge
+    depends_on:
+      paperclip:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:2019/config/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  paperclip:
+    image: ghcr.io/paperclipai/paperclip:2026.916.1@sha256:a02ac35ac41df911af477422ea0e781cf41d2b2c600c66f0a5ac9d8c63f52c2c
+    restart: unless-stopped
+    pids_limit: 2048
+    env_file:
+      - ${PAPERCLIP_ENV_FILE:?Set PAPERCLIP_ENV_FILE to an absolute secret-file path}
+    environment:
+      HOST: 0.0.0.0
+      PORT: "3100"
+      SERVE_UI: "true"
+      PAPERCLIP_HOME: /paperclip
+      PAPERCLIP_INSTANCE_ID: default
+      PAPERCLIP_DEPLOYMENT_MODE: authenticated
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: public
+      PAPERCLIP_PUBLIC_URL: https://${PAPERCLIP_HOSTNAME:?Set PAPERCLIP_HOSTNAME in the Compose environment file}
+      PAPERCLIP_AUTH_DISABLE_SIGN_UP: ${PAPERCLIP_AUTH_DISABLE_SIGN_UP:-false}
+      PAPERCLIP_ENABLE_COMPANY_DELETION: "false"
+      PAPERCLIP_SECRETS_STRICT_MODE: "true"
+      PAPERCLIP_DB_BACKUP_ENABLED: "false"
+      PAPERCLIP_MIGRATION_AUTO_APPLY: "true"
+      TRUST_PROXY: uniquelocal
+    volumes:
+      - paperclip_data:/paperclip
+    networks:
+      - edge
+      - data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'curl -fsS http://127.0.0.1:3100/api/health | grep -q ''"status":"ok"'''
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 90s
+    stop_grace_period: 30s
+
+  postgres:
+    image: postgres:17.11-alpine3.24@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+    restart: unless-stopped
+    env_file:
+      - ${POSTGRES_ENV_FILE:?Set POSTGRES_ENV_FILE to an absolute secret-file path}
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./deploy/postgres/10-paperclip.sh:/docker-entrypoint-initdb.d/10-paperclip.sh:ro
+    networks:
+      - data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    stop_grace_period: 60s
+
+networks:
+  edge:
+  data:
+    internal: true
+
+volumes:
+  caddy_data:
+    name: ${COMPOSE_PROJECT_NAME:-nix-os}_caddy_data
+  caddy_config:
+    name: ${COMPOSE_PROJECT_NAME:-nix-os}_caddy_config
+  paperclip_data:
+    name: ${COMPOSE_PROJECT_NAME:-nix-os}_paperclip_data
+  postgres_data:
+    name: ${COMPOSE_PROJECT_NAME:-nix-os}_postgres_data
