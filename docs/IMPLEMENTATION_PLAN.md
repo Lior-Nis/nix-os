@@ -141,6 +141,25 @@ Hermes, Telegram, OpenCode, GitHub App automation, `nix-brain`, Todoist, n8n, co
 
 The repository portion of Slice 0 and the independent-review remediation are complete. The Compose stack still contains only Caddy, Paperclip, and PostgreSQL. Deploy now performs migration preflight and official fresh-instance onboarding before server startup; CEO bootstrap requires API evidence of an active invite. Data recovery uses real Paperclip objects, and an independent age-encrypted configuration pack makes the external `.env` and service-secret recovery concrete.
 
+### Live acceptance record — 2026-09-24
+
+Status: **INCOMPLETE — stopped at Gate 1 branch protection.** No VPS deployment was attempted.
+
+| Gate | Evidence | Status |
+|---|---|---|
+| 1. GitHub | Private `Lior-Nis/nix-os` created; reviewed branch SHA `2b16f2be7b310a6e8d759ed4e78b69f78778848a`; hosted Actions run `36002280447` passed `foundation` and `recovery`; PR `#1` merged to `main` at `3349a37d830b86fada050191a4562436bf15de5d`. Private `Lior-Nis/nix-brain` canonical `main` is `68a1da87f1a30fb646cef7ecaba38e9ee437c2ad`. GitHub rejected required-check branch protection for the private repository with HTTP 403 because the current account plan does not provide that feature; making the repositories public is not acceptable. | **BLOCKED** pending GitHub Pro (or migration to a private organization/repository plan that supports protected branches), then require `foundation` and `recovery` on `main`. |
+| 2. VPS prerequisites | Not attempted because Gate 1 is incomplete. | Pending |
+| 3. Firewall/network exposure | Not attempted because Gate 1 is incomplete. | Pending |
+| 4. DNS/TLS | Not attempted because Gate 1 is incomplete. | Pending |
+| 5. Production bootstrap | Not attempted because Gate 1 is incomplete. | Pending |
+| 6. Recovery canaries | Not attempted because Gate 1 is incomplete. | Pending |
+| 7. Encrypted backups | Not attempted because Gate 1 is incomplete. | Pending |
+| 8. Off-host storage | Not attempted because Gate 1 is incomplete. | Pending |
+| 9. Isolated production recovery | Not attempted because Gate 1 is incomplete. | Pending |
+| 10. Final production checks | Not attempted because Gate 1 is incomplete. | Pending |
+
+Resume from Gate 1 after the private repository has a plan that supports branch protection. Apply strict required status checks `foundation` and `recovery` to `main`, verify the protection through the GitHub API, and only then continue with the VPS preflight. Do not treat the successful hosted CI or merge alone as completion of Gate 1.
+
 Locally verified:
 
 - Compose rendering and policy assertions, including service count, private PostgreSQL/Paperclip networking, persistent mounts, pinned images, health checks, and required configuration failures.
