@@ -182,7 +182,7 @@ Slice 0 establishes the procedure; later slices extend its manifest.
 | `nix-brain` and source repos | GitHub remote plus protected branches | fresh clone and CI pass |
 | n8n (when added) | its database, storage volume, workflow exports, and `N8N_ENCRYPTION_KEY` | credentials decrypt and Todoist test workflow runs |
 
-The Paperclip portable bundle is not a full backup because upstream excludes approvals and activity/cost history. Database restore remains required. At least monthly, restore a downloaded off-host data artifact together with the original external configuration pack into an isolated Compose project. Verify CEO authentication, a company/issue relationship, attachment bytes, health, and a harmless encrypted-secret canary through the supported run-bound resolution interface without exposing its value; then record non-secret evidence in a Paperclip Operations issue.
+The Paperclip portable bundle is not a full backup because upstream excludes approvals and activity/cost history. Database restore remains required. At least monthly, restore a downloaded off-host data artifact together with the original external configuration pack into an isolated Compose project. Verify CEO authentication, a company/issue relationship, attachment bytes, health, and a harmless encrypted-secret canary through a bound environment probe whose access event reports successful resolution without exposing its value; then record non-secret evidence in a Paperclip Operations issue.
 
 Target initial objectives: daily recovery point (RPO <= 24 hours) and same-day manual recovery (RTO <= 8 hours). These are operating targets, not an HA promise.
 

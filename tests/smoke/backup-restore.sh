@@ -124,6 +124,15 @@ secret_json=$(source_post "/api/companies/${company_id}/secrets" "$secret_body")
 secret_id=$(jq -er '.id' <<<"$secret_json")
 unset canary_value secret_body
 
+environment_body=$(jq -nc --arg secret_id "$secret_id" '{name:"Slice 0 secret recovery probe",driver:"ssh",config:{host:"127.0.0.1",port:1,username:"nix-recovery",remoteWorkspacePath:"/tmp",privateKeySecretRef:{type:"secret_ref",secretId:$secret_id,version:"latest"}},envVars:{}}')
+environment_json=$(source_post "/api/companies/${company_id}/environments" "$environment_body")
+environment_id=$(jq -er '.id' <<<"$environment_json")
+source_probe=$(source_post "/api/environments/${environment_id}/probe" '{}')
+jq -e '.driver == "ssh" and .ok == false' >/dev/null <<<"$source_probe" || fail "source environment probe did not execute"
+source_access_events=$(source_get "/api/secrets/${secret_id}/access-events")
+jq -e --arg environment_id "$environment_id" '.[] | select(.outcome == "success" and .consumerType == "environment" and .consumerId == $environment_id)' \
+  >/dev/null <<<"$source_access_events" || fail "source canary was not resolved successfully"
+
 "${compose[@]}" stop postgres
 health_status=$("${compose[@]}" exec -T paperclip sh -ec "curl --silent --output /tmp/database-down-health.json --write-out '%{http_code}' http://127.0.0.1:3100/api/health")
 [[ "$health_status" == 503 ]] || fail "expected health HTTP 503 with PostgreSQL stopped, got $health_status"
@@ -176,6 +185,14 @@ restored_attachment_sha=$("${restore_compose[@]}" exec -T paperclip curl -fsS -b
 [[ "$restored_attachment_sha" == "$attachment_sha" ]] || fail "restored attachment bytes failed checksum verification"
 restored_secrets=$(restore_get "/api/companies/${company_id}/secrets")
 jq -e --arg id "$secret_id" '.[] | select(.id == $id and .provider == "local_encrypted" and .latestVersion == 1)' >/dev/null <<<"$restored_secrets" || fail "encrypted canary secret metadata did not survive restore"
+restored_events_before=$(restore_get "/api/secrets/${secret_id}/access-events" | jq 'length')
+restored_probe=$(restore_post "/api/environments/${environment_id}/probe" '{}')
+jq -e '.driver == "ssh" and .ok == false' >/dev/null <<<"$restored_probe" || fail "restored environment probe did not execute"
+restored_access_events=$(restore_get "/api/secrets/${secret_id}/access-events")
+restored_events_after=$(jq 'length' <<<"$restored_access_events")
+(( restored_events_after == restored_events_before + 1 )) || fail "restored canary resolution did not create one access event"
+jq -e --arg environment_id "$environment_id" '.[0] | select(.outcome == "success" and .consumerType == "environment" and .consumerId == $environment_id)' \
+  >/dev/null <<<"$restored_access_events" || fail "restored canary could not be decrypted with the recovered master key"
 restored_health=$("${restore_compose[@]}" exec -T paperclip curl -fsS http://127.0.0.1:3100/api/health)
 grep -q '"status":"ok"' <<<"$restored_health" || fail "restored Paperclip health did not report ok"
 

@@ -98,7 +98,7 @@ Lior can open Paperclip over HTTPS, authenticate, create the Nix company and a d
 9. Fresh volumes are provisioned through Paperclip's official onboarding path; a real user accepts a verified CEO invite; after signup is disabled, new signup fails and the CEO can still authenticate.
 10. Create a smoke company/issue through Paperclip's API, recreate containers, and demonstrate the objects and known-byte attachment persist.
 11. Data backup produces a timestamped PostgreSQL custom-format dump, Paperclip home/storage archive, configuration commit SHA, dependency-version manifest, and checksums. A separate mandatory age-encrypted configuration pack contains `.env` and the two external secret files.
-12. Restore into a separate Compose project/network, never over production. The restored CEO can authenticate; company/issue relationships, attachment checksum, encrypted canary-secret metadata, and health match the source.
+12. Restore into a separate Compose project/network, never over production. The restored CEO can authenticate; company/issue relationships and attachment checksum match; a bound environment probe records successful canary-secret resolution without returning plaintext; and health passes.
 13. Logs and health checks make database-unavailable and migration/preflight failure states distinguishable.
 14. No Hermes, OpenCode, Todoist, n8n, Redis, custom application, or metrics stack is introduced.
 
@@ -110,7 +110,7 @@ Lior can open Paperclip over HTTPS, authenticate, create the Nix company and a d
 - Secret-pattern scan plus a test that `.env`, `secrets/`, data, and backup paths are ignored.
 - Bash syntax and ShellCheck for operator scripts, plus static consistency checks across Compose, the environment contract, Caddy, and ignore rules.
 - Read-only migration preflight: accept an empty database and a migrated Paperclip database; reject a non-empty schema without the expected Drizzle journal before Paperclip starts.
-- Fresh-bootstrap/recovery smoke: start from clean volumes, run official onboarding, validate public instance configuration, create a real user and verified CEO invite, accept it, disable signup, prove existing login, create a company/related issue/attachment/local-encrypted canary through supported APIs, exercise `503 database_unreachable` and recovery, back up, restore with original external secrets into distinct fresh volumes, and verify authentication, values/relationships, attachment bytes, canary metadata, and health.
+- Fresh-bootstrap/recovery smoke: start from clean volumes, run official onboarding, validate public instance configuration, create a real user and verified CEO invite, accept it, disable signup, prove existing login, create a company/related issue/attachment/local-encrypted canary through supported APIs, resolve the canary through a bound environment probe, exercise `503 database_unreachable` and recovery, back up, restore with original external secrets into distinct fresh volumes, and verify authentication, values/relationships, attachment bytes, one new successful canary-resolution access event, and health.
 - Encrypted configuration-pack smoke: create with an ephemeral age recipient, relocate it, restore under an isolated root, verify sidecar/internal checksums, byte equality, file modes, and reconstructed config without logging contents.
 
 ### Manual end-to-end verification
@@ -121,7 +121,7 @@ Lior can open Paperclip over HTTPS, authenticate, create the Nix company and a d
 4. Create the Nix company, set a deliberately tiny initial budget, and add a disposable issue, known-byte attachment, and harmless encrypted-secret canary.
 5. Run `docker compose down` without volume deletion, start again, and verify both objects.
 6. Create and upload both the encrypted configuration pack and encrypted data backup, download them, then run the isolated restore with original external secret files.
-7. Authenticate, verify company/issue relationship and attachment checksum, resolve the canary through the supported run-bound interface without printing it, verify health, and destroy the restore environment.
+7. Authenticate, verify company/issue relationship and attachment checksum, run the bound environment probe and verify one new successful canary access event without printing its value, verify health, and destroy the restore environment.
 8. Record non-secret evidence and restore timestamp in a Paperclip Operations issue once the production company exists.
 
 ### Failure modes
@@ -146,7 +146,7 @@ Locally verified:
 - Compose rendering and policy assertions, including service count, private PostgreSQL/Paperclip networking, persistent mounts, pinned images, health checks, and required configuration failures.
 - Bash syntax and ShellCheck 0.11.0 for every operator and smoke-test script.
 - Caddy 2.11.4 validation against the committed Caddyfile.
-- A clean-volume Docker smoke using Paperclip 2026.916.1 and PostgreSQL 17.11: official onboarding and validated `authenticated/public` config; real signup, verified bootstrap invite, invite acceptance, signup closure, existing CEO login; least-privilege database role; missing-journal rejection; real company/issue/attachment/encrypted-canary creation through supported APIs; database-backed health failure/recovery; age-encrypted backup relocation/decryption; restore with the original external secret files into fresh volumes; restored CEO login, company/issue relationship, attachment-byte checksum, encrypted-canary metadata, exact `/paperclip` file comparison, and health.
+- A clean-volume Docker smoke using Paperclip 2026.916.1 and PostgreSQL 17.11: official onboarding and validated `authenticated/public` config; real signup, verified bootstrap invite, invite acceptance, signup closure, existing CEO login; least-privilege database role; missing-journal rejection; real company/issue/attachment/encrypted-canary creation through supported APIs; source canary resolution without plaintext output; database-backed health failure/recovery; age-encrypted backup relocation/decryption; restore with the original external secret files into fresh volumes; restored CEO login, company/issue relationship, attachment-byte checksum, a new successful canary-resolution access event using the recovered master key, exact `/paperclip` file comparison, and health.
 - A real age-encrypted configuration-pack round trip using an ephemeral identity, including external/inner checksum verification, isolated path reconstruction, mode `0600`, and byte equality without content logging.
 - Local secret-pattern checks and ignore-rule checks. No live credential was created inside the repository.
 
@@ -156,7 +156,6 @@ Not yet verifiable without external access:
 - Hostinger VPS deployment, external 80/443-only port probe, DNS, automatic TLS issuance, and public health.
 - Real browser bootstrap/CEO verification and public signup closure on the deployed hostname (the same lifecycle is automated locally through supported HTTP interfaces).
 - Encryption with Lior's real age recipient, config/data upload to the selected off-host destination, download, remote checksum confirmation, and isolated restore with original external secret files.
-- Live run-bound resolution of the harmless encrypted-secret canary. The board API never returns plaintext, and this release requires a verified running agent binding for resolution; adding an agent solely to test it would violate the Slice 0 boundary.
 
 Current upstream constraints discovered during implementation:
 
@@ -167,7 +166,7 @@ Current upstream constraints discovered during implementation:
 - `/paperclip` is persistent application state independent of PostgreSQL and must be backed up with the database.
 - Public mode disables the browser-first admin claim. The CLI requires instance config and can return zero when config is missing, so official onboarding runs first and the wrapper verifies the resulting invite through the API rather than by exit code.
 - The pinned CLI has no non-interactive public-onboarding preset: `--yes`/`--bind` selects trusted/private modes. Nix runs the official Quickstart prompt in a bounded pseudo-terminal so public environment defaults are honored, then validates the exact generated config before startup.
-- Secret ciphertext and its master key are both recovered locally, but safe plaintext resolution requires a run-bound agent identity and remains a live production acceptance gate.
+- Normal board secret reads never return values, but the supported board-authorized environment probe resolves a bound secret and records a success event without returning plaintext. This makes cryptographic recovery locally testable without a later-slice agent.
 
 Exact prerequisites for live activation are: the canonical private GitHub repository URL; Hostinger VPS SSH access to Ubuntu 24.04 x86_64 with Docker Engine 27+/Compose 2.30+ and the documented tools; the Paperclip DNS hostname pointed at that VPS; and an age recipient/identity plus credentials/path for an encrypted off-host backup destination.
 

@@ -76,9 +76,9 @@ sudo -E \
 
 Supplying the two restored external secret files proves the recovered application is using the original database/auth secrets. Without those variables the smoke deliberately generates disposable credentials, which is useful only for structural testing. Successful output states `Restore smoke passed`. By default the isolated project is removed; `RESTORE_KEEP=true` retains it and prints its cleanup command.
 
-The required CI recovery job goes further on every repository change: from clean volumes it provisions the official Paperclip instance config, signs up a real user, creates and accepts a verified bootstrap CEO invite, disables signup, proves existing login, creates a real company and related issue through the API, uploads known bytes, creates a harmless `local_encrypted` canary secret, creates and relocates an age-encrypted data backup, decrypts and restores it into fresh volumes with the original external secrets, then verifies CEO login, object values/relationships, attachment SHA-256, secret metadata, and health.
+The required CI recovery job goes further on every repository change: from clean volumes it provisions the official Paperclip instance config, signs up a real user, creates and accepts a verified bootstrap CEO invite, disables signup, proves existing login, creates a real company and related issue through the API, uploads known bytes, creates a harmless `local_encrypted` canary secret bound to a disposable environment probe, creates and relocates an age-encrypted data backup, decrypts and restores it into fresh volumes with the original external secrets, then verifies CEO login, object values/relationships, attachment SHA-256, one new successful canary-resolution access event, and health.
 
-Paperclip's authenticated board API intentionally never returns secret plaintext. In this release, actual secret value resolution requires a run-bound agent JWT and a verified running agent heartbeat/binding. Introducing that agent execution path is outside Slice 0. Therefore the automated test proves the original master-key file and encrypted secret record survive together, but it does **not** claim that decryption was exercised. Safe canary resolution remains a mandatory live-production acceptance check below.
+Paperclip's normal authenticated board reads intentionally never return secret plaintext. Its supported environment probe does resolve secrets bound to the environment server-side and records an access event. The smoke binds the canary as a disposable SSH environment's private-key reference and probes closed loopback port 1. HTTP 200 with the expected transport failure proves the probe executed; exactly one new access event with `outcome=success`, `consumerType=environment`, and the restored environment ID proves decryption succeeded before that deliberate transport failure. Neither response contains the secret value.
 
 ## Production recovery
 
@@ -145,11 +145,11 @@ Production recovery is intentionally manual and destructive if aimed at an exist
    → authenticate as the existing CEO
    → verify company/issue values and relationship
    → download attachment and match its SHA-256
-   → resolve the canary secret through Paperclip's supported run-bound secret interface without printing its value
+   → resolve the canary through its bound disposable environment probe and verify one new successful access event without printing its value
    → health passes
    → destroy the isolated restore environment and decrypted temporary files
    ```
 
-   Verify only success/failure for canary resolution; never echo the value or place it in issue text/logs. Record the date, Git commit, artifact fingerprints, and result—not credentials—in the Operations evidence.
+   Use the same procedure as the automated smoke: note the canary access-event count; `POST /api/environments/<probe-environment-id>/probe` as the authenticated CEO; require HTTP 200; then `GET /api/secrets/<canary-secret-id>/access-events` and require the count to increase by one with the newest event reporting `outcome=success`, `consumerType=environment`, and the probe environment ID. The SSH transport result is deliberately `ok=false` because port 1 is closed; secret resolution happens first. Never echo the value or place it in issue text/logs. Record the date, Git commit, artifact fingerprints, and result—not credentials—in Operations evidence.
 
 Never restore over running production volumes. Initial targets are RPO no greater than 24 hours and manual RTO no greater than 8 hours. Schedule daily encrypted data backups, config packs after configuration changes, and a monthly downloaded-off-host isolated restore once the live destination exists.
