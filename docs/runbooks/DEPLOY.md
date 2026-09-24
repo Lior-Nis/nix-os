@@ -126,7 +126,7 @@ Re-read the target release notes and migration source, update image tag and dige
 sudo -E CONFIG_FILE="$PWD/.env" ./scripts/ops upgrade
 ```
 
-The command validates configuration, creates a data backup, runs the migration-journal preflight before replacing Paperclip, pulls pinned images, starts the stack, and waits for health. The pinned release warns and enters its migration path for a non-empty database missing its expected journal; Nix deliberately fails earlier to avoid mutating a wrong or partially initialized database. Every future Paperclip release still requires migration review. Never point an older image at a migrated database unless upstream explicitly documents rollback safety.
+The command validates configuration, creates a data backup, runs the migration-journal preflight before replacing Paperclip, pulls pinned images, starts the stack, and waits for health. For a non-empty database missing its expected journal, the pinned release enters its migration path, inspects the database, and rejects startup before applying migrations. The Nix preflight remains defense in depth for documented operator workflows because it fails earlier with a clearer error. A direct Compose startup or engine-managed container restart does not necessarily run the Nix preflight; the pinned upstream guard still fails closed. Every future Paperclip release still requires migration review. Never point an older image at a migrated database unless upstream explicitly documents rollback safety.
 
 ## Missing live prerequisites
 

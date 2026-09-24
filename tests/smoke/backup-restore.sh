@@ -4,15 +4,31 @@ umask 077
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 smoke_tmp_dir=$(mktemp -d /tmp/nix-os-backup-smoke.XXXXXX)
-smoke_project="nix-os-smoke-$$"
-restore_project="nix-os-restore-smoke-$$"
+smoke_suffix=$(openssl rand -hex 8)
+smoke_project="nix-os-smoke-$smoke_suffix"
+restore_project="nix-os-restore-smoke-$smoke_suffix"
 config_file="$smoke_tmp_dir/smoke.env"
 compose=(docker compose --env-file "$config_file")
 source_cookie=/tmp/nix-os-source-cookie.txt
 source_response=/tmp/nix-os-source-response.json
+restore_config=''
 
 fail() { printf 'backup/restore smoke error: %s\n' "$*" >&2; exit 1; }
 hash_stream() { if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1; else shasum -a 256 | cut -d' ' -f1; fi; }
+
+assert_project_absent() {
+  local project=$1 resource
+
+  [[ -z $(docker ps -aq --filter "label=com.docker.compose.project=$project") ]] \
+    || fail "unexpected pre-existing containers for Compose project $project"
+  [[ -z $(docker network ls -q --filter "label=com.docker.compose.project=$project") ]] \
+    || fail "unexpected pre-existing networks for Compose project $project"
+  for resource in postgres_data paperclip_data caddy_data caddy_config; do
+    if docker volume inspect "${project}_${resource}" >/dev/null 2>&1; then
+      fail "unexpected pre-existing volume ${project}_${resource}"
+    fi
+  done
+}
 
 source_post() {
   local path=$1 body=$2 status
@@ -30,6 +46,9 @@ source_get() {
 }
 
 cleanup() {
+  if [[ -n "$restore_config" && -f "$restore_config" ]]; then
+    docker compose --env-file "$restore_config" down --volumes --remove-orphans >/dev/null 2>&1 || true
+  fi
   "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
   docker volume rm "${restore_project}_paperclip_data" "${restore_project}_postgres_data" >/dev/null 2>&1 || true
   rm -rf "$smoke_tmp_dir"
@@ -40,6 +59,8 @@ docker info >/dev/null
 command -v jq >/dev/null 2>&1 || fail "jq is required"
 command -v age >/dev/null 2>&1 || fail "age is required"
 command -v age-keygen >/dev/null 2>&1 || fail "age-keygen is required"
+assert_project_absent "$smoke_project"
+assert_project_absent "$restore_project"
 age-keygen -o "$smoke_tmp_dir/backup-identity.txt" >/dev/null 2>&1
 backup_recipient=$(age-keygen -y "$smoke_tmp_dir/backup-identity.txt")
 postgres_password=$(openssl rand -hex 32)
@@ -148,12 +169,12 @@ cp "$artifact" "${artifact}.sha256" "$download_dir/"
 artifact="$download_dir/$(basename "$artifact")"
 
 restore_work_dir="$smoke_tmp_dir/restore"
+restore_config="$restore_work_dir/restore.env"
 RESTORE_PROJECT_NAME="$restore_project" RESTORE_KEEP=true RESTORE_WORK_DIR="$restore_work_dir" \
   AGE_IDENTITY_FILE="$smoke_tmp_dir/backup-identity.txt" \
   RESTORE_POSTGRES_ENV_FILE="$smoke_tmp_dir/postgres.env" RESTORE_PAPERCLIP_ENV_FILE="$smoke_tmp_dir/paperclip.env" \
   "$repo_root/scripts/restore-smoke" "$artifact"
 
-restore_config="$restore_work_dir/restore.env"
 [[ -f "$restore_config" ]] || fail "could not locate retained restore configuration"
 restore_compose=(docker compose --env-file "$restore_config")
 restore_cookie=/tmp/nix-os-restore-cookie.txt

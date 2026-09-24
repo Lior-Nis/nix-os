@@ -23,7 +23,7 @@ read -r table_count journal_exists < <(
 [[ "$journal_exists" == t || "$journal_exists" == f ]] || fail "could not determine migration journal state"
 
 if (( table_count > 0 )) && [[ "$journal_exists" != t ]]; then
-  fail "database has $table_count user tables but no Paperclip Drizzle migration journal; refusing startup before upstream auto-migration can touch it"
+  fail "database has $table_count user tables but no Paperclip Drizzle migration journal; Nix preflight is stopping this documented operation before Paperclip startup (the pinned upstream guard also rejects this state before applying migrations)"
 fi
 
 printf 'Migration preflight passed: user_tables=%s migration_journal=%s.\n' "$table_count" "$journal_exists"

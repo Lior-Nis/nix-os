@@ -123,7 +123,7 @@ Production recovery is intentionally manual and destructive if aimed at an exist
      < /tmp/nix-os-recovery/nix-os-<source-project>-<timestamp>/postgres.dump
    ```
 
-6. Run the migration preflight before Paperclip can touch the restored database, then start Paperclip and Caddy:
+6. Run the Nix read-only migration preflight before starting Paperclip, then start Paperclip and Caddy. This gives the documented restore path an earlier, clearer failure; the pinned Paperclip release also rejects a non-empty database without its migration journal before applying migrations:
 
    ```sh
    sudo -E CONFIG_FILE="$PWD/.env" ./scripts/check-migrations "$PWD/.env"
