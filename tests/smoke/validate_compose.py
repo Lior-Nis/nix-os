@@ -48,6 +48,21 @@ caddyfile = (repo_root / "deploy/caddy/Caddyfile").read_text()
 require("{$PAPERCLIP_HOSTNAME}" in caddyfile, "Caddy hostname must remain configurable")
 require("reverse_proxy paperclip:3100" in caddyfile, "Caddy must proxy only to Paperclip")
 
+for script in (
+    "backup-config",
+    "bootstrap-ceo",
+    "check-migrations",
+    "initialize-paperclip",
+    "restore-config",
+    "vps-preflight",
+):
+    path = repo_root / "scripts" / script
+    require(path.is_file(), f"required operator script is missing: {script}")
+
+workflow = (repo_root / ".github/workflows/ci.yml").read_text()
+require("recovery:" in workflow, "CI must include the required recovery job")
+require("./tests/smoke/backup-restore.sh" in workflow, "CI recovery job must run the Docker restore smoke")
+
 example = (repo_root / ".env.example").read_text()
 for key in (
     "COMPOSE_PROJECT_NAME",

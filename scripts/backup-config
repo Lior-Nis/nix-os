@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+config_file=${1:-${CONFIG_FILE:-$repo_root/.env}}
+config_tmp_dir=''
+
+fail() {
+  printf 'configuration backup error: %s\n' "$*" >&2
+  exit 1
+}
+
+read_config() {
+  grep -E "^${1}=" "$config_file" | tail -n 1 | cut -d= -f2- || true
+}
+
+hash_file() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi
+}
+
+cleanup() {
+  [[ -z "$config_tmp_dir" ]] || rm -rf "$config_tmp_dir"
+}
+trap cleanup EXIT
+
+command -v age >/dev/null 2>&1 || fail "age is required"
+[[ -n ${BACKUP_AGE_RECIPIENT:-} ]] || fail "BACKUP_AGE_RECIPIENT is required; configuration packs are never written unencrypted"
+"$repo_root/scripts/check-config" "$config_file" >/dev/null
+
+postgres_env=$(read_config POSTGRES_ENV_FILE)
+paperclip_env=$(read_config PAPERCLIP_ENV_FILE)
+output_dir=${BACKUP_OUTPUT_DIR:-$(read_config BACKUP_OUTPUT_DIR)}
+[[ -n "$output_dir" ]] || fail "BACKUP_OUTPUT_DIR is not configured"
+mkdir -p "$output_dir"
+chmod 0700 "$output_dir"
+
+timestamp=$(date -u +%Y%m%dT%H%M%SZ)
+pack_name="nix-os-config-${timestamp}"
+config_tmp_dir=$(mktemp -d /tmp/nix-os-config-backup.XXXXXX)
+payload_dir="$config_tmp_dir/$pack_name"
+mkdir -p "$payload_dir/files"
+install -m 0600 "$config_file" "$payload_dir/files/deployment.env"
+install -m 0600 "$postgres_env" "$payload_dir/files/postgres.env"
+install -m 0600 "$paperclip_env" "$payload_dir/files/paperclip.env"
+
+git_commit=$(git -C "$repo_root" rev-parse HEAD 2>/dev/null || printf 'uncommitted')
+{
+  printf 'CONFIG_PACK_FORMAT_VERSION=1\n'
+  printf 'CREATED_AT=%s\n' "$timestamp"
+  printf 'GIT_COMMIT=%s\n' "$git_commit"
+  printf 'POSTGRES_ENV_FILE=%s\n' "$postgres_env"
+  printf 'PAPERCLIP_ENV_FILE=%s\n' "$paperclip_env"
+} >"$payload_dir/manifest.env"
+(
+  cd "$payload_dir"
+  hash_file manifest.env
+  hash_file files/deployment.env
+  hash_file files/postgres.env
+  hash_file files/paperclip.env
+) >"$payload_dir/SHA256SUMS"
+
+artifact="$output_dir/${pack_name}.tar.gz.age"
+tar -C "$config_tmp_dir" -czf - "$pack_name" \
+  | age --recipient "$BACKUP_AGE_RECIPIENT" --output "$artifact"
+chmod 0600 "$artifact"
+artifact_basename=$(basename "$artifact")
+(
+  cd "$output_dir"
+  hash_file "$artifact_basename" >"${artifact_basename}.sha256"
+)
+chmod 0600 "${artifact}.sha256"
+printf 'Encrypted configuration pack created. Secret contents were not logged.\n%s\n' "$artifact"

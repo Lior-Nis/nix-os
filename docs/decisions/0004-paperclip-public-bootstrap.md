@@ -13,6 +13,7 @@ The same release requires external PostgreSQL for `authenticated/public`, disabl
 
 - Run Paperclip as `authenticated/public` behind Caddy.
 - Caddy is the only published path to Paperclip; the Paperclip container has no host port.
+- On a fresh volume, run Paperclip's official onboarding command and validate the generated external-PostgreSQL, public-exposure instance configuration before starting the server.
 - Generate a one-time bootstrap CEO invite with Paperclip's shipped CLI.
 - Keep account signup enabled only while creating the first user and consuming that invite, then set `PAPERCLIP_AUTH_DISABLE_SIGN_UP=true` and restart Paperclip.
 - Trust forwarded headers only from private/unique-local proxy addresses with `TRUST_PROXY=uniquelocal`; never use the broad `true` setting.
@@ -20,4 +21,4 @@ The same release requires external PostgreSQL for `authenticated/public`, disabl
 
 ## Consequences
 
-First deployment has a short, explicit bootstrap sequence and must not be declared complete until signup is disabled again. Losing the bootstrap URL before acceptance is recoverable by minting another invite; the prior active bootstrap invite is revoked. Authentication signing secrets must be restored unchanged to preserve sessions, even though the isolated restore smoke can use disposable replacements to prove state integrity and startup.
+First deployment has a short, explicit bootstrap sequence and must not be declared complete until signup is disabled again. The pinned CLI can return success when bootstrap configuration is missing, so the deployment wrapper verifies the emitted token through Paperclip's invite API. Losing the bootstrap URL before acceptance is recoverable by minting another invite; the prior active bootstrap invite is revoked. Authentication signing secrets must be restored unchanged to preserve sessions; the production recovery gate uses the original external secret files rather than disposable replacements.

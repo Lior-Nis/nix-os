@@ -1,6 +1,6 @@
 # Nix Business OS V0 implementation plan
 
-Status: Slice 0 is implemented and locally verified; live activation awaits the external prerequisites listed below. Updated 2026-09-24.
+Status: Slice 0 remediation is implemented and locally verified; live activation and acceptance still await the external prerequisites listed below. Updated 2026-09-24.
 
 ## How to use this plan
 
@@ -32,7 +32,7 @@ These are not needed to author Slice 0 code, but are needed for the indicated ma
 | canonical private GitHub repo URL for `nix-os` | Slice 0 | repository currently has no remote |
 | Hostinger VPS SSH access and supported Linux host | Slice 0 deploy | Docker Engine/Compose must be installable |
 | DNS name for Paperclip | Slice 0 deploy | point to VPS before Caddy TLS verification |
-| encrypted off-host backup destination credentials | Slice 0 exit | object storage or another host; never Git |
+| age recipient/identity custody and encrypted off-host destination credentials | Slice 0 exit | identity must survive VPS loss; object storage or another host; never Git |
 | model/provider credential and chosen model | Slice 1 | keep provider portable; no model is locked by architecture |
 | Telegram bot token, Lior's numeric Telegram user ID, private group/topic identifiers | Slice 1 | exact multi-topic UX is proven later in Slice 3 |
 | separate private GitHub repo for `nix-brain` | Slice 4 | create manually or with an approved GitHub operation |
@@ -79,8 +79,8 @@ Lior can open Paperclip over HTTPS, authenticate, create the Nix company and a d
 - `compose.yaml` and a minimal production override only if actually needed.
 - `.env.example` containing variable names/placeholders, never values.
 - `deploy/caddy/Caddyfile` and the first-start PostgreSQL application-role initializer under `deploy/postgres/`.
-- `scripts/check-config`, `scripts/backup`, and `scripts/restore-smoke` (small operator scripts; no daemon).
-- `tests/smoke/foundation.*`.
+- Small operator scripts for config validation, migration preflight, official Paperclip initialization, verified CEO bootstrap, data/config backup, restore, and VPS prerequisite checks; no daemon or framework.
+- `tests/smoke/foundation.*`, encrypted config-pack smoke, and realistic Paperclip recovery smoke.
 - `.github/workflows/ci.yml`.
 - `docs/runbooks/DEPLOY.md` and `docs/runbooks/RESTORE.md`.
 - Updates to `docs/UPSTREAM.md` with selected digests.
@@ -95,11 +95,12 @@ Lior can open Paperclip over HTTPS, authenticate, create the Nix company and a d
 6. Paperclip runs in authenticated/public mode behind HTTPS; `/api/health` reports healthy through the public URL and from the internal network.
 7. PostgreSQL uses a non-superuser Paperclip role and a persistent volume. Paperclip home/storage uses a persistent volume.
 8. Secret values are loaded from root-owned files outside the checkout or per-service Compose secrets where the image supports `_FILE`. `git grep` and repository history contain no live secret.
-9. Create a smoke issue, recreate containers, and demonstrate the issue and an uploaded smoke attachment persist.
-10. Backup produces a timestamped PostgreSQL custom-format dump, Paperclip home/storage archive, configuration commit SHA, dependency-version manifest, and checksums; the bundle is encrypted or stored in an encrypted off-host target.
-11. Restore into a separate Compose project/network, never over production. The restored Paperclip health check passes and sampled company/issue/attachment data matches the source.
-12. Logs and health checks make database-unavailable and migration-failure states distinguishable.
-13. No Hermes, OpenCode, Todoist, n8n, Redis, custom application, or metrics stack is introduced.
+9. Fresh volumes are provisioned through Paperclip's official onboarding path; a real user accepts a verified CEO invite; after signup is disabled, new signup fails and the CEO can still authenticate.
+10. Create a smoke company/issue through Paperclip's API, recreate containers, and demonstrate the objects and known-byte attachment persist.
+11. Data backup produces a timestamped PostgreSQL custom-format dump, Paperclip home/storage archive, configuration commit SHA, dependency-version manifest, and checksums. A separate mandatory age-encrypted configuration pack contains `.env` and the two external secret files.
+12. Restore into a separate Compose project/network, never over production. The restored CEO can authenticate; company/issue relationships and attachment checksum match; a bound environment probe records successful canary-secret resolution without returning plaintext; and health passes.
+13. Logs and health checks make database-unavailable and migration/preflight failure states distinguishable.
+14. No Hermes, OpenCode, Todoist, n8n, Redis, custom application, or metrics stack is introduced.
 
 ### Automated tests
 
@@ -108,18 +109,20 @@ Lior can open Paperclip over HTTPS, authenticate, create the Nix company and a d
 - Assertions that images are version/digest pinned and no `latest` appears.
 - Secret-pattern scan plus a test that `.env`, `secrets/`, data, and backup paths are ignored.
 - Bash syntax and ShellCheck for operator scripts, plus static consistency checks across Compose, the environment contract, Caddy, and ignore rules.
-- Local foundation smoke: start an isolated stack, wait on Paperclip's database-backed health endpoint, stop PostgreSQL, assert Paperclip reports `503 database_unreachable`, restore PostgreSQL, and assert recovery.
-- Backup/restore smoke: write marker data to PostgreSQL and Paperclip's persistent home, create a real backup, restore it into a distinct project and fresh volumes, compare database counts and every archived file checksum, and wait for restored Paperclip health. Cleanup refuses the production project name.
+- Read-only migration preflight: accept an empty database and a migrated Paperclip database; reject a non-empty schema without the expected Drizzle journal before Paperclip starts.
+- Fresh-bootstrap/recovery smoke: start from clean volumes, run official onboarding, validate public instance configuration, create a real user and verified CEO invite, accept it, disable signup, prove existing login, create a company/related issue/attachment/local-encrypted canary through supported APIs, resolve the canary through a bound environment probe, exercise `503 database_unreachable` and recovery, back up, restore with original external secrets into distinct fresh volumes, and verify authentication, values/relationships, attachment bytes, one new successful canary-resolution access event, and health.
+- Encrypted configuration-pack smoke: create with an ephemeral age recipient, relocate it, restore under an isolated root, verify sidecar/internal checksums, byte equality, file modes, and reconstructed config without logging contents.
 
 ### Manual end-to-end verification
 
 1. Point DNS to the VPS and deploy from a clean clone at a recorded commit.
 2. Confirm 80/443 are the only public service ports with an external port probe.
-3. Complete Paperclip bootstrap and sign in over HTTPS.
-4. Create the Nix company, set a deliberately tiny initial budget, and add a disposable issue plus attachment.
+3. Complete Paperclip signup and verified CEO bootstrap, disable signup, prove new signup is rejected, and prove the existing CEO can sign in.
+4. Create the Nix company, set a deliberately tiny initial budget, and add a disposable issue, known-byte attachment, and harmless encrypted-secret canary.
 5. Run `docker compose down` without volume deletion, start again, and verify both objects.
-6. Run backup, confirm an off-host object/checksum exists, then run the isolated restore smoke.
-7. Record evidence and restore timestamp in a Paperclip Operations issue once the production company exists.
+6. Create and upload both the encrypted configuration pack and encrypted data backup, download them, then run the isolated restore with original external secret files.
+7. Authenticate, verify company/issue relationship and attachment checksum, run the bound environment probe and verify one new successful canary access event without printing its value, verify health, and destroy the restore environment.
+8. Record non-secret evidence and restore timestamp in a Paperclip Operations issue once the production company exists.
 
 ### Failure modes
 
@@ -136,35 +139,38 @@ Hermes, Telegram, OpenCode, GitHub App automation, `nix-brain`, Todoist, n8n, co
 
 ### Implementation record — 2026-09-24
 
-The repository portion of Slice 0 is complete. The Compose stack contains only Caddy, Paperclip, and PostgreSQL; images are version-and-digest pinned; only Caddy publishes ports; PostgreSQL and Paperclip state use named volumes; secrets live in external mode-`0600` env files; and the deploy, upgrade, inspection, restart, backup, and isolated-restore procedures are implemented.
+The repository portion of Slice 0 and the independent-review remediation are complete. The Compose stack still contains only Caddy, Paperclip, and PostgreSQL. Deploy now performs migration preflight and official fresh-instance onboarding before server startup; CEO bootstrap requires API evidence of an active invite. Data recovery uses real Paperclip objects, and an independent age-encrypted configuration pack makes the external `.env` and service-secret recovery concrete.
 
 Locally verified:
 
 - Compose rendering and policy assertions, including service count, private PostgreSQL/Paperclip networking, persistent mounts, pinned images, health checks, and required configuration failures.
-- Bash syntax and ShellCheck 0.10.0 for every operator and smoke-test script.
+- Bash syntax and ShellCheck 0.11.0 for every operator and smoke-test script.
 - Caddy 2.11.4 validation against the committed Caddyfile.
-- A real Docker smoke using Paperclip 2026.916.1 and PostgreSQL 17.11: least-privilege database-role creation, fresh migrations, database-backed health, `503 database_unreachable` while PostgreSQL is stopped, recovery after restart, backup artifact creation, relocation to simulate an off-host download, portable and internal checksum validation, restore into isolated fresh volumes, source/restored database-count comparison, exact Paperclip-volume file comparison, and restored Paperclip health.
+- A clean-volume Docker smoke using Paperclip 2026.916.1 and PostgreSQL 17.11: official onboarding and validated `authenticated/public` config; real signup, verified bootstrap invite, invite acceptance, signup closure, existing CEO login; least-privilege database role; missing-journal rejection; real company/issue/attachment/encrypted-canary creation through supported APIs; source canary resolution without plaintext output; database-backed health failure/recovery; age-encrypted backup relocation/decryption; restore with the original external secret files into fresh volumes; restored CEO login, company/issue relationship, attachment-byte checksum, a new successful canary-resolution access event using the recovered master key, exact `/paperclip` file comparison, and health.
+- A real age-encrypted configuration-pack round trip using an ephemeral identity, including external/inner checksum verification, isolated path reconstruction, mode `0600`, and byte equality without content logging.
 - Local secret-pattern checks and ignore-rule checks. No live credential was created inside the repository.
 
 Not yet verifiable without external access:
 
 - GitHub remote push, hosted CI execution, and default-branch protection.
 - Hostinger VPS deployment, external 80/443-only port probe, DNS, automatic TLS issuance, and public health.
-- Browser bootstrap, Nix company creation, smoke issue/attachment persistence across a production restart, and closing public signup after bootstrap.
-- Encryption with Lior's real `age` recipient, upload to the selected off-host destination, remote checksum confirmation, and a restore using the downloaded object.
+- Real browser bootstrap/CEO verification and public signup closure on the deployed hostname (the same lifecycle is automated locally through supported HTTP interfaces).
+- Encryption with Lior's real age recipient, config/data upload to the selected off-host destination, download, remote checksum confirmation, and isolated restore with original external secret files.
 
 Current upstream constraints discovered during implementation:
 
 - Stable Paperclip is `v2026.916.1`; the container tag is `2026.916.1` without the `v` prefix.
 - Authenticated/public deployment requires external PostgreSQL and explicit auth/tool-action signing secrets. The tool-action signing secret has no safe fallback.
 - `/api/health` is database-backed and returns `503` with `database_unreachable` when PostgreSQL cannot be reached.
-- The official image automatically applies safe pending migrations in non-interactive startup; this deployment also sets `PAPERCLIP_MIGRATION_AUTO_APPLY=true` explicitly. A nonempty database with an invalid or absent migration journal is deliberately rejected as unsafe.
+- The pinned server enters its auto-migration path when a non-empty database lacks the expected Drizzle journal, inspects that state, and rejects it before applying migrations. Nix keeps its own read-only preflight as defense in depth so the documented deploy, upgrade, restart, and restore workflows fail earlier with a clearer operator error. Direct Compose startup or an engine-managed container restart does not necessarily run the Nix preflight; the pinned upstream guard still fails closed before mutation. Future releases still require migration review.
 - `/paperclip` is persistent application state independent of PostgreSQL and must be backed up with the database.
-- Public mode disables the browser-first admin claim. Initial ownership is established using the official bootstrap invite command while signup is temporarily enabled, after which signup must be disabled.
+- Public mode disables the browser-first admin claim. The CLI requires instance config and can return zero when config is missing, so official onboarding runs first and the wrapper verifies the resulting invite through the API rather than by exit code.
+- The pinned CLI has no non-interactive public-onboarding preset: `--yes`/`--bind` selects trusted/private modes. Nix runs the official Quickstart prompt in a bounded pseudo-terminal so public environment defaults are honored, then validates the exact generated config before startup.
+- Normal board secret reads never return values, but the supported board-authorized environment probe resolves a bound secret and records a success event without returning plaintext. This makes cryptographic recovery locally testable without a later-slice agent.
 
-Exact prerequisites for live activation are: the canonical private GitHub repository URL; Hostinger VPS SSH access to a supported Docker Engine/Compose host; the Paperclip DNS hostname pointed at that VPS; and an `age` recipient plus credentials/path for an encrypted off-host backup destination.
+Exact prerequisites for live activation are: the canonical private GitHub repository URL; Hostinger VPS SSH access to Ubuntu 24.04 x86_64 with Docker Engine 27+/Compose 2.30+ and the documented tools; the Paperclip DNS hostname pointed at that VPS; and an age recipient/identity plus credentials/path for an encrypted off-host backup destination.
 
-Slice 1 entry condition: all Slice 0 production checks above have evidence, the canonical branch is protected and hosted CI is green, Paperclip signup is disabled after CEO bootstrap, a production backup exists encrypted off-host with a confirmed checksum, and that downloaded artifact has passed the isolated restore smoke. Only then revalidate the current Hermes, Paperclip MCP, Telegram, and model-provider documentation and implement Slice 1.
+Slice 1 entry condition: the canonical branch is protected with both CI jobs green; the Hostinger deployment passes firewall/TLS and browser CEO/signup checks; current encrypted config and data artifacts exist off-host with confirmed checksums; their downloaded copies pass isolated restore with original external secrets; the restored CEO/company/issue/attachment/health checks pass; and the canary secret resolves without plaintext logging. Only then revalidate the current Hermes, Paperclip MCP, Telegram, and model-provider documentation and implement Slice 1.
 
 ---
 

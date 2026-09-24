@@ -7,7 +7,7 @@ action=${1:-}
 compose=(docker compose --env-file "$config_file")
 
 usage() {
-  printf 'Usage: CONFIG_FILE=/path/to/.env %s {deploy|upgrade|status|health|logs|restart}\n' "$0" >&2
+  printf 'Usage: CONFIG_FILE=/path/to/.env %s {deploy|upgrade|bootstrap-ceo|status|health|logs|restart}\n' "$0" >&2
   exit 2
 }
 
@@ -15,15 +15,23 @@ case "$action" in
   deploy)
     "$repo_root/scripts/check-config" "$config_file"
     "${compose[@]}" pull
-    "${compose[@]}" up -d --wait
+    "${compose[@]}" up -d --wait postgres
+    "$repo_root/scripts/check-migrations" "$config_file"
+    "$repo_root/scripts/initialize-paperclip" "$config_file"
+    "$repo_root/scripts/check-migrations" "$config_file"
+    "${compose[@]}" up -d --wait paperclip caddy
     "$0" health
     ;;
   upgrade)
     "$repo_root/scripts/check-config" "$config_file"
     "$repo_root/scripts/backup" "$config_file"
+    "$repo_root/scripts/check-migrations" "$config_file"
     "${compose[@]}" pull
     "${compose[@]}" up -d --wait --remove-orphans
     "$0" health
+    ;;
+  bootstrap-ceo)
+    "$repo_root/scripts/bootstrap-ceo" "$config_file"
     ;;
   status)
     "${compose[@]}" ps
@@ -42,8 +50,8 @@ case "$action" in
     ;;
   restart)
     "$repo_root/scripts/check-config" "$config_file"
-    "${compose[@]}" restart
-    "${compose[@]}" up -d --wait
+    "$repo_root/scripts/check-migrations" "$config_file"
+    "${compose[@]}" up -d --force-recreate --wait
     ;;
   *) usage ;;
 esac
