@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+config_file=${1:-${CONFIG_FILE:-$repo_root/.env}}
+compose=(docker compose --env-file "$config_file")
+
+fail() {
+  printf 'migration preflight error: %s\n' "$*" >&2
+  exit 1
+}
+
+"$repo_root/scripts/check-config" "$config_file" >/dev/null
+"${compose[@]}" exec -T postgres pg_isready -U paperclip -d paperclip >/dev/null \
+  || fail "PostgreSQL is not ready"
+
+read -r table_count journal_exists < <(
+  "${compose[@]}" exec -T postgres psql -U paperclip -d paperclip -At -F ' ' \
+    -c "SELECT count(*)::integer, (to_regclass('drizzle.__drizzle_migrations') IS NOT NULL OR to_regclass('public.__drizzle_migrations') IS NOT NULL) FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog', 'information_schema') AND table_type = 'BASE TABLE';"
+)
+
+[[ "$table_count" =~ ^[0-9]+$ ]] || fail "could not determine user table count"
+[[ "$journal_exists" == t || "$journal_exists" == f ]] || fail "could not determine migration journal state"
+
+if (( table_count > 0 )) && [[ "$journal_exists" != t ]]; then
+  fail "database has $table_count user tables but no Paperclip Drizzle migration journal; refusing startup before upstream auto-migration can touch it"
+fi
+
+printf 'Migration preflight passed: user_tables=%s migration_journal=%s.\n' "$table_count" "$journal_exists"

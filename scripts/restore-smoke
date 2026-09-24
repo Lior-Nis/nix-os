@@ -2,6 +2,7 @@
 set -euo pipefail
 umask 077
 
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 artifact=${1:-}
 caddy_image='caddy:2.11.4-alpine@sha256:6aeddd44c3078b0f9a35206472a11420648a79c184603ef95957d0a20044cb2b'
 restore_tmp_dir=''
@@ -76,20 +77,29 @@ for restore_volume in "$restore_postgres_volume" "$restore_paperclip_volume"; do
   fi
 done
 
-postgres_password=$(openssl rand -hex 32)
-paperclip_db_password=$(openssl rand -hex 32)
-better_auth_secret=$(openssl rand -hex 32)
-tool_action_secret=$(openssl rand -hex 32)
 restore_postgres_env="$restore_tmp_dir/postgres.env"
 restore_paperclip_env="$restore_tmp_dir/paperclip.env"
 restore_config="$restore_tmp_dir/restore.env"
-printf 'POSTGRES_PASSWORD=%s\n' "$postgres_password" >"$restore_postgres_env"
-printf 'PAPERCLIP_DB_PASSWORD=%s\n' "$paperclip_db_password" >>"$restore_postgres_env"
-{
-  printf 'DATABASE_URL=postgresql://paperclip:%s@postgres:5432/paperclip\n' "$paperclip_db_password"
-  printf 'BETTER_AUTH_SECRET=%s\n' "$better_auth_secret"
-  printf 'PAPERCLIP_TOOL_ACTION_SIGNING_SECRET=%s\n' "$tool_action_secret"
-} >"$restore_paperclip_env"
+if [[ -n ${RESTORE_POSTGRES_ENV_FILE:-} || -n ${RESTORE_PAPERCLIP_ENV_FILE:-} ]]; then
+  [[ -n ${RESTORE_POSTGRES_ENV_FILE:-} && -f "$RESTORE_POSTGRES_ENV_FILE" ]] \
+    || fail "RESTORE_POSTGRES_ENV_FILE must name the restored PostgreSQL secret file"
+  [[ -n ${RESTORE_PAPERCLIP_ENV_FILE:-} && -f "$RESTORE_PAPERCLIP_ENV_FILE" ]] \
+    || fail "RESTORE_PAPERCLIP_ENV_FILE must name the restored Paperclip secret file"
+  install -m 0600 "$RESTORE_POSTGRES_ENV_FILE" "$restore_postgres_env"
+  install -m 0600 "$RESTORE_PAPERCLIP_ENV_FILE" "$restore_paperclip_env"
+else
+  postgres_password=$(openssl rand -hex 32)
+  paperclip_db_password=$(openssl rand -hex 32)
+  better_auth_secret=$(openssl rand -hex 32)
+  tool_action_secret=$(openssl rand -hex 32)
+  printf 'POSTGRES_PASSWORD=%s\n' "$postgres_password" >"$restore_postgres_env"
+  printf 'PAPERCLIP_DB_PASSWORD=%s\n' "$paperclip_db_password" >>"$restore_postgres_env"
+  {
+    printf 'DATABASE_URL=postgresql://paperclip:%s@postgres:5432/paperclip\n' "$paperclip_db_password"
+    printf 'BETTER_AUTH_SECRET=%s\n' "$better_auth_secret"
+    printf 'PAPERCLIP_TOOL_ACTION_SIGNING_SECRET=%s\n' "$tool_action_secret"
+  } >"$restore_paperclip_env"
+fi
 {
   printf 'COMPOSE_PROJECT_NAME=%s\n' "$restore_project"
   printf 'PAPERCLIP_HOSTNAME=restore.test\n'
@@ -129,6 +139,7 @@ diff -u "$payload_dir/paperclip-files.sha256" "$restore_tmp_dir/restored-papercl
   >"$restore_tmp_dir/restored-database-counts.txt"
 diff -u "$payload_dir/database-counts.txt" "$restore_tmp_dir/restored-database-counts.txt"
 
+NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-migrations" "$restore_config"
 "${compose_restore[@]}" up -d --wait paperclip
 health_json=$("${compose_restore[@]}" exec -T paperclip curl -fsS http://127.0.0.1:3100/api/health)
 grep -q '"status":"ok"' <<<"$health_json" || fail "restored Paperclip health did not report ok"

@@ -1,6 +1,6 @@
 # Nix Business OS V0 architecture
 
-Status: Slice 0 foundation implemented locally, 2026-09-24. No runtime has been deployed from this repository yet.
+Status: Slice 0 foundation and review remediation implemented locally, 2026-09-24. No live runtime has been deployed from this repository yet.
 
 ## Purpose and scope
 
@@ -154,11 +154,14 @@ Per [ADR 0001](decisions/0001-single-vps-compose.md), V0 runs on one Hostinger L
 
 The initial database is PostgreSQL 17 with a non-superuser Paperclip role. Later services receive separate roles/databases. Sharing one server reduces operations; database-level credentials and backups preserve separation. No Redis or worker queues are present.
 
+A fresh Paperclip volume is initialized with the pinned release's official `paperclipai onboard` path before the long-running server starts. Nix validates the resulting instance configuration as external-PostgreSQL `authenticated/public` with an explicit HTTPS base URL. CEO bootstrap is a separate verified step: the wrapper requires a real active human bootstrap invite from Paperclip's invite API, the user accepts it while authenticated, and public signup is then disabled. CLI exit status alone is never bootstrap evidence.
+
 ## Configuration, state, and secrets
 
 | Class | Examples | Location and recovery |
 |---|---|---|
 | Git-controlled configuration | Compose files, Caddyfile, redacted Hermes config/SOUL templates, policy text, tests, n8n workflow JSON after Slice 7 | GitHub `nix-os`; rebuildable from a commit |
+| External deployment configuration | deployment `.env` and service env files required to reconstruct runtime configuration | separate age-encrypted configuration pack, restored to recorded paths with mode `0600` and verified checksums |
 | Runtime state | Paperclip PostgreSQL data, Paperclip uploads/config, Hermes `state.db`/sessions/memory, n8n database and storage, local worktrees/logs | named volumes/host state directory; restored from verified off-host backups |
 | Durable company knowledge | `nix-brain` Markdown and Git history | separate private GitHub repository; local clones are disposable |
 | Secrets | bot token, model keys, Hermes API keys, Paperclip agent keys, DB passwords, GitHub App key, Todoist token, n8n encryption key | root-owned files or an operator secret store outside the checkout; per-service injection; separately backed up encrypted |
@@ -171,14 +174,15 @@ Slice 0 establishes the procedure; later slices extend its manifest.
 
 | State | Backup | Restore proof |
 |---|---|---|
-| Paperclip database | nightly compressed logical dump, encrypted and copied off-host | restore to an isolated database; `/api/health` and sampled company/issue counts match |
-| Paperclip home/storage | encrypted file backup coordinated with the database backup | attachments/config readable; secret master key present |
+| External Slice 0 configuration/secrets | age-encrypted config pack after every change | restore `.env`, `postgres.env`, and `paperclip.env` with mode `0600`; internal and external checksums pass without logging contents |
+| Paperclip database | nightly compressed logical dump, encrypted and copied off-host | restore to an isolated database; CEO authenticates and real company/issue values and relationships match |
+| Paperclip home/storage | encrypted file backup coordinated with the database backup | attachment bytes match a known SHA-256; config and encrypted-secret master key are preserved |
 | Paperclip portable company bundle | periodic export including company, agents, projects, skills, issues | preview/import to a disposable company |
 | Hermes profile state | quiesced volume snapshot or stop-the-gateway file backup | profile starts; Telegram allowlist, memory, and a sample session survive |
 | `nix-brain` and source repos | GitHub remote plus protected branches | fresh clone and CI pass |
 | n8n (when added) | its database, storage volume, workflow exports, and `N8N_ENCRYPTION_KEY` | credentials decrypt and Todoist test workflow runs |
 
-The Paperclip portable bundle is not a full backup because upstream excludes approvals and activity/cost history. Database restore remains required. At least monthly, restore the whole stack into an isolated Compose project and record the result in a Paperclip Operations issue.
+The Paperclip portable bundle is not a full backup because upstream excludes approvals and activity/cost history. Database restore remains required. At least monthly, restore a downloaded off-host data artifact together with the original external configuration pack into an isolated Compose project. Verify CEO authentication, a company/issue relationship, attachment bytes, health, and a harmless encrypted-secret canary through the supported run-bound resolution interface without exposing its value; then record non-secret evidence in a Paperclip Operations issue.
 
 Target initial objectives: daily recovery point (RPO <= 24 hours) and same-day manual recovery (RTO <= 8 hours). These are operating targets, not an HA promise.
 

@@ -12,10 +12,23 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - name: Install ShellCheck
-        run: sudo apt-get update && sudo apt-get install --yes shellcheck
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install validation dependencies
+        run: sudo apt-get update && sudo apt-get install --yes age jq rclone shellcheck
+      - name: Check VPS prerequisites
+        run: ./scripts/vps-preflight
       - name: Validate Slice 0 configuration
         env:
           REQUIRE_SHELLCHECK: "1"
         run: ./scripts/ci
+
+  recovery:
+    needs: foundation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install recovery dependencies
+        run: sudo apt-get update && sudo apt-get install --yes age jq
+      - name: Run fresh bootstrap and recovery integration
+        run: ./tests/smoke/backup-restore.sh

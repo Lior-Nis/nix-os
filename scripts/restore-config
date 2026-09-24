@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+artifact=${1:-}
+target_config=${2:-$PWD/.env}
+restore_root=${CONFIG_RESTORE_ROOT:-/}
+restore_tmp_dir=''
+
+fail() {
+  printf 'configuration restore error: %s\n' "$*" >&2
+  exit 1
+}
+
+hash_check() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum --check "$1"; else shasum -a 256 --check "$1"; fi
+}
+
+hash_value() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi
+}
+
+cleanup() {
+  [[ -z "$restore_tmp_dir" ]] || rm -rf "$restore_tmp_dir"
+}
+trap cleanup EXIT
+
+[[ -n "$artifact" && "$artifact" == /* && -f "$artifact" ]] || fail "usage: $0 /absolute/path/to/config-pack.tar.gz.age [/target/checkout/.env]"
+[[ -n ${AGE_IDENTITY_FILE:-} && -f "$AGE_IDENTITY_FILE" ]] || fail "AGE_IDENTITY_FILE must name the age identity file"
+command -v age >/dev/null 2>&1 || fail "age is required"
+[[ "$target_config" == /* ]] || fail "target configuration path must be absolute"
+[[ "$restore_root" == /* ]] || fail "CONFIG_RESTORE_ROOT must be absolute"
+
+if [[ -f "${artifact}.sha256" ]]; then
+  (cd "$(dirname "$artifact")" && hash_check "$(basename "$artifact").sha256")
+fi
+
+restore_tmp_dir=$(mktemp -d /tmp/nix-os-config-restore.XXXXXX)
+age --decrypt --identity "$AGE_IDENTITY_FILE" --output "$restore_tmp_dir/config.tar.gz" "$artifact"
+tar -xzf "$restore_tmp_dir/config.tar.gz" -C "$restore_tmp_dir"
+payload_dir=$(find "$restore_tmp_dir" -mindepth 1 -maxdepth 1 -type d -name 'nix-os-config-*' -print -quit)
+[[ -n "$payload_dir" ]] || fail "configuration pack payload is missing"
+(cd "$payload_dir" && hash_check SHA256SUMS >/dev/null)
+
+postgres_path=$(grep -E '^POSTGRES_ENV_FILE=' "$payload_dir/manifest.env" | cut -d= -f2-)
+paperclip_path=$(grep -E '^PAPERCLIP_ENV_FILE=' "$payload_dir/manifest.env" | cut -d= -f2-)
+[[ "$postgres_path" == /* && "$paperclip_path" == /* ]] || fail "configuration pack contains invalid secret paths"
+if [[ "$restore_root" == / ]]; then
+  target_postgres=$postgres_path
+  target_paperclip=$paperclip_path
+else
+  target_postgres="${restore_root%/}${postgres_path}"
+  target_paperclip="${restore_root%/}${paperclip_path}"
+fi
+
+for target in "$target_config" "$target_postgres" "$target_paperclip"; do
+  if [[ -e "$target" && ${CONFIG_RESTORE_FORCE:-false} != true ]]; then
+    fail "refusing to overwrite existing file: $target"
+  fi
+done
+
+install -d -m 0700 "$(dirname "$target_config")" "$(dirname "$target_postgres")" "$(dirname "$target_paperclip")"
+if [[ "$restore_root" == / ]]; then
+  install -m 0600 "$payload_dir/files/deployment.env" "$target_config"
+else
+  awk -v pg="$target_postgres" -v pc="$target_paperclip" '
+    /^POSTGRES_ENV_FILE=/ { print "POSTGRES_ENV_FILE=" pg; next }
+    /^PAPERCLIP_ENV_FILE=/ { print "PAPERCLIP_ENV_FILE=" pc; next }
+    { print }
+  ' "$payload_dir/files/deployment.env" >"$target_config"
+  chmod 0600 "$target_config"
+fi
+install -m 0600 "$payload_dir/files/postgres.env" "$target_postgres"
+install -m 0600 "$payload_dir/files/paperclip.env" "$target_paperclip"
+
+printf 'Configuration pack restored with mode 0600; contents were not logged.\n'
+printf 'deployment.env sha256=%s\n' "$(hash_value "$target_config")"
+printf 'postgres.env sha256=%s\n' "$(hash_value "$target_postgres")"
+printf 'paperclip.env sha256=%s\n' "$(hash_value "$target_paperclip")"

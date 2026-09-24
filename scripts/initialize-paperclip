@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+config_file=${1:-${CONFIG_FILE:-$repo_root/.env}}
+compose=(docker compose --env-file "$config_file")
+onboard_log=$(mktemp /tmp/nix-os-paperclip-onboard.XXXXXX)
+trap 'rm -f "$onboard_log"' EXIT
+
+fail() {
+  printf 'Paperclip initialization error: %s\n' "$*" >&2
+  exit 1
+}
+
+"$repo_root/scripts/check-config" "$config_file"
+"${compose[@]}" up -d --wait postgres
+"$repo_root/scripts/check-migrations" "$config_file"
+
+# shellcheck disable=SC2016
+config_probe='const fs=require("node:fs");const p="/paperclip/instances/default/config.json";const c=JSON.parse(fs.readFileSync(p,"utf8"));if(c?.$meta?.source!=="onboard"||c?.database?.mode!=="postgres"||c?.server?.deploymentMode!=="authenticated"||c?.server?.exposure!=="public"||c?.auth?.baseUrlMode!=="explicit"||c?.auth?.publicBaseUrl!==process.env.PAPERCLIP_PUBLIC_URL||c?.storage?.provider!=="local_disk"||c?.secrets?.provider!=="local_encrypted")process.exit(1)'
+
+if "${compose[@]}" run --rm --no-deps --entrypoint node paperclip -e "$config_probe" >/dev/null 2>&1; then
+  printf 'Paperclip instance configuration already exists and is valid.\n'
+  exit 0
+fi
+
+set +e
+# shellcheck disable=SC2016
+"${compose[@]}" run --rm --no-deps --entrypoint sh paperclip -ec '
+  set +e
+  # Selecting the default Quickstart path without --yes is intentional: this
+  # release then honors the public deployment environment instead of forcing
+  # one of the private --bind presets. The pseudo-terminal supplies that one
+  # official prompt and then declines the foreground server start.
+  { sleep 5; printf "\r"; sleep 10; printf "n"; } | \
+    COREPACK_ENABLE_DOWNLOAD_PROMPT=0 COLUMNS=120 LINES=40 \
+    timeout --signal=TERM 45s script -qec \
+      "stty rows 40 cols 120; pnpm paperclipai onboard --data-dir /paperclip" /dev/null
+  status=$?
+  set -e
+  test -s /paperclip/instances/default/config.json
+  case "$status" in 0|124|143) exit 0;; *) exit "$status";; esac
+' >"$onboard_log" 2>&1
+onboard_status=$?
+set -e
+
+if (( onboard_status != 0 )); then
+  sed -E 's#https?://[^[:space:]]+/invite/pcp_bootstrap_[[:alnum:]]+#[bootstrap invite redacted]#g' "$onboard_log" >&2
+  fail "official onboard command did not provision instance configuration"
+fi
+
+if ! "${compose[@]}" run --rm --no-deps --entrypoint node paperclip -e "$config_probe" >/dev/null; then
+  fail "onboard created a missing or invalid instance configuration"
+fi
+
+printf 'Paperclip instance configuration was created with the official onboard command and validated.\n'

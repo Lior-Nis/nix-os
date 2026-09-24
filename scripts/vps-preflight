@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+failures=0
+
+ok() { printf 'ok: %s\n' "$*"; }
+missing() { printf 'missing/unsupported: %s\n' "$*" >&2; failures=$((failures + 1)); }
+
+if [[ $(uname -s) == Linux ]]; then ok "Linux host"; else missing "Linux is required"; fi
+if [[ $(uname -m) == x86_64 ]]; then ok "x86_64/amd64 architecture"; else missing "tested V0 architecture is x86_64/amd64"; fi
+
+if [[ -r /etc/os-release ]]; then
+  # shellcheck disable=SC1091
+  . /etc/os-release
+  if [[ ${ID:-} == ubuntu && ${VERSION_ID:-} == 24.04 ]]; then
+    ok "Ubuntu 24.04 LTS"
+  else
+    missing "tested V0 operating system is Ubuntu 24.04 LTS (found ${PRETTY_NAME:-unknown})"
+  fi
+else
+  missing "/etc/os-release is unavailable"
+fi
+
+for command_name in docker git bash curl openssl tar sha256sum age rclone; do
+  if command -v "$command_name" >/dev/null 2>&1; then ok "$command_name available"; else missing "$command_name"; fi
+done
+
+if command -v docker >/dev/null 2>&1; then
+  if docker info >/dev/null 2>&1; then ok "Docker daemon reachable"; else missing "Docker daemon is not reachable"; fi
+  engine_version=$(docker version --format '{{.Server.Version}}' 2>/dev/null || true)
+  if [[ "$engine_version" =~ ^v?([0-9]+)\.([0-9]+)\.([0-9]+) ]] \
+    && (( BASH_REMATCH[1] >= 27 )); then
+    ok "Docker Engine $engine_version (minimum 27.0.0)"
+  else
+    missing "Docker Engine 27.0.0 or newer (found ${engine_version:-none})"
+  fi
+  compose_version=$(docker compose version --short 2>/dev/null || true)
+  if [[ "$compose_version" =~ ^v?([0-9]+)\.([0-9]+)\.([0-9]+) ]] \
+    && (( BASH_REMATCH[1] > 2 || (BASH_REMATCH[1] == 2 && BASH_REMATCH[2] >= 30) )); then
+    ok "Docker Compose $compose_version (minimum 2.30.0)"
+  else
+    missing "Docker Compose 2.30.0 or newer (found ${compose_version:-none})"
+  fi
+fi
+
+if (( failures > 0 )); then
+  printf 'VPS preflight failed with %s missing or unsupported prerequisite(s).\n' "$failures" >&2
+  exit 1
+fi
+printf 'VPS preflight passed.\n'

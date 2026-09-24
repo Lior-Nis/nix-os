@@ -1,93 +1,114 @@
 # Slice 0 backup and restore runbook
 
-## What is protected
+## Recovery layers
 
-`scripts/backup` briefly stops Paperclip so PostgreSQL and the `/paperclip` volume are captured across one write-free interval. The resulting artifact contains:
+| Layer | Contents | Recovery source |
+|---|---|---|
+| Git repository | Compose, Caddy, scripts, tests, and redacted documentation | exact reviewed Git commit |
+| Encrypted configuration pack | deployment `.env`, `postgres.env`, and `paperclip.env` | separate age-encrypted off-host object |
+| Data backup | PostgreSQL plus the complete persistent `/paperclip` state | age-encrypted off-host object |
+| Caddy TLS state | certificates and ACME cache | replaceable; deliberately not backed up |
 
-- a PostgreSQL custom-format dump;
-- the complete Paperclip volume, including uploaded assets, instance configuration, and the local encrypted-secrets master key;
-- file hashes and database object counts;
-- the Git commit and exact Compose image references;
-- checksums for every payload.
+Configuration and data are separate artifacts because they have different change and custody patterns. Both are required for a faithful recovery. The `/paperclip` data archive includes instance configuration, uploads, `PAPERCLIP_AGENT_JWT_SECRET`, and the local encrypted-secrets master key.
 
-It does not include `/etc/nix-os/postgres.env` or `/etc/nix-os/paperclip.env`. Those are secrets and require a separate encrypted backup. Caddy certificate state is intentionally excluded because it is replaceable from DNS and the tracked Caddyfile.
+## Back up external configuration and secrets
 
-## Create a backup
-
-```sh
-sudo -E CONFIG_FILE="$PWD/.env" ./scripts/backup "$PWD/.env"
-```
-
-The default destination comes from `BACKUP_OUTPUT_DIR`. Artifacts and checksum sidecars are mode `0600`. Without `BACKUP_AGE_RECIPIENT`, the local artifact is deliberately marked as unencrypted and must not be uploaded as-is.
-
-To encrypt directly with an age recipient:
+Create a configuration pack after first secret generation and after every `.env` or external secret rotation:
 
 ```sh
 sudo -E CONFIG_FILE="$PWD/.env" \
-  BACKUP_AGE_RECIPIENT='age1...' \
-  ./scripts/backup "$PWD/.env"
+  BACKUP_AGE_RECIPIENT='<AGE_RECIPIENT>' \
+  ./scripts/backup-config "$PWD/.env"
 ```
 
-Upload is intentionally destination-agnostic. After configuring an approved encrypted remote, copy both the artifact and checksum with the provider's supported client. For example:
+The script reads exactly `.env` and the two absolute secret-file paths declared inside it. It refuses to create an unencrypted pack, writes mode `0600`, includes internal SHA-256 checksums and original destination paths, and never logs file contents. Copy the `.tar.gz.age` and `.sha256` sidecar off-host with the approved client.
+
+Restore onto a clean host after cloning the recorded Git commit:
 
 ```sh
-rclone copy --immutable /var/backups/nix-os/<artifact>.age <REMOTE>:<BUCKET>/nix-os/
-rclone copy --immutable /var/backups/nix-os/<artifact>.age.sha256 <REMOTE>:<BUCKET>/nix-os/
-```
+rclone copy '<REMOTE>:<BUCKET>/nix-os/config/nix-os-config-<timestamp>.tar.gz.age' /secure/recovery/
+rclone copy '<REMOTE>:<BUCKET>/nix-os/config/nix-os-config-<timestamp>.tar.gz.age.sha256' /secure/recovery/
 
-Replace `<REMOTE>` and `<BUCKET>` only with supplied values. Confirm the remote checksum before treating the backup as complete. Keep at least one previously verified off-host backup when applying retention.
-
-## Isolated restore smoke
-
-The smoke restore refuses the source project name and `nix-os`, creates fresh volumes under a unique project, restores both state classes, compares database counts and every Paperclip file hash, and starts only PostgreSQL and Paperclip. Caddy is not started, so no production ports or certificates are touched.
-
-```sh
-sudo -E ./scripts/restore-smoke /absolute/path/to/nix-os-....tar.gz
-```
-
-For an age-encrypted artifact:
-
-```sh
 sudo -E AGE_IDENTITY_FILE=/secure/path/age-identity.txt \
-  ./scripts/restore-smoke /absolute/path/to/nix-os-....tar.gz.age
+  ./scripts/restore-config \
+  /secure/recovery/nix-os-config-<timestamp>.tar.gz.age \
+  "$PWD/.env"
 ```
 
-Successful output states `Restore smoke passed`. By default the isolated project and temporary secrets are deleted. For diagnosis only, set `RESTORE_KEEP=true`; the script prints the exact cleanup command.
+Restore refuses to overwrite existing files unless `CONFIG_RESTORE_FORCE=true` is explicitly set. It validates the encrypted object's sidecar when present, validates every checksum inside the decrypted pack, restores all three files with mode `0600`, and prints only SHA-256 fingerprints. Compare those non-secret fingerprints with the expected recovery record; never print or diff secret contents in a log.
+
+`tests/smoke/config-backup.sh` performs this round trip under an isolated root and byte-compares the source/restored files without logging them.
+
+## Back up Paperclip data
+
+`scripts/backup` briefly stops Paperclip so the database and `/paperclip` volume are captured during one write-free interval. The artifact contains:
+
+- a PostgreSQL custom-format dump;
+- the complete Paperclip volume, including uploaded assets, instance configuration, and the encrypted-secrets master key;
+- database counts and Paperclip file hashes;
+- Git commit and exact image references;
+- checksums for every payload.
+
+For production, encrypt directly to the off-host recipient:
+
+```sh
+sudo -E CONFIG_FILE="$PWD/.env" \
+  BACKUP_AGE_RECIPIENT='<AGE_RECIPIENT>' \
+  ./scripts/backup "$PWD/.env"
+
+rclone copy --immutable /var/backups/nix-os/<artifact>.tar.gz.age '<REMOTE>:<BUCKET>/nix-os/data/'
+rclone copy --immutable /var/backups/nix-os/<artifact>.tar.gz.age.sha256 '<REMOTE>:<BUCKET>/nix-os/data/'
+```
+
+Without `BACKUP_AGE_RECIPIENT`, the script clearly marks a local artifact as unencrypted. That mode exists for isolated tests only; never upload it as a production backup. Confirm the remote checksum before reporting success, and retain at least one previously verified off-host backup during rotation.
+
+## Automated isolated restore
+
+The restore smoke refuses production-like project names, creates fresh volumes, restores both state classes, verifies database counts and every `/paperclip` file hash, and starts only PostgreSQL and Paperclip. For an encrypted object downloaded from the remote:
+
+```sh
+sudo -E \
+  AGE_IDENTITY_FILE=/secure/path/age-identity.txt \
+  RESTORE_POSTGRES_ENV_FILE=/etc/nix-os/postgres.env \
+  RESTORE_PAPERCLIP_ENV_FILE=/etc/nix-os/paperclip.env \
+  ./scripts/restore-smoke /secure/recovery/<artifact>.tar.gz.age
+```
+
+Supplying the two restored external secret files proves the recovered application is using the original database/auth secrets. Without those variables the smoke deliberately generates disposable credentials, which is useful only for structural testing. Successful output states `Restore smoke passed`. By default the isolated project is removed; `RESTORE_KEEP=true` retains it and prints its cleanup command.
+
+The required CI recovery job goes further on every repository change: from clean volumes it provisions the official Paperclip instance config, signs up a real user, creates and accepts a verified bootstrap CEO invite, disables signup, proves existing login, creates a real company and related issue through the API, uploads known bytes, creates a harmless `local_encrypted` canary secret, creates and relocates an age-encrypted data backup, decrypts and restores it into fresh volumes with the original external secrets, then verifies CEO login, object values/relationships, attachment SHA-256, secret metadata, and health.
+
+Paperclip's authenticated board API intentionally never returns secret plaintext. In this release, actual secret value resolution requires a run-bound agent JWT and a verified running agent heartbeat/binding. Introducing that agent execution path is outside Slice 0. Therefore the automated test proves the original master-key file and encrypted secret record survive together, but it does **not** claim that decryption was exercised. Safe canary resolution remains a mandatory live-production acceptance check below.
 
 ## Production recovery
 
-Production recovery is intentionally manual in V0. It is destructive if aimed at an existing project, so use a clean host and confirm the target named volumes do not exist.
+Production recovery is intentionally manual and destructive if aimed at an existing project. Use a clean host and verify target volumes do not exist.
 
-1. Clone the exact Git commit named in `manifest.env`, restore `.env`, and restore the original external secret files from their encrypted backup. Preserving `BETTER_AUTH_SECRET` preserves valid auth sessions; rotating it intentionally invalidates them.
-2. Verify the downloaded artifact beside its sidecar, decrypt when necessary, extract it into a root-private work directory, and verify every internal payload:
+1. Download the encrypted configuration and data artifacts plus both sidecars. Verify and restore the config pack as described above. Clone/checkout the exact Git commit recorded in the backup.
+
+2. Verify and decrypt the data artifact into a root-private directory:
 
    ```sh
    mkdir -m 0700 /tmp/nix-os-recovery
    cd /tmp/nix-os-recovery
-   (cd /path/to && sha256sum --check <artifact>.age.sha256)
+   (cd /secure/recovery && sha256sum --check <artifact>.tar.gz.age.sha256)
    age --decrypt --identity /secure/path/age-identity.txt \
-     --output backup.tar.gz /path/to/<artifact>.age
+     --output backup.tar.gz /secure/recovery/<artifact>.tar.gz.age
    tar -xzf backup.tar.gz
    cd nix-os-<source-project>-<timestamp>
    sha256sum --check SHA256SUMS
    ```
 
-   For a local unencrypted artifact, verify its `.tar.gz.sha256` sidecar in the same way and copy the `.tar.gz` to `backup.tar.gz`; an off-host production artifact must be encrypted.
+3. Run the isolated restore first with the original restored secret files. Do not proceed if counts, file hashes, object verification, authentication, or health fail.
 
-3. Run the isolated smoke first. Do not continue if database counts, file hashes, or health differ:
-
-   ```sh
-   AGE_IDENTITY_FILE=/secure/path/age-identity.txt ./scripts/restore-smoke /path/to/<artifact>.age
-   ```
-
-4. Set `<project>` below to the exact `COMPOSE_PROJECT_NAME` in `.env`. Confirm both `docker volume inspect <project>_postgres_data` and `docker volume inspect <project>_paperclip_data` report that the volumes do not exist. Then create stopped containers and empty named volumes:
+4. Set `<project>` to the exact `COMPOSE_PROJECT_NAME` in `.env`. Confirm `docker volume inspect <project>_postgres_data` and `<project>_paperclip_data` both report not found. Then create stopped containers and empty named volumes:
 
    ```sh
    sudo docker compose --env-file .env down
    sudo docker compose --env-file .env create postgres paperclip
    ```
 
-5. Restore the Paperclip home into the empty volume, start PostgreSQL so its first-start role initializer runs, then restore the logical dump:
+5. Restore `/paperclip`, start PostgreSQL so its first-start role initializer runs, and restore the logical dump:
 
    ```sh
    sudo docker run --rm \
@@ -102,13 +123,33 @@ Production recovery is intentionally manual in V0. It is destructive if aimed at
      < /tmp/nix-os-recovery/nix-os-<source-project>-<timestamp>/postgres.dump
    ```
 
-6. Start Paperclip and Caddy, then verify both paths:
+6. Run the migration preflight before Paperclip can touch the restored database, then start Paperclip and Caddy:
 
    ```sh
+   sudo -E CONFIG_FILE="$PWD/.env" ./scripts/check-migrations "$PWD/.env"
    sudo docker compose --env-file .env up -d --wait paperclip caddy
    sudo -E CONFIG_FILE="$PWD/.env" ./scripts/ops health
    ```
 
-7. Confirm a sampled company, issue, and attachment in the UI before reopening normal operation. Securely remove the decrypted recovery directory after acceptance; retain the encrypted off-host artifact.
+7. Complete the full live recovery gate before reopening normal work:
 
-Never restore over running production volumes. The initial objectives are RPO no greater than 24 hours and manual RTO no greater than 8 hours. Schedule a daily backup and a monthly isolated restore after the live host and remote destination are available.
+   ```text
+   create harmless canary secret
+   + real company
+   + real issue linked to that company
+   + known-byte attachment with recorded SHA-256
+   → encrypted data backup and encrypted config pack
+   → upload both off-host and verify remote checksums
+   → download both artifacts
+   → isolated restore with original external secret files
+   → authenticate as the existing CEO
+   → verify company/issue values and relationship
+   → download attachment and match its SHA-256
+   → resolve the canary secret through Paperclip's supported run-bound secret interface without printing its value
+   → health passes
+   → destroy the isolated restore environment and decrypted temporary files
+   ```
+
+   Verify only success/failure for canary resolution; never echo the value or place it in issue text/logs. Record the date, Git commit, artifact fingerprints, and result—not credentials—in the Operations evidence.
+
+Never restore over running production volumes. Initial targets are RPO no greater than 24 hours and manual RTO no greater than 8 hours. Schedule daily encrypted data backups, config packs after configuration changes, and a monthly downloaded-off-host isolated restore once the live destination exists.

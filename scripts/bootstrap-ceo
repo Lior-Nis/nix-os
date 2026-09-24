@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+config_file=${1:-${CONFIG_FILE:-$repo_root/.env}}
+compose=(docker compose --env-file "$config_file")
+bootstrap_log=$(mktemp /tmp/nix-os-paperclip-bootstrap.XXXXXX)
+trap 'rm -f "$bootstrap_log"' EXIT
+
+fail() {
+  printf 'CEO bootstrap error: %s\n' "$*" >&2
+  exit 1
+}
+
+read_config() {
+  grep -E "^${1}=" "$config_file" | tail -n 1 | cut -d= -f2- || true
+}
+
+"$repo_root/scripts/check-config" "$config_file" >/dev/null
+hostname=$(read_config PAPERCLIP_HOSTNAME)
+"${compose[@]}" exec -T paperclip curl -fsS http://127.0.0.1:3100/api/health >/dev/null \
+  || fail "Paperclip is not healthy"
+
+set +e
+"${compose[@]}" exec -T paperclip timeout 20s pnpm paperclipai auth bootstrap-ceo \
+  --data-dir /paperclip --base-url "https://${hostname}" >"$bootstrap_log" 2>&1
+bootstrap_status=$?
+set -e
+if (( bootstrap_status != 0 && bootstrap_status != 124 )); then
+  sed -E 's#https?://[^[:space:]]+/invite/pcp_bootstrap_[[:alnum:]]+#[bootstrap invite redacted]#g' "$bootstrap_log" >&2
+  fail "bootstrap-ceo command failed"
+fi
+
+invite_url=$(grep -Eo 'https?://[^[:space:]]+/invite/pcp_bootstrap_[[:alnum:]]+' "$bootstrap_log" | tail -n 1 || true)
+[[ -n "$invite_url" ]] || fail "bootstrap-ceo produced no invite URL; instance config may be missing or an admin may already exist"
+invite_token=${invite_url##*/}
+
+invite_json=$("${compose[@]}" exec -T paperclip curl -fsS "http://127.0.0.1:3100/api/invites/${invite_token}") \
+  || fail "the generated invite is not resolvable through Paperclip"
+"${compose[@]}" exec -T paperclip node -e '
+  const chunks=[];process.stdin.on("data",c=>chunks.push(c));process.stdin.on("end",()=>{const v=JSON.parse(Buffer.concat(chunks));if(v.inviteType!=="bootstrap_ceo"||v.allowedJoinTypes!=="human")process.exit(1)})
+' <<<"$invite_json" || fail "the generated invite is not a valid human bootstrap_ceo invite"
+
+printf 'Verified bootstrap CEO invite:\n%s\n' "$invite_url"
