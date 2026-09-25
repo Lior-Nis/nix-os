@@ -21,8 +21,8 @@ printf 'POSTGRES_PASSWORD=%s\nPAPERCLIP_DB_PASSWORD=%s\n' "$postgres_password" "
 } >"$source_dir/secrets/paperclip.env"
 {
   printf 'COMPOSE_PROJECT_NAME=nix-os-config-pack-test\n'
-  printf 'PAPERCLIP_HOSTNAME=paperclip.test\n'
-  printf 'ACME_EMAIL=operator@test.invalid\n'
+  printf 'PAPERCLIP_PUBLIC_URL=https://nix-os.test-tailnet.ts.net\n'
+  printf 'PAPERCLIP_HOST_PORT=3100\n'
   printf 'POSTGRES_ENV_FILE=%s\n' "$source_dir/secrets/postgres.env"
   printf 'PAPERCLIP_ENV_FILE=%s\n' "$source_dir/secrets/paperclip.env"
   printf 'PAPERCLIP_AUTH_DISABLE_SIGN_UP=true\n'

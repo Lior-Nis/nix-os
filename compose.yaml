@@ -1,38 +1,6 @@
 name: ${COMPOSE_PROJECT_NAME:-nix-os}
 
 services:
-  caddy:
-    image: caddy:2.11.4-alpine@sha256:6aeddd44c3078b0f9a35206472a11420648a79c184603ef95957d0a20044cb2b
-    restart: unless-stopped
-    environment:
-      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL in the Compose environment file}
-      PAPERCLIP_HOSTNAME: ${PAPERCLIP_HOSTNAME:?Set PAPERCLIP_HOSTNAME in the Compose environment file}
-    ports:
-      - target: 80
-        published: "80"
-        protocol: tcp
-      - target: 443
-        published: "443"
-        protocol: tcp
-      - target: 443
-        published: "443"
-        protocol: udp
-    volumes:
-      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    networks:
-      - edge
-    depends_on:
-      paperclip:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:2019/config/ || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-
   paperclip:
     image: ghcr.io/paperclipai/paperclip:2026.916.1@sha256:a02ac35ac41df911af477422ea0e781cf41d2b2c600c66f0a5ac9d8c63f52c2c
     restart: unless-stopped
@@ -46,8 +14,8 @@ services:
       PAPERCLIP_HOME: /paperclip
       PAPERCLIP_INSTANCE_ID: default
       PAPERCLIP_DEPLOYMENT_MODE: authenticated
-      PAPERCLIP_DEPLOYMENT_EXPOSURE: public
-      PAPERCLIP_PUBLIC_URL: https://${PAPERCLIP_HOSTNAME:?Set PAPERCLIP_HOSTNAME in the Compose environment file}
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: private
+      PAPERCLIP_PUBLIC_URL: ${PAPERCLIP_PUBLIC_URL:?Set PAPERCLIP_PUBLIC_URL in the Compose environment file}
       PAPERCLIP_AUTH_DISABLE_SIGN_UP: ${PAPERCLIP_AUTH_DISABLE_SIGN_UP:-false}
       PAPERCLIP_ENABLE_COMPANY_DELETION: "false"
       PAPERCLIP_SECRETS_STRICT_MODE: "true"
@@ -56,8 +24,14 @@ services:
       TRUST_PROXY: uniquelocal
     volumes:
       - paperclip_data:/paperclip
+    ports:
+      - name: paperclip-local
+        target: 3100
+        published: ${PAPERCLIP_HOST_PORT:-3100}
+        host_ip: 127.0.0.1
+        protocol: tcp
     networks:
-      - edge
+      - app
       - data
     depends_on:
       postgres:
@@ -94,15 +68,11 @@ services:
     stop_grace_period: 60s
 
 networks:
-  edge:
+  app:
   data:
     internal: true
 
 volumes:
-  caddy_data:
-    name: ${COMPOSE_PROJECT_NAME:-nix-os}_caddy_data
-  caddy_config:
-    name: ${COMPOSE_PROJECT_NAME:-nix-os}_caddy_config
   paperclip_data:
     name: ${COMPOSE_PROJECT_NAME:-nix-os}_paperclip_data
   postgres_data:

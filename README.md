@@ -34,7 +34,6 @@ Slices add directories only when they need them:
 │   └── decisions/
 ├── compose.yaml            # Slice 0 services and state boundaries
 ├── deploy/
-│   ├── caddy/              # Public TLS ingress
 │   └── postgres/           # First-start least-privilege role initialization
 ├── scripts/                # Small operator scripts, not a runtime
 ├── tests/smoke/            # Configuration and recovery tests

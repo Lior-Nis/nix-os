@@ -1,6 +1,6 @@
 # Nix Business OS V0 architecture
 
-Status: Slice 0 foundation and review remediation implemented locally, 2026-09-24. No live runtime has been deployed from this repository yet.
+Status: Slice 0 tailnet-only amendment implemented locally, 2026-09-25. No live runtime has been deployed from this repository yet.
 
 ## Purpose and scope
 
@@ -47,7 +47,7 @@ There is no Engineering Manager in V0. The OpenCode-backed Engineer is a Papercl
 | `nix-brain` | reviewed durable facts, policies, decisions, playbooks, roadmaps | live issue status or transient research notes |
 | Todoist | concrete tasks only Lior can personally perform | questions, approvals, agent work, project backlog |
 | n8n | deterministic event plumbing, validation, retries, narrow projections | agent reasoning, planning, authoritative business state |
-| GitHub | canonical Git history, pull requests, branch protection | company work graph |
+| GitHub | canonical Git history, pull requests, and hosted CI | company work graph |
 
 ## Identity mapping
 
@@ -142,10 +142,13 @@ Approval is kept as close as possible to the actual side effect. A vague earlier
 
 ## Deployment and network model
 
-Per [ADR 0001](decisions/0001-single-vps-compose.md), V0 runs on one Hostinger Linux VPS using Docker Compose. [ADR 0004](decisions/0004-paperclip-public-bootstrap.md) defines the authenticated Internet bootstrap boundary.
+Per [ADR 0001](decisions/0001-single-vps-compose.md), V0 runs on one Hostinger Linux VPS using Docker Compose. [ADR 0005](decisions/0005-tailnet-private-ingress.md) supersedes the unshipped public-Caddy design.
 
-- Caddy publishes 80/443 and terminates TLS.
-- Paperclip's UI/API is public only through Caddy, with Paperclip running in `authenticated/public` mode. Its container publishes no host port.
+- Tailscale runs on the host. Its machine name is `nix-os`; MagicDNS supplies the actual `nix-os.<tailnet>.ts.net` name.
+- Tailscale Serve terminates tailnet HTTPS and proxies to Paperclip on a host-loopback-only port. Funnel is not enabled.
+- Paperclip runs in `authenticated/private` mode. Tailnet membership limits reachability, while Paperclip login remains mandatory.
+- Paperclip's container port maps only to `127.0.0.1` on the host; it is not reachable through the VPS public address.
+- Paperclip has a non-internal Compose network for required outbound access and a separate internal data network; neither publishes ingress.
 - PostgreSQL has no host-published port.
 - Hermes Runs API and dashboard are private to the Compose network; Telegram access is outbound from Hermes.
 - n8n is absent until its first required workflow. When added, only its signed webhook routes and authenticated UI are exposed.
@@ -154,13 +157,13 @@ Per [ADR 0001](decisions/0001-single-vps-compose.md), V0 runs on one Hostinger L
 
 The initial database is PostgreSQL 17 with a non-superuser Paperclip role. Later services receive separate roles/databases. Sharing one server reduces operations; database-level credentials and backups preserve separation. No Redis or worker queues are present.
 
-A fresh Paperclip volume is initialized with the pinned release's official `paperclipai onboard` path before the long-running server starts. Nix validates the resulting instance configuration as external-PostgreSQL `authenticated/public` with an explicit HTTPS base URL. CEO bootstrap is a separate verified step: the wrapper requires a real active human bootstrap invite from Paperclip's invite API, the user accepts it while authenticated, and public signup is then disabled. CLI exit status alone is never bootstrap evidence.
+A fresh Paperclip volume is initialized with the pinned release's official `paperclipai onboard` path before the long-running server starts. Nix validates the resulting instance configuration as external-PostgreSQL `authenticated/private` with the explicit Tailscale HTTPS base URL. Lior creates an authenticated browser session and uses Paperclip's supported private-instance ownership claim; signup is then disabled and a subsequent CEO login is verified. The verified CLI bootstrap invite remains a fallback.
 
 ## Configuration, state, and secrets
 
 | Class | Examples | Location and recovery |
 |---|---|---|
-| Git-controlled configuration | Compose files, Caddyfile, redacted Hermes config/SOUL templates, policy text, tests, n8n workflow JSON after Slice 7 | GitHub `nix-os`; rebuildable from a commit |
+| Git-controlled configuration | Compose files, Tailscale Serve reconstruction command, redacted Hermes config/SOUL templates, policy text, tests, n8n workflow JSON after Slice 7 | GitHub `nix-os`; rebuildable from a commit |
 | External deployment configuration | deployment `.env` and service env files required to reconstruct runtime configuration | separate age-encrypted configuration pack, restored to recorded paths with mode `0600` and verified checksums |
 | Runtime state | Paperclip PostgreSQL data, Paperclip uploads/config, Hermes `state.db`/sessions/memory, n8n database and storage, local worktrees/logs | named volumes/host state directory; restored from verified off-host backups |
 | Durable company knowledge | `nix-brain` Markdown and Git history | separate private GitHub repository; local clones are disposable |
@@ -179,7 +182,7 @@ Slice 0 establishes the procedure; later slices extend its manifest.
 | Paperclip home/storage | encrypted file backup coordinated with the database backup | attachment bytes match a known SHA-256; config and encrypted-secret master key are preserved |
 | Paperclip portable company bundle | periodic export including company, agents, projects, skills, issues | preview/import to a disposable company |
 | Hermes profile state | quiesced volume snapshot or stop-the-gateway file backup | profile starts; Telegram allowlist, memory, and a sample session survive |
-| `nix-brain` and source repos | GitHub remote plus protected branches | fresh clone and CI pass |
+| `nix-brain` and source repos | private GitHub remote plus feature-branch/PR/green-CI convention | fresh clone and CI pass |
 | n8n (when added) | its database, storage volume, workflow exports, and `N8N_ENCRYPTION_KEY` | credentials decrypt and Todoist test workflow runs |
 
 The Paperclip portable bundle is not a full backup because upstream excludes approvals and activity/cost history. Database restore remains required. At least monthly, restore a downloaded off-host data artifact together with the original external configuration pack into an isolated Compose project. Verify CEO authentication, a company/issue relationship, attachment bytes, health, and a harmless encrypted-secret canary through a bound environment probe whose access event reports successful resolution without exposing its value; then record non-secret evidence in a Paperclip Operations issue.

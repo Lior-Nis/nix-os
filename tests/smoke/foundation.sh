@@ -17,8 +17,8 @@ printf 'PAPERCLIP_DB_PASSWORD=%s\n' "$paperclip_db_password" >>"$test_tmp_dir/po
 } >"$test_tmp_dir/paperclip.env"
 {
   printf 'COMPOSE_PROJECT_NAME=nix-os-test\n'
-  printf 'PAPERCLIP_HOSTNAME=paperclip.test\n'
-  printf 'ACME_EMAIL=operator@test.invalid\n'
+  printf 'PAPERCLIP_PUBLIC_URL=https://nix-os.test-tailnet.ts.net\n'
+  printf 'PAPERCLIP_HOST_PORT=0\n'
   printf 'POSTGRES_ENV_FILE=%s\n' "$test_tmp_dir/postgres.env"
   printf 'PAPERCLIP_ENV_FILE=%s\n' "$test_tmp_dir/paperclip.env"
   printf 'PAPERCLIP_AUTH_DISABLE_SIGN_UP=true\n'
@@ -30,7 +30,7 @@ NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$test_tmp_dir/test.en
 docker compose --env-file "$test_tmp_dir/test.env" config --format json >"$test_tmp_dir/compose.json"
 python3 "$repo_root/tests/smoke/validate_compose.py" "$test_tmp_dir/compose.json" "$repo_root"
 
-grep -v '^PAPERCLIP_HOSTNAME=' "$test_tmp_dir/test.env" >"$test_tmp_dir/missing.env"
+grep -v '^PAPERCLIP_PUBLIC_URL=' "$test_tmp_dir/test.env" >"$test_tmp_dir/missing.env"
 if NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$test_tmp_dir/missing.env" >/dev/null 2>&1; then
   printf 'missing required configuration unexpectedly passed\n' >&2
   exit 1

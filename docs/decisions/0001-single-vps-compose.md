@@ -11,8 +11,7 @@ V0 needs a portable, inexpensive, observable runtime on a Hostinger VPS. The wor
 
 Run V0 on one Linux VPS with Docker Compose.
 
-- Caddy is the only public ingress on ports 80/443.
-- Paperclip, Hermes, PostgreSQL, and later n8n communicate on private Compose networks.
+- Paperclip, Hermes, PostgreSQL, and later n8n communicate on private Compose networks. Paperclip ingress is governed by [ADR 0005](0005-tailnet-private-ingress.md), which supersedes the original public-Caddy clause of this decision.
 - Use PostgreSQL 17 with separate database roles and databases for Paperclip and n8n.
 - Use named volumes or explicit host directories for state, never container layers.
 - Pin stable image versions and immutable digests in the production lock/configuration.

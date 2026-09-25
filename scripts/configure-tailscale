@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+config_file=${1:-${CONFIG_FILE:-$repo_root/.env}}
+
+fail() {
+  printf 'Tailscale Serve configuration error: %s\n' "$*" >&2
+  exit 1
+}
+
+read_config() {
+  grep -E "^${1}=" "$config_file" | tail -n 1 | cut -d= -f2- || true
+}
+
+for command_name in tailscale jq curl; do
+  command -v "$command_name" >/dev/null 2>&1 || fail "$command_name is required"
+done
+
+[[ -f "$config_file" ]] || fail "$config_file does not exist"
+id nix >/dev/null 2>&1 || fail "Linux operator user nix does not exist"
+
+status_json=$(tailscale status --json) || fail "cannot read Tailscale status"
+[[ $(jq -r '.BackendState' <<<"$status_json") == Running ]] || fail "Tailscale is not connected"
+
+sudo tailscale set --hostname=nix-os
+sudo tailscale set --operator=nix
+
+fqdn=''
+for _ in {1..10}; do
+  status_json=$(tailscale status --json)
+  fqdn=$(jq -r '.Self.DNSName // empty' <<<"$status_json")
+  fqdn=${fqdn%.}
+  [[ "$fqdn" == nix-os.*.ts.net ]] && break
+  sleep 1
+done
+[[ "$fqdn" == nix-os.*.ts.net ]] || fail "MagicDNS did not report the expected nix-os.<tailnet>.ts.net name (got ${fqdn:-none})"
+
+public_url=$(read_config PAPERCLIP_PUBLIC_URL)
+expected_fqdn=${public_url#https://}
+[[ "$expected_fqdn" == "$fqdn" ]] || fail "PAPERCLIP_PUBLIC_URL hostname $expected_fqdn does not match MagicDNS $fqdn"
+
+host_port=$(read_config PAPERCLIP_HOST_PORT)
+if [[ ! "$host_port" =~ ^[0-9]+$ ]] || (( host_port < 1024 || host_port > 65535 )); then
+  fail "PAPERCLIP_HOST_PORT must be between 1024 and 65535"
+fi
+curl --fail --silent --show-error "http://127.0.0.1:${host_port}/api/health" >/dev/null \
+  || fail "Paperclip is not healthy on the configured loopback port"
+
+# --bg stores the Serve configuration in Tailscale state so it survives
+# reboots. This configures Serve only; never substitute `tailscale funnel`.
+tailscale serve --bg --yes "http://127.0.0.1:${host_port}"
+serve_status=$(tailscale serve status)
+grep -Fq "https://${fqdn}" <<<"$serve_status" || fail "Serve status does not contain the expected HTTPS URL"
+grep -Fq "http://127.0.0.1:${host_port}" <<<"$serve_status" || fail "Serve status does not contain the expected loopback backend"
+
+curl --fail --silent --show-error "https://${fqdn}/api/health" >/dev/null \
+  || fail "Paperclip is not healthy through Tailscale Serve"
+
+printf 'Tailscale Serve is configured for https://%s -> http://127.0.0.1:%s.\n' "$fqdn" "$host_port"

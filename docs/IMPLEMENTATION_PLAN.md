@@ -1,6 +1,6 @@
 # Nix Business OS V0 implementation plan
 
-Status: Slice 0 remediation is implemented and locally verified; live activation and acceptance still await the external prerequisites listed below. Updated 2026-09-24.
+Status: Slice 0 tailnet-only amendment is being validated on `slice-0-tailnet-private`; live activation remains pending independent review. Updated 2026-09-25.
 
 ## How to use this plan
 
@@ -12,7 +12,7 @@ Each slice is vertical: it ends in a behavior Lior can observe and a failure Lio
 
 ### Repository facts
 
-The supplied directory was completely empty and was not a Git worktree on 2026-09-22. There was no PRD, `AGENTS.md`, architecture, code, or prior state to preserve. The documentation baseline and Slice 0 implementation now exist on the `slice-0-foundation` branch; Slice 0 still needs its canonical private GitHub remote.
+The supplied directory was empty on 2026-09-22. The reviewed foundation and remediation were merged through PRs; after PR #2, canonical `main` is `c6c56d521edec0451c073662c383605c9f769a41`. The tailnet-only amendment is isolated on `slice-0-tailnet-private`.
 
 ### Decisions already made
 
@@ -29,10 +29,10 @@ These are not needed to author Slice 0 code, but are needed for the indicated ma
 
 | Input | Needed by | Notes |
 |---|---|---|
-| canonical private GitHub repo URL for `nix-os` | Slice 0 | repository currently has no remote |
-| Hostinger VPS SSH access and supported Linux host | Slice 0 deploy | Docker Engine/Compose must be installable |
-| DNS name for Paperclip | Slice 0 deploy | point to VPS before Caddy TLS verification |
-| age recipient/identity custody and encrypted off-host destination credentials | Slice 0 exit | identity must survive VPS loss; object storage or another host; never Git |
+| Hostinger VPS SSH access and supported Linux host | Slice 0 deploy | Tailscale is already joined; Docker Engine/Compose and remaining prerequisites must pass preflight |
+| Tailscale MagicDNS/HTTPS enablement | Slice 0 deploy | discover the real suffix from the VPS; never invent it; web consent may be interactive |
+| Google Drive OAuth for `rclone` | Slice 0 exit | use Lior's account and owned Desktop OAuth client; upload ciphertext only |
+| age identity custody | Slice 0 exit | generated on Lior's Mac; keep a second safe copy outside the VPS and never Git |
 | model/provider credential and chosen model | Slice 1 | keep provider portable; no model is locked by architecture |
 | Telegram bot token, Lior's numeric Telegram user ID, private group/topic identifiers | Slice 1 | exact multi-topic UX is proven later in Slice 3 |
 | separate private GitHub repo for `nix-brain` | Slice 4 | create manually or with an approved GitHub operation |
@@ -71,14 +71,14 @@ Lior can open Paperclip over HTTPS, authenticate, create the Nix company and a d
 
 - This documentation baseline and accepted ADRs.
 - Canonical private GitHub remote.
-- For production verification: VPS access, DNS, and off-host backup destination.
-- Revalidate Paperclip, Caddy, PostgreSQL, Docker Engine, and Compose stable releases. Record exact tags and image digests.
+- For production verification: VPS access, connected Tailscale/MagicDNS/HTTPS, and Google Drive OAuth.
+- Revalidate Paperclip, Tailscale Serve, PostgreSQL, Docker Engine, Compose, and rclone. Record exact container tags and digests.
 
 ### Components/files affected
 
 - `compose.yaml` and a minimal production override only if actually needed.
 - `.env.example` containing variable names/placeholders, never values.
-- `deploy/caddy/Caddyfile` and the first-start PostgreSQL application-role initializer under `deploy/postgres/`.
+- First-start PostgreSQL application-role initializer under `deploy/postgres/`; Tailscale remains a host service.
 - Small operator scripts for config validation, migration preflight, official Paperclip initialization, verified CEO bootstrap, data/config backup, restore, and VPS prerequisite checks; no daemon or framework.
 - `tests/smoke/foundation.*`, encrypted config-pack smoke, and realistic Paperclip recovery smoke.
 - `.github/workflows/ci.yml`.
@@ -87,15 +87,15 @@ Lior can open Paperclip over HTTPS, authenticate, create the Nix company and a d
 
 ### Exact acceptance criteria
 
-1. Repository default branch and private GitHub remote are configured; branch protection is documented or enabled.
+1. Private GitHub remote is configured; changes use feature branch -> PR -> hosted CI green -> consequential review -> merge. Agents do not intentionally push directly to `main`.
 2. Production images are pinned to stable versions and immutable digests. No `latest` tag exists.
 3. `docker compose config` succeeds with a generated non-secret test fixture and fails clearly when required settings are absent.
-4. The stack contains only Caddy, Paperclip, and PostgreSQL plus a short-lived backup job when invoked.
-5. Only Caddy publishes host ports. PostgreSQL and Paperclip are reachable only on private Compose networks.
-6. Paperclip runs in authenticated/public mode behind HTTPS; `/api/health` reports healthy through the public URL and from the internal network.
+4. The Compose stack contains only Paperclip and PostgreSQL plus short-lived backup helpers when invoked.
+5. Paperclip binds only to host loopback for Tailscale Serve; PostgreSQL publishes no host port. Neither is reachable through the public VPS address.
+6. The Tailscale node is named `nix-os`; MagicDNS works; Tailscale Serve HTTPS reaches Paperclip without Funnel. Paperclip runs `authenticated/private`, still requires login, and reports healthy internally and through the tailnet URL.
 7. PostgreSQL uses a non-superuser Paperclip role and a persistent volume. Paperclip home/storage uses a persistent volume.
 8. Secret values are loaded from root-owned files outside the checkout or per-service Compose secrets where the image supports `_FILE`. `git grep` and repository history contain no live secret.
-9. Fresh volumes are provisioned through Paperclip's official onboarding path; a real user accepts a verified CEO invite; after signup is disabled, new signup fails and the CEO can still authenticate.
+9. Fresh volumes are provisioned through Paperclip's official onboarding path; a real authenticated user claims the private instance (verified CLI invite only as fallback); after signup is disabled, new signup fails and the CEO can still authenticate.
 10. Create a smoke company/issue through Paperclip's API, recreate containers, and demonstrate the objects and known-byte attachment persist.
 11. Data backup produces a timestamped PostgreSQL custom-format dump, Paperclip home/storage archive, configuration commit SHA, dependency-version manifest, and checksums. A separate mandatory age-encrypted configuration pack contains `.env` and the two external secret files.
 12. Restore into a separate Compose project/network, never over production. The restored CEO can authenticate; company/issue relationships and attachment checksum match; a bound environment probe records successful canary-secret resolution without returning plaintext; and health passes.
@@ -108,16 +108,16 @@ Lior can open Paperclip over HTTPS, authenticate, create the Nix company and a d
 - Assertions that only approved ports are published and every stateful service has a persistent mount.
 - Assertions that images are version/digest pinned and no `latest` appears.
 - Secret-pattern scan plus a test that `.env`, `secrets/`, data, and backup paths are ignored.
-- Bash syntax and ShellCheck for operator scripts, plus static consistency checks across Compose, the environment contract, Caddy, and ignore rules.
+- Bash syntax and ShellCheck for operator scripts, plus static consistency checks across Compose, the environment contract, loopback exposure, and ignore rules.
 - Read-only migration preflight: accept an empty database and a migrated Paperclip database; reject a non-empty schema without the expected Drizzle journal before Paperclip starts.
-- Fresh-bootstrap/recovery smoke: start from clean volumes, run official onboarding, validate public instance configuration, create a real user and verified CEO invite, accept it, disable signup, prove existing login, create a company/related issue/attachment/local-encrypted canary through supported APIs, resolve the canary through a bound environment probe, exercise `503 database_unreachable` and recovery, back up, restore with original external secrets into distinct fresh volumes, and verify authentication, values/relationships, attachment bytes, one new successful canary-resolution access event, and health.
+- Fresh-bootstrap/recovery smoke: start from clean volumes, run official onboarding, validate `authenticated/private`, create a real user and claim the instance through the supported private API, disable signup, prove existing login, create a company/related issue/attachment/local-encrypted canary through supported APIs, resolve it through a bound environment probe, exercise `503 database_unreachable` and recovery, back up, restore with original external secrets into distinct fresh volumes, and verify authentication, values/relationships, attachment bytes, one new successful canary-resolution access event, and health.
 - Encrypted configuration-pack smoke: create with an ephemeral age recipient, relocate it, restore under an isolated root, verify sidecar/internal checksums, byte equality, file modes, and reconstructed config without logging contents.
 
 ### Manual end-to-end verification
 
-1. Point DNS to the VPS and deploy from a clean clone at a recorded commit.
-2. Confirm 80/443 are the only public service ports with an external port probe.
-3. Complete Paperclip signup and verified CEO bootstrap, disable signup, prove new signup is rejected, and prove the existing CEO can sign in.
+1. Deploy from a clean clone at a recorded commit, create/prove the `nix` operator, name the Tailscale node `nix-os`, and discover its real MagicDNS FQDN.
+2. Configure Tailscale Serve HTTPS and confirm tailnet access. Externally prove public 80, 443, 3100, and 5432 are closed while retaining only the existing emergency SSH path.
+3. Complete authenticated private signup and browser ownership claim, disable signup, prove new signup is rejected, and prove the existing CEO can sign in.
 4. Create the Nix company, set a deliberately tiny initial budget, and add a disposable issue, known-byte attachment, and harmless encrypted-secret canary.
 5. Run `docker compose down` without volume deletion, start again, and verify both objects.
 6. Create and upload both the encrypted configuration pack and encrypted data backup, download them, then run the isolated restore with original external secret files.
@@ -126,7 +126,7 @@ Lior can open Paperclip over HTTPS, authenticate, create the Nix company and a d
 
 ### Failure modes
 
-- DNS/TLS not ready: Caddy is unhealthy or HTTPS cannot issue; keep Paperclip unexposed rather than publish port 3100.
+- MagicDNS/Tailscale HTTPS not ready: stop at the surfaced admin consent action; keep Paperclip loopback-only rather than publish port 3100.
 - Database unavailable/migration failed: Paperclip stays unhealthy and restart policy does not hide the root error.
 - Missing secret: config check fails before deployment and names the missing secret, never its value.
 - Backup upload failed: local backup remains with failure status; do not report success until off-host checksum is confirmed.
@@ -137,59 +137,41 @@ Lior can open Paperclip over HTTPS, authenticate, create the Nix company and a d
 
 Hermes, Telegram, OpenCode, GitHub App automation, `nix-brain`, Todoist, n8n, comprehensive monitoring, HA, automatic upgrades, and zero-downtime deployment.
 
-### Implementation record — 2026-09-24
+### Tailnet amendment record — 2026-09-25
 
-The repository portion of Slice 0 and the independent-review remediation are complete. The Compose stack still contains only Caddy, Paperclip, and PostgreSQL. Deploy now performs migration preflight and official fresh-instance onboarding before server startup; CEO bootstrap requires API evidence of an active invite. Data recovery uses real Paperclip objects, and an independent age-encrypted configuration pack makes the external `.env` and service-secret recovery concrete.
+The reviewed foundation remediation was merged through PR #2; canonical `main` is `c6c56d521edec0451c073662c383605c9f769a41`. Branch protection is deliberately not a V0 requirement. The repository convention is feature branch, pull request, hosted `foundation` and `recovery` checks green, consequential review, then merge; agents do not intentionally push directly to `main`.
 
-### Live acceptance record — 2026-09-24
+Lior clarified before deployment that Paperclip must be tailnet-only. The amendment removes Caddy, reduces Compose to Paperclip and PostgreSQL, binds Paperclip to host loopback, uses reconstructible Tailscale Serve HTTPS, and changes Paperclip to `authenticated/private` without weakening login. ADR 0005 preserves why ADR 0004 was superseded.
 
-Status: **INCOMPLETE — stopped at Gate 1 branch protection.** No VPS deployment was attempted.
+The production age identity was generated on Lior's Mac, not the VPS. Its private path is `~/.config/nix/age/identity.txt` (mode `0600`); its public recipient is `age15fxuw6eqj5sk9w9znpyxpqmkprzcpcfc60luaxg4auafu6ndhf8q0dagj0`. The private key is not in Git and must receive a second safe personal copy.
+
+Repository validation covers Compose rendering, loopback-only Paperclip publishing, internal-only PostgreSQL, pinned images, private authenticated onboarding and browser claim, signup closure, migration guard/preflight, realistic encrypted backup/restore, configuration-pack round trip, ShellCheck, and CI workflow lint. Real Tailscale integration is intentionally not faked locally.
+
+### Live acceptance record — amended, pending review
+
+Status: **INCOMPLETE — do not deploy until this amendment passes independent review.**
 
 | Gate | Evidence | Status |
 |---|---|---|
-| 1. GitHub | Private `Lior-Nis/nix-os` created; reviewed branch SHA `2b16f2be7b310a6e8d759ed4e78b69f78778848a`; hosted Actions run `36002280447` passed `foundation` and `recovery`; PR `#1` merged to `main` at `3349a37d830b86fada050191a4562436bf15de5d`. Private `Lior-Nis/nix-brain` canonical `main` is `68a1da87f1a30fb646cef7ecaba38e9ee437c2ad`. A later hosted recovery run on the evidence-only commit exposed a cold-runner onboarding timing defect: the fixed five-second prompt input could arrive before the CLI was ready. The smallest fix increases the bounded prompt delay and timeout without changing the official onboarding path; `./scripts/ci` and a clean full local bootstrap/recovery smoke passed after the correction, and PR `#2` carries it for hosted validation. GitHub rejected required-check branch protection for the private repository with HTTP 403 because the current account plan does not provide that feature; making the repositories public is not acceptable. | **BLOCKED** pending GitHub Pro (or migration to a private organization/repository plan that supports protected branches), then require `foundation` and `recovery` on `main`. |
-| 2. VPS prerequisites | Not attempted because Gate 1 is incomplete. | Pending |
-| 3. Firewall/network exposure | Not attempted because Gate 1 is incomplete. | Pending |
-| 4. DNS/TLS | Not attempted because Gate 1 is incomplete. | Pending |
-| 5. Production bootstrap | Not attempted because Gate 1 is incomplete. | Pending |
-| 6. Recovery canaries | Not attempted because Gate 1 is incomplete. | Pending |
-| 7. Encrypted backups | Not attempted because Gate 1 is incomplete. | Pending |
-| 8. Off-host storage | Not attempted because Gate 1 is incomplete. | Pending |
-| 9. Isolated production recovery | Not attempted because Gate 1 is incomplete. | Pending |
-| 10. Final production checks | Not attempted because Gate 1 is incomplete. | Pending |
+| GitHub baseline | PR #2 checks were green and PR #2 was merged; canonical `main` is `c6c56d521edec0451c073662c383605c9f769a41`. Amendment branch is `slice-0-tailnet-private`. | Baseline complete; amendment PR pending |
+| VPS/operator | Tailscale is reported installed/joined. `nix` user creation, tailnet SSH, sudo, Docker, Ubuntu/tool/storage preflight not yet performed. | Pending live acceptance |
+| Network | Repository enforces loopback-only Paperclip and internal-only PostgreSQL. Public probes and firewall inspection are not local tests. | Pending live acceptance |
+| MagicDNS/HTTPS | `scripts/configure-tailscale` is reconstructible and forbids Funnel by omission/policy. Actual suffix, HTTPS consent, certificate, and Serve health require the VPS/tailnet. | Pending live acceptance |
+| Paperclip bootstrap | Local clean-volume smoke uses `authenticated/private`, supported browser claim API, signup closure, and subsequent login. Real browser verification is pending. | Pending live acceptance |
+| Google Drive/off-host recovery | Runbooks use encrypted-only `rclone` uploads to `gdrive:Nix/backups/{config,state}` and require downloading remote copies. OAuth is intentionally not configured before review. | Pending live acceptance |
 
-Resume from Gate 1 after the private repository has a plan that supports branch protection. Apply strict required status checks `foundation` and `recovery` to `main`, verify the protection through the GitHub API, and only then continue with the VPS preflight. Do not treat the successful hosted CI or merge alone as completion of Gate 1.
+Current upstream constraints:
 
-Locally verified:
-
-- Compose rendering and policy assertions, including service count, private PostgreSQL/Paperclip networking, persistent mounts, pinned images, health checks, and required configuration failures.
-- Bash syntax and ShellCheck 0.11.0 for every operator and smoke-test script.
-- Caddy 2.11.4 validation against the committed Caddyfile.
-- A clean-volume Docker smoke using Paperclip 2026.916.1 and PostgreSQL 17.11: official onboarding and validated `authenticated/public` config; real signup, verified bootstrap invite, invite acceptance, signup closure, existing CEO login; least-privilege database role; missing-journal rejection; real company/issue/attachment/encrypted-canary creation through supported APIs; source canary resolution without plaintext output; database-backed health failure/recovery; age-encrypted backup relocation/decryption; restore with the original external secret files into fresh volumes; restored CEO login, company/issue relationship, attachment-byte checksum, a new successful canary-resolution access event using the recovered master key, exact `/paperclip` file comparison, and health.
-- A real age-encrypted configuration-pack round trip using an ephemeral identity, including external/inner checksum verification, isolated path reconstruction, mode `0600`, and byte equality without content logging.
-- Local secret-pattern checks and ignore-rule checks. No live credential was created inside the repository.
-
-Not yet verifiable without external access:
-
-- GitHub remote push, hosted CI execution, and default-branch protection.
-- Hostinger VPS deployment, external 80/443-only port probe, DNS, automatic TLS issuance, and public health.
-- Real browser bootstrap/CEO verification and public signup closure on the deployed hostname (the same lifecycle is automated locally through supported HTTP interfaces).
-- Encryption with Lior's real age recipient, config/data upload to the selected off-host destination, download, remote checksum confirmation, and isolated restore with original external secret files.
-
-Current upstream constraints discovered during implementation:
-
-- Stable Paperclip is `v2026.916.1`; the container tag is `2026.916.1` without the `v` prefix.
-- Authenticated/public deployment requires external PostgreSQL and explicit auth/tool-action signing secrets. The tool-action signing secret has no safe fallback.
+- Stable Paperclip remains `v2026.916.1`; image tag is `2026.916.1`. `authenticated/private` is supported for VPN/LAN and still requires authentication. It permits the first authenticated browser session to claim the instance.
 - `/api/health` is database-backed and returns `503` with `database_unreachable` when PostgreSQL cannot be reached.
-- The pinned server enters its auto-migration path when a non-empty database lacks the expected Drizzle journal, inspects that state, and rejects it before applying migrations. Nix keeps its own read-only preflight as defense in depth so the documented deploy, upgrade, restart, and restore workflows fail earlier with a clearer operator error. Direct Compose startup or an engine-managed container restart does not necessarily run the Nix preflight; the pinned upstream guard still fails closed before mutation. Future releases still require migration review.
-- `/paperclip` is persistent application state independent of PostgreSQL and must be backed up with the database.
-- Public mode disables the browser-first admin claim. The CLI requires instance config and can return zero when config is missing, so official onboarding runs first and the wrapper verifies the resulting invite through the API rather than by exit code.
-- The pinned CLI has no non-interactive public-onboarding preset: `--yes`/`--bind` selects trusted/private modes. Nix runs the official Quickstart prompt in a bounded pseudo-terminal so public environment defaults are honored, then validates the exact generated config before startup.
-- Normal board secret reads never return values, but the supported board-authorized environment probe resolves a bound secret and records a success event without returning plaintext. This makes cryptographic recovery locally testable without a later-slice agent.
+- Pinned Paperclip rejects a non-empty database missing the expected Drizzle journal before mutation. Nix's preflight gives a clearer earlier error on documented workflows but does not wrap every engine restart.
+- `/paperclip` contains persistent uploads, instance configuration, and the encrypted-secret master key and must be backed up with PostgreSQL.
+- Tailscale Serve `--bg` persists across daemon/host restarts and remains tailnet-only. Tailscale HTTPS may require an admin web consent. Funnel is not used.
+- rclone's shared Google OAuth client ID is being retired during 2026; live Google Drive setup should use Lior's own Desktop OAuth client. Its OAuth config is a runtime secret and may be recreated in recovery.
 
-Exact prerequisites for live activation are: the canonical private GitHub repository URL; Hostinger VPS SSH access to Ubuntu 24.04 x86_64 with Docker Engine 27+/Compose 2.30+ and the documented tools; the Paperclip DNS hostname pointed at that VPS; and an age recipient/identity plus credentials/path for an encrypted off-host backup destination.
+Exact live prerequisites are: amendment independent review and merge with hosted CI green; Hostinger root access to create/prove the `nix` operator; actual MagicDNS suffix and any HTTPS consent; VPS prerequisite/firewall/port verification; interactive Paperclip browser claim; interactive Google Drive OAuth; encrypted upload/download; and isolated restore from downloaded production artifacts.
 
-Slice 1 entry condition: the canonical branch is protected with both CI jobs green; the Hostinger deployment passes firewall/TLS and browser CEO/signup checks; current encrypted config and data artifacts exist off-host with confirmed checksums; their downloaded copies pass isolated restore with original external secrets; the restored CEO/company/issue/attachment/health checks pass; and the canary secret resolves without plaintext logging. Only then revalidate the current Hermes, Paperclip MCP, Telegram, and model-provider documentation and implement Slice 1.
+Slice 1 entry condition: the amendment is merged through the documented PR convention; `nix`/Tailscale access and tailnet-only network exposure are proven; CEO claim, signup closure, and subsequent login pass; encrypted config and data artifacts are downloaded from Google Drive and pass isolated restore with restored authentication, company/issue relationship, attachment bytes, canary secret resolution, and health. Only then mark `SLICE 0: ACCEPTED`, stop, and separately authorize Slice 1.
 
 ---
 
@@ -404,7 +386,7 @@ An employee can answer from current brain content, propose a focused durable upd
 ### Exact acceptance criteria
 
 1. `nix-brain` is a separate Git repository; no runtime databases, transcripts, or secrets are committed.
-2. Default branch is protected from agent direct pushes and requires passing CI/review.
+2. Employees use feature branches and PRs, never intentionally push directly to `main`, and merge only after passing CI and required review.
 3. Employees read from a known fetched commit and report that revision in evidence when consequential.
 4. A Paperclip issue produces a focused branch/commit/PR with reciprocal links.
 5. Roadmaps have a documented brain path; live checklists/status remain in Paperclip.
@@ -568,7 +550,7 @@ A concrete action that only Lior can perform appears once in a dedicated Todoist
 ### Exact acceptance criteria
 
 1. n8n is pinned, single-process, and uses PostgreSQL. No Redis, queue mode, workers, or AI nodes.
-2. n8n UI is authenticated; only required webhook paths are public through Caddy.
+2. n8n UI is authenticated; any public webhook requirement is designed and reviewed in Slice 7 rather than preinstalling Caddy in Slice 0.
 3. `N8N_ENCRYPTION_KEY` is outside Git, backed up encrypted, and proven during restore.
 4. Eligibility is deterministic: explicit human-action marker + Lior executor + concrete action/completion. Questions, approvals, choices, FYIs, and agent-executable work are rejected.
 5. An eligible Paperclip item creates exactly one Todoist task with source ID/URL and stable mapping; retries/redeliveries do not duplicate it.

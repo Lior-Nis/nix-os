@@ -5,7 +5,7 @@ umask 077
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 config_file=${1:-${CONFIG_FILE:-$repo_root/.env}}
 compose=(docker compose --env-file "$config_file")
-caddy_image='caddy:2.11.4-alpine@sha256:6aeddd44c3078b0f9a35206472a11420648a79c184603ef95957d0a20044cb2b'
+archive_helper_image='postgres:17.11-alpine3.24@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24'
 backup_tmp_dir=''
 paperclip_was_running=0
 paperclip_restarted=0
@@ -73,7 +73,7 @@ mkdir -p "$payload_dir"
 docker run --rm \
   --volume "$paperclip_volume:/source:ro" \
   --volume "$payload_dir:/backup" \
-  "$caddy_image" sh -ec '
+  "$archive_helper_image" sh -ec '
     cd /source
     find . -type f -exec sha256sum {} \; | sort > /backup/paperclip-files.sha256
     tar -czf /backup/paperclip-data.tar.gz .
