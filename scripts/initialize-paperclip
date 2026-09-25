@@ -31,11 +31,12 @@ set +e
   set +e
   # Selecting the default Quickstart path without --yes is intentional: this
   # release then honors the public deployment environment instead of forcing
-  # one of the private --bind presets. The pseudo-terminal supplies that one
-  # official prompt and then declines the foreground server start.
-  { sleep 5; printf "\r"; sleep 10; printf "n"; } | \
+  # one of the private --bind presets. Cold CI hosts can take more than five
+  # seconds to initialize the CLI, so wait conservatively before supplying the
+  # one official prompt and then declining the foreground server start.
+  { sleep 20; printf "\r"; sleep 10; printf "n"; } | \
     COREPACK_ENABLE_DOWNLOAD_PROMPT=0 COLUMNS=120 LINES=40 \
-    timeout --signal=TERM 45s script -qec \
+    timeout --signal=TERM 90s script -qec \
       "stty rows 40 cols 120; pnpm paperclipai onboard --data-dir /paperclip" /dev/null
   status=$?
   set -e
