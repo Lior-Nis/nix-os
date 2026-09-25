@@ -14,7 +14,7 @@ Run the read-only check:
 
 ## Access and exposure contract
 
-- Public Internet: emergency SSH only; no Paperclip, PostgreSQL, TCP 80, or TCP/UDP 443 for Nix.
+- Public Internet: emergency SSH only; no Paperclip, PostgreSQL, or Nix listeners on 80, 443, 3100, 5432, 8443, or 10000.
 - Tailnet: ordinary SSH to `nix-os` and Paperclip HTTPS through Tailscale Serve.
 - Host loopback: Paperclip at `127.0.0.1:${PAPERCLIP_HOST_PORT:-3100}`.
 - Compose internal network: PostgreSQL only.
@@ -87,7 +87,7 @@ Keep root/public-IP recovery available. Review its tightening separately only af
    sudo -E CONFIG_FILE="$PWD/.env" ./scripts/ops deploy
    ```
 
-   This starts PostgreSQL, performs the read-only migration preflight, provisions and validates official `authenticated/private` Paperclip configuration, and starts Paperclip. Paperclip is bound only to host loopback.
+   This starts PostgreSQL, performs the read-only migration preflight, provisions and validates official `authenticated/private` Paperclip configuration, and starts Paperclip. Paperclip listens on `0.0.0.0:3100` inside its isolated container namespace so Docker can forward it; Docker publishes the port only at VPS host `127.0.0.1:3100`.
 
 5. Configure reconstructible tailnet ingress:
 
@@ -95,17 +95,38 @@ Keep root/public-IP recovery available. Review its tightening separately only af
    CONFIG_FILE="$PWD/.env" ./scripts/configure-tailscale "$PWD/.env"
    ```
 
-   Run this as `nix`. The script uses sudo only to set hostname `nix-os` and grant CLI operator status to `nix`; it then configures persistent Serve as the operator with `tailscale serve --bg --yes http://127.0.0.1:3100`, discovers/verifies MagicDNS, and verifies HTTPS health. Inspect it with `tailscale serve status`. Re-run the same script on a replacement VPS; Serve state is not backed up.
+   Run this as `nix`. Nix owns the complete Serve/Funnel state on this dedicated node; unrelated Tailscale web-serving handlers are not supported. The script uses sudo only to set hostname `nix-os` and grant CLI operator status to `nix`. It then inspects `tailscale serve status --json`, resets the entire Nix-owned state with the supported `tailscale serve reset`, proves the state is empty, applies persistent HTTPS `:443` root proxying to `http://127.0.0.1:3100`, and validates the entire final JSON. Any `AllowFunnel` entry (including false), foreground session, Tailscale Service, extra listener/path/handler, or different proxy target fails. Re-run the same script on a replacement VPS; Serve state is reconstructible and is not backed up.
 
 6. Verify actual exposure from both contexts:
 
    ```sh
    sudo ss -lntup
    sudo docker compose --env-file .env ps
+   tailscale serve status --json | ./scripts/check-tailscale-serve-state \
+     --expect paperclip --fqdn nix-os.<tailnet-name>.ts.net \
+     --target http://127.0.0.1:3100 /dev/stdin
    curl -fsS https://nix-os.<tailnet-name>.ts.net/api/health
    ```
 
-   From a machine outside the tailnet, probe the VPS public address and confirm 80, 443, 3100, and 5432 are closed. From a tailnet device, confirm HTTPS works and the certificate hostname matches. Also verify `ssh nix@nix-os`.
+   From a machine outside the VPS and outside the tailnet, probe the public VPS address:
+
+   ```sh
+   nmap -Pn -p 80,443,3100,5432,8443,10000 <VPS_PUBLIC_IP>
+   ```
+
+   Every listed port must report closed or filtered. This is live evidence; Compose inspection is not a substitute. Also test the Tailscale FQDN from that non-tailnet machine on every Funnel-supported HTTPS port:
+
+   ```sh
+   for port in 443 8443 10000; do
+     if curl --silent --show-error --connect-timeout 5 \
+       "https://nix-os.<tailnet-name>.ts.net:${port}/" >/dev/null; then
+       printf 'unexpected public Tailscale endpoint on port %s\n' "$port" >&2
+       exit 1
+     fi
+   done
+   ```
+
+   Failure to resolve or connect is expected outside the tailnet. From a tailnet device, confirm only normal HTTPS `:443` works, the certificate hostname matches, and ports 8443/10000 have no Serve handler. Also verify `ssh nix@nix-os`.
 
 7. Bootstrap in the browser using Paperclip's supported private-instance path:
 

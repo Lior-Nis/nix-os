@@ -13,8 +13,8 @@ Paperclip v2026.916.1 explicitly defines `authenticated/private` for VPN/LAN use
 ## Decision
 
 - The VPS Tailscale machine name is `nix-os`; its actual MagicDNS FQDN is discovered from the connected tailnet rather than guessed.
-- Tailscale Serve provides HTTPS only inside the tailnet and proxies to Paperclip on `127.0.0.1:3100` by default. Funnel is not configured.
-- Compose binds Paperclip's host port only to `127.0.0.1`. PostgreSQL publishes no host port. Caddy is absent from the V0 runtime.
+- Nix owns the complete Serve/Funnel configuration on this dedicated node. The operator script inspects it, uses the supported Serve reset, proves it is empty, applies only HTTPS `:443` root proxying to `127.0.0.1:3100`, and validates the complete final JSON. Any `AllowFunnel`, foreground/service state, extra port/path/handler, or different target is a failure.
+- Paperclip listens on `0.0.0.0:3100` inside its container namespace as required for Docker forwarding. Compose publishes that port only on VPS host `127.0.0.1`; PostgreSQL publishes no host port. Caddy is absent from the V0 runtime.
 - Paperclip runs as `authenticated/private` with its explicit base URL set to the Tailscale HTTPS FQDN. Login remains mandatory.
 - A fresh private instance uses Paperclip's supported browser ownership claim after signup. Signup is disabled immediately after Lior becomes CEO and a subsequent login is verified. The CLI bootstrap-invite wrapper remains an official recovery fallback, not the preferred private bootstrap path.
 - Tailscale Serve state is reconstructible from the repository command and is not backed up. Tailscale identity/authentication and access-control policy remain external platform state.
@@ -22,4 +22,4 @@ Paperclip v2026.916.1 explicitly defines `authenticated/private` for VPN/LAN use
 
 ## Consequences
 
-Paperclip, PostgreSQL, and ports 80/443 are not exposed on the VPS public interface for Nix. Tailnet membership, MagicDNS, HTTPS enablement, and Tailscale ACLs become live prerequisites. The single VPS remains a failure boundary. The service is inaccessible if Tailscale is unavailable, which is acceptable for V0 and preferable to public exposure.
+Paperclip, PostgreSQL, and ports 80/443/3100/5432/8443/10000 are not exposed on the VPS public interface for Nix. Re-running configuration deliberately replaces all Tailscale web-serving state on the dedicated node, so unrelated Serve configuration is not supported there. Tailnet membership, MagicDNS, HTTPS enablement, and Tailscale ACLs become live prerequisites. The single VPS remains a failure boundary. The service is inaccessible if Tailscale is unavailable, which is acceptable for V0 and preferable to public exposure.

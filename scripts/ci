@@ -21,7 +21,8 @@ for shell_file in \
   scripts/ci \
   tests/smoke/foundation.sh \
   tests/smoke/backup-restore.sh \
-  tests/smoke/config-backup.sh; do
+  tests/smoke/config-backup.sh \
+  tests/smoke/tailscale-serve-policy.sh; do
   bash -n "$shell_file"
 done
 
@@ -34,6 +35,7 @@ else
   printf 'shellcheck not installed; bash syntax checks still ran\n' >&2
 fi
 
+tests/smoke/tailscale-serve-policy.sh
 tests/smoke/foundation.sh
 tests/smoke/config-backup.sh
 

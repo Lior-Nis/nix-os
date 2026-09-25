@@ -48,7 +48,7 @@ If deploy credentials are unavailable, an agent may complete local automated wor
 | 1 | Lior tells Chief of Staff in Telegram to create work and receives a real Paperclip issue ID. |
 | 2 | A Paperclip issue wakes the same Chief profile, which executes and updates the issue to a terminal or explicit blocked state. |
 | 3 | Product, Growth, and Operations join as isolated Telegram/Paperclip employees; cross-employee work is visible in Paperclip. |
-| 4 | An employee reads `nix-brain`, opens a linked knowledge PR, and cannot bypass review. |
+| 4 | An employee reads `nix-brain`, opens a linked knowledge PR, gets hosted CI green and consequential review, then merges through the approved process. |
 | 5 | One proposal completes challenge → research → grilling → roadmap PR → approval → Paperclip project. |
 | 6 | A Paperclip engineering issue produces a tested GitHub pull request through OpenCode. |
 | 7 | An eligible human-only Paperclip action appears in Todoist and completion returns to Paperclip through minimal n8n. |
@@ -91,8 +91,8 @@ Lior can open Paperclip over HTTPS, authenticate, create the Nix company and a d
 2. Production images are pinned to stable versions and immutable digests. No `latest` tag exists.
 3. `docker compose config` succeeds with a generated non-secret test fixture and fails clearly when required settings are absent.
 4. The Compose stack contains only Paperclip and PostgreSQL plus short-lived backup helpers when invoked.
-5. Paperclip binds only to host loopback for Tailscale Serve; PostgreSQL publishes no host port. Neither is reachable through the public VPS address.
-6. The Tailscale node is named `nix-os`; MagicDNS works; Tailscale Serve HTTPS reaches Paperclip without Funnel. Paperclip runs `authenticated/private`, still requires login, and reports healthy internally and through the tailnet URL.
+5. Paperclip listens on all interfaces only inside its container namespace; Docker publishes it solely on VPS host loopback for Tailscale Serve. PostgreSQL publishes no host port. Neither is directly reachable through public or tailnet host interfaces.
+6. The Tailscale node is named `nix-os`; MagicDNS works; complete Serve/Funnel state contains only HTTPS `:443` root proxying to Paperclip loopback, with no `AllowFunnel`, foreground/service config, extra port, or handler. Paperclip runs `authenticated/private`, still requires login, and reports healthy internally and through the tailnet URL.
 7. PostgreSQL uses a non-superuser Paperclip role and a persistent volume. Paperclip home/storage uses a persistent volume.
 8. Secret values are loaded from root-owned files outside the checkout or per-service Compose secrets where the image supports `_FILE`. `git grep` and repository history contain no live secret.
 9. Fresh volumes are provisioned through Paperclip's official onboarding path; a real authenticated user claims the private instance (verified CLI invite only as fallback); after signup is disabled, new signup fails and the CEO can still authenticate.
@@ -107,7 +107,8 @@ Lior can open Paperclip over HTTPS, authenticate, create the Nix company and a d
 - Compose render validation with placeholder secrets.
 - Assertions that only approved ports are published and every stateful service has a persistent mount.
 - Assertions that images are version/digest pinned and no `latest` appears.
-- Secret-pattern scan plus a test that `.env`, `secrets/`, data, and backup paths are ignored.
+- Secret-pattern and reachable-history scans, including classic, post-quantum, and plugin age identity prefixes, plus tests that external secret/data/backup paths and the documented Nix age identity path are ignored.
+- Fixture tests require exact complete Tailscale state: valid Serve-only passes; Funnel permission, foreground Funnel, unexpected handler, unexpected port, unexpected target, and even a persisted false `AllowFunnel` entry fail.
 - Bash syntax and ShellCheck for operator scripts, plus static consistency checks across Compose, the environment contract, loopback exposure, and ignore rules.
 - Read-only migration preflight: accept an empty database and a migrated Paperclip database; reject a non-empty schema without the expected Drizzle journal before Paperclip starts.
 - Fresh-bootstrap/recovery smoke: start from clean volumes, run official onboarding, validate `authenticated/private`, create a real user and claim the instance through the supported private API, disable signup, prove existing login, create a company/related issue/attachment/local-encrypted canary through supported APIs, resolve it through a bound environment probe, exercise `503 database_unreachable` and recovery, back up, restore with original external secrets into distinct fresh volumes, and verify authentication, values/relationships, attachment bytes, one new successful canary-resolution access event, and health.
@@ -116,7 +117,7 @@ Lior can open Paperclip over HTTPS, authenticate, create the Nix company and a d
 ### Manual end-to-end verification
 
 1. Deploy from a clean clone at a recorded commit, create/prove the `nix` operator, name the Tailscale node `nix-os`, and discover its real MagicDNS FQDN.
-2. Configure Tailscale Serve HTTPS and confirm tailnet access. Externally prove public 80, 443, 3100, and 5432 are closed while retaining only the existing emergency SSH path.
+2. Configure the exclusive Tailscale Serve state and confirm tailnet access. From outside the VPS/tailnet, prove ports 80, 443, 3100, 5432, 8443, and 10000 are not publicly reachable; also prove the Tailscale FQDN has no public Funnel endpoint on 443, 8443, or 10000.
 3. Complete authenticated private signup and browser ownership claim, disable signup, prove new signup is rejected, and prove the existing CEO can sign in.
 4. Create the Nix company, set a deliberately tiny initial budget, and add a disposable issue, known-byte attachment, and harmless encrypted-secret canary.
 5. Run `docker compose down` without volume deletion, start again, and verify both objects.
@@ -156,7 +157,7 @@ Status: **INCOMPLETE — do not deploy until this amendment passes independent r
 | GitHub baseline | PR #2 checks were green and PR #2 was merged; canonical `main` is `c6c56d521edec0451c073662c383605c9f769a41`. Amendment branch is `slice-0-tailnet-private`. | Baseline complete; amendment PR pending |
 | VPS/operator | Tailscale is reported installed/joined. `nix` user creation, tailnet SSH, sudo, Docker, Ubuntu/tool/storage preflight not yet performed. | Pending live acceptance |
 | Network | Repository enforces loopback-only Paperclip and internal-only PostgreSQL. Public probes and firewall inspection are not local tests. | Pending live acceptance |
-| MagicDNS/HTTPS | `scripts/configure-tailscale` is reconstructible and forbids Funnel by omission/policy. Actual suffix, HTTPS consent, certificate, and Serve health require the VPS/tailnet. | Pending live acceptance |
+| MagicDNS/HTTPS | `scripts/configure-tailscale` inspects and resets Nix-owned state, proves reset is empty, applies one route, and validates the complete final JSON against an exact policy. Actual suffix, HTTPS consent, certificate, port probes, and Serve health require the VPS/tailnet. | Pending live acceptance |
 | Paperclip bootstrap | Local clean-volume smoke uses `authenticated/private`, supported browser claim API, signup closure, and subsequent login. Real browser verification is pending. | Pending live acceptance |
 | Google Drive/off-host recovery | Runbooks use encrypted-only `rclone` uploads to `gdrive:Nix/backups/{config,state}` and require downloading remote copies. OAuth is intentionally not configured before review. | Pending live acceptance |
 
@@ -166,7 +167,7 @@ Current upstream constraints:
 - `/api/health` is database-backed and returns `503` with `database_unreachable` when PostgreSQL cannot be reached.
 - Pinned Paperclip rejects a non-empty database missing the expected Drizzle journal before mutation. Nix's preflight gives a clearer earlier error on documented workflows but does not wrap every engine restart.
 - `/paperclip` contains persistent uploads, instance configuration, and the encrypted-secret master key and must be backed up with PostgreSQL.
-- Tailscale Serve `--bg` persists across daemon/host restarts and remains tailnet-only. Tailscale HTTPS may require an admin web consent. Funnel is not used.
+- Tailscale Serve `--bg` persists across daemon/host restarts and remains tailnet-only. `tailscale serve reset` clears prior node-level web-serving configuration; Nix validates the raw JSON after reset and after applying the exclusive route. Tailscale HTTPS may require admin web consent. Funnel is not used.
 - rclone's shared Google OAuth client ID is being retired during 2026; live Google Drive setup should use Lior's own Desktop OAuth client. Its OAuth config is a runtime secret and may be recreated in recovery.
 
 Exact live prerequisites are: amendment independent review and merge with hosted CI green; Hostinger root access to create/prove the `nix` operator; actual MagicDNS suffix and any HTTPS consent; VPS prerequisite/firewall/port verification; interactive Paperclip browser claim; interactive Google Drive OAuth; encrypted upload/download; and isolated restore from downloaded production artifacts.
@@ -398,12 +399,12 @@ An employee can answer from current brain content, propose a focused durable upd
 
 - Brain schema/link/Markdown checks and a policy test rejecting obvious live task-state fields in roadmap documents.
 - Git integration against a disposable repository or local bare remote: branch, commit, PR adapter contract/mocked GitHub boundary, conflict behavior.
-- Permission test demonstrating direct default-branch push is rejected in the real manual environment.
+- Process evidence that the employee used a feature branch and PR, hosted CI passed, consequential review occurred when required, and merge followed without an intentional direct push to `main`.
 - Secret scan.
 
 ### Manual end-to-end verification
 
-Give Operations a Paperclip issue to add one harmless glossary fact. Verify it reads current content, opens a linked PR, cannot push directly to default, and sees merged content after human approval and refresh.
+Give Operations a Paperclip issue to add one harmless glossary fact. Verify it reads current content, opens a linked feature-branch PR, waits for hosted CI and required review, merges through that process without intentionally pushing to `main`, and sees merged content after refresh.
 
 ### Failure modes
 
@@ -516,7 +517,7 @@ Assign a small real defect/doc-code change, observe the Paperclip run, review te
 
 ### Failure modes
 
-Invalid model ID, CLI missing, permission prompt hang, dirty/shared workspace, test failure, GitHub auth failure, context/session resume against moved `cwd`, or attempted direct default-branch push. Preserve artifacts and block visibly.
+Invalid model ID, CLI missing, permission prompt hang, dirty/shared workspace, test failure, GitHub auth failure, context/session resume against moved `cwd`, or an agent attempting to skip the required feature-branch/PR process. Preserve artifacts and block visibly.
 
 ### Deliberately deferred
 

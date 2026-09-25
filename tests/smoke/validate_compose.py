@@ -56,6 +56,7 @@ for script in (
     "backup-config",
     "bootstrap-ceo",
     "check-migrations",
+    "check-tailscale-serve-state",
     "configure-tailscale",
     "initialize-paperclip",
     "restore-config",
@@ -71,8 +72,13 @@ require("./tests/smoke/backup-restore.sh" in workflow, "CI recovery job must run
 tailscale_script = (repo_root / "scripts/configure-tailscale").read_text()
 require("tailscale set --hostname=nix-os" in tailscale_script, "Tailscale machine naming is not reproducible")
 require("tailscale set --operator=nix" in tailscale_script, "Tailscale operator user is not configured")
-require("tailscale serve --bg --yes" in tailscale_script, "persistent Tailscale Serve is not configured")
-require("tailscale funnel " not in tailscale_script, "Tailscale Funnel must not be configured")
+require("tailscale serve reset" in tailscale_script, "stale Tailscale web-serving state is not reset")
+require("tailscale serve status --json" in tailscale_script, "complete Tailscale state is not inspected")
+require("tailscale serve --bg --yes --https=443" in tailscale_script, "exclusive HTTPS Serve route is not explicit")
+require("check-tailscale-serve-state" in tailscale_script, "final Tailscale state policy is not enforced")
+
+paperclip_environment = services["paperclip"].get("environment", {})
+require(paperclip_environment.get("HOST") == "0.0.0.0", "container listener must support Docker forwarding")
 
 example = (repo_root / ".env.example").read_text()
 for key in (
@@ -87,7 +93,7 @@ for key in (
     require(f"{key}=" in example, f".env.example does not document {key}")
 
 gitignore = (repo_root / ".gitignore").read_text()
-for ignored in (".env", "secrets/", "backups/", "*.dump", "*.age"):
+for ignored in (".env", "secrets/", "backups/", "*.dump", "*.age", ".config/nix/age/identity.txt"):
     require(ignored in gitignore, f".gitignore does not cover {ignored}")
 
 print("Rendered Compose invariants passed.")

@@ -3,6 +3,12 @@ set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 config_file=${1:-${CONFIG_FILE:-$repo_root/.env}}
+state_tmp_dir=''
+
+cleanup() {
+  [[ -z "$state_tmp_dir" ]] || rm -rf "$state_tmp_dir"
+}
+trap cleanup EXIT
 
 fail() {
   printf 'Tailscale Serve configuration error: %s\n' "$*" >&2
@@ -13,7 +19,7 @@ read_config() {
   grep -E "^${1}=" "$config_file" | tail -n 1 | cut -d= -f2- || true
 }
 
-for command_name in tailscale jq curl; do
+for command_name in tailscale jq curl python3; do
   command -v "$command_name" >/dev/null 2>&1 || fail "$command_name is required"
 done
 
@@ -47,14 +53,28 @@ fi
 curl --fail --silent --show-error "http://127.0.0.1:${host_port}/api/health" >/dev/null \
   || fail "Paperclip is not healthy on the configured loopback port"
 
-# --bg stores the Serve configuration in Tailscale state so it survives
-# reboots. This configures Serve only; never substitute `tailscale funnel`.
-tailscale serve --bg --yes "http://127.0.0.1:${host_port}"
-serve_status=$(tailscale serve status)
-grep -Fq "https://${fqdn}" <<<"$serve_status" || fail "Serve status does not contain the expected HTTPS URL"
-grep -Fq "http://127.0.0.1:${host_port}" <<<"$serve_status" || fail "Serve status does not contain the expected loopback backend"
+state_tmp_dir=$(mktemp -d /tmp/nix-os-tailscale-state.XXXXXX)
+target="http://127.0.0.1:${host_port}"
+
+# Nix owns the complete Serve/Funnel configuration on this dedicated node.
+# Inspect it, reset it through the supported CLI, prove the reset is empty,
+# and then install only the desired background route. This removes persisted
+# Funnel state and makes repeat runs converge on the same complete config.
+tailscale serve status --json >"$state_tmp_dir/before.json"
+"$repo_root/scripts/check-tailscale-serve-state" --expect inspect "$state_tmp_dir/before.json"
+printf '%s\n' 'Resetting Nix-owned Tailscale Serve/Funnel state on the dedicated nix-os node.'
+tailscale serve reset
+tailscale serve status --json >"$state_tmp_dir/reset.json"
+"$repo_root/scripts/check-tailscale-serve-state" --expect empty "$state_tmp_dir/reset.json"
+
+# --bg persists across daemon and host restarts. Explicit port 443 and root
+# path make the intended state unambiguous.
+tailscale serve --bg --yes --https=443 "$target"
+tailscale serve status --json >"$state_tmp_dir/final.json"
+"$repo_root/scripts/check-tailscale-serve-state" \
+  --expect paperclip --fqdn "$fqdn" --target "$target" "$state_tmp_dir/final.json"
 
 curl --fail --silent --show-error "https://${fqdn}/api/health" >/dev/null \
   || fail "Paperclip is not healthy through Tailscale Serve"
 
-printf 'Tailscale Serve is configured for https://%s -> http://127.0.0.1:%s.\n' "$fqdn" "$host_port"
+printf 'Tailscale Serve is configured exclusively for https://%s:443/ -> %s.\n' "$fqdn" "$target"
