@@ -19,8 +19,9 @@ case "$action" in
     "$repo_root/scripts/check-migrations" "$config_file"
     "$repo_root/scripts/initialize-paperclip" "$config_file"
     "$repo_root/scripts/check-migrations" "$config_file"
-    "${compose[@]}" up -d --wait paperclip caddy
-    "$0" health
+    "${compose[@]}" up -d --wait paperclip
+    "${compose[@]}" exec -T paperclip curl -fsS http://127.0.0.1:3100/api/health
+    printf '\nPaperclip is healthy on host loopback. Configure Tailscale Serve before checking tailnet health.\n'
     ;;
   upgrade)
     "$repo_root/scripts/check-config" "$config_file"
@@ -40,13 +41,13 @@ case "$action" in
     "$repo_root/scripts/check-config" "$config_file"
     printf '%s\n' 'Internal Paperclip health:'
     "${compose[@]}" exec -T paperclip curl -fsS http://127.0.0.1:3100/api/health
-    printf '\n%s\n' 'Public health through Caddy:'
-    hostname=$(grep -E '^PAPERCLIP_HOSTNAME=' "$config_file" | tail -n 1 | cut -d= -f2-)
-    curl --fail --silent --show-error "https://${hostname}/api/health"
+    printf '\n%s\n' 'Tailnet health through Tailscale Serve:'
+    public_url=$(grep -E '^PAPERCLIP_PUBLIC_URL=' "$config_file" | tail -n 1 | cut -d= -f2-)
+    curl --fail --silent --show-error "${public_url}/api/health"
     printf '\n'
     ;;
   logs)
-    "${compose[@]}" logs --follow --tail 200 caddy paperclip postgres
+    "${compose[@]}" logs --follow --tail 200 paperclip postgres
     ;;
   restart)
     "$repo_root/scripts/check-config" "$config_file"

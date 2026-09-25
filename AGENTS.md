@@ -11,6 +11,8 @@ Before changing this repository, read in full:
 
 Work only on the next explicitly requested slice. Do not build later-slice infrastructure early.
 
+Repository changes follow `feature branch -> pull request -> hosted CI green -> review when consequential -> merge`. V0 does not pay for GitHub-enforced branch protection; agents must not intentionally push directly to `main`.
+
 ## Non-negotiable contracts
 
 - Paperclip is the only authoritative work graph.

@@ -18,13 +18,13 @@ read_config() {
 }
 
 "$repo_root/scripts/check-config" "$config_file" >/dev/null
-hostname=$(read_config PAPERCLIP_HOSTNAME)
+public_url=$(read_config PAPERCLIP_PUBLIC_URL)
 "${compose[@]}" exec -T paperclip curl -fsS http://127.0.0.1:3100/api/health >/dev/null \
   || fail "Paperclip is not healthy"
 
 set +e
 "${compose[@]}" exec -T paperclip timeout 20s pnpm paperclipai auth bootstrap-ceo \
-  --data-dir /paperclip --base-url "https://${hostname}" >"$bootstrap_log" 2>&1
+  --data-dir /paperclip --base-url "$public_url" >"$bootstrap_log" 2>&1
 bootstrap_status=$?
 set -e
 if (( bootstrap_status != 0 && bootstrap_status != 124 )); then

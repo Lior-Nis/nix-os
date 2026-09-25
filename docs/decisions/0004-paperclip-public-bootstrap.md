@@ -1,6 +1,6 @@
 # ADR 0004: Put authenticated Paperclip behind Caddy in public exposure mode
 
-- Status: Accepted
+- Status: Superseded by [ADR 0005](0005-tailnet-private-ingress.md) before production deployment
 - Date: 2026-09-24
 
 ## Context

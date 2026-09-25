@@ -4,7 +4,7 @@ umask 077
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 artifact=${1:-}
-caddy_image='caddy:2.11.4-alpine@sha256:6aeddd44c3078b0f9a35206472a11420648a79c184603ef95957d0a20044cb2b'
+archive_helper_image='postgres:17.11-alpine3.24@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24'
 restore_tmp_dir=''
 restore_started=0
 
@@ -102,8 +102,8 @@ else
 fi
 {
   printf 'COMPOSE_PROJECT_NAME=%s\n' "$restore_project"
-  printf 'PAPERCLIP_HOSTNAME=restore.test\n'
-  printf 'ACME_EMAIL=restore@test.invalid\n'
+  printf 'PAPERCLIP_PUBLIC_URL=https://nix-os.restore-test.ts.net\n'
+  printf 'PAPERCLIP_HOST_PORT=0\n'
   printf 'POSTGRES_ENV_FILE=%s\n' "$restore_postgres_env"
   printf 'PAPERCLIP_ENV_FILE=%s\n' "$restore_paperclip_env"
   printf 'PAPERCLIP_AUTH_DISABLE_SIGN_UP=true\n'
@@ -117,12 +117,12 @@ restore_started=1
 docker run --rm \
   --volume "$restore_paperclip_volume:/target" \
   --volume "$payload_dir:/backup:ro" \
-  "$caddy_image" sh -ec 'cd /target && tar -xzf /backup/paperclip-data.tar.gz'
+  "$archive_helper_image" sh -ec 'cd /target && tar -xzf /backup/paperclip-data.tar.gz'
 
 docker run --rm \
   --volume "$restore_paperclip_volume:/source:ro" \
   --volume "$restore_tmp_dir:/verify" \
-  "$caddy_image" sh -ec 'cd /source && find . -type f -exec sha256sum {} \; | sort > /verify/restored-paperclip-files.sha256'
+  "$archive_helper_image" sh -ec 'cd /source && find . -type f -exec sha256sum {} \; | sort > /verify/restored-paperclip-files.sha256'
 diff -u "$payload_dir/paperclip-files.sha256" "$restore_tmp_dir/restored-paperclip-files.sha256"
 
 "${compose_restore[@]}" up -d --wait postgres

@@ -8,6 +8,9 @@ secrets/
 *.pem
 *.p12
 *.pfx
+# Documented Nix backup identities belong in the user's home directory, never a checkout.
+.config/nix/age/identity.txt
+**/.config/nix/age/identity.txt
 
 # Runtime state and backups are not source code.
 data/

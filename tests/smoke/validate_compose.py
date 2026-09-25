@@ -14,7 +14,7 @@ repo_root = pathlib.Path(sys.argv[2])
 config = json.loads(compose_path.read_text())
 services = config.get("services", {})
 
-require(set(services) == {"caddy", "paperclip", "postgres"}, "only Slice 0 services may exist")
+require(set(services) == {"paperclip", "postgres"}, "only Slice 0 services may exist")
 for name, service in services.items():
     image = service.get("image", "")
     require("@sha256:" in image, f"{name} image is not digest-pinned")
@@ -23,10 +23,12 @@ for name, service in services.items():
     require("healthcheck" in service, f"{name} healthcheck is missing")
 
 require(not services["postgres"].get("ports"), "PostgreSQL must not publish ports")
-require(not services["paperclip"].get("ports"), "Paperclip must not publish ports")
-caddy_ports = services["caddy"].get("ports", [])
-published = {(str(item.get("published")), item.get("protocol", "tcp")) for item in caddy_ports}
-require(published == {("80", "tcp"), ("443", "tcp"), ("443", "udp")}, "unexpected public ports")
+paperclip_ports = services["paperclip"].get("ports", [])
+require(len(paperclip_ports) == 1, "Paperclip must publish exactly one loopback port")
+paperclip_port = paperclip_ports[0]
+require(str(paperclip_port.get("target")) == "3100", "Paperclip container port must remain 3100")
+require(str(paperclip_port.get("published")) == "0", "test config must request an ephemeral host port")
+require(paperclip_port.get("host_ip") == "127.0.0.1", "Paperclip must bind only to host loopback")
 
 paperclip_mounts = services["paperclip"].get("volumes", [])
 postgres_mounts = services["postgres"].get("volumes", [])
@@ -37,21 +39,25 @@ require(
     "non-superuser Paperclip role initialization is missing",
 )
 require(config.get("networks", {}).get("data", {}).get("internal") is True, "data network must be internal")
+require(config.get("networks", {}).get("app", {}).get("internal") is not True, "Paperclip app network must allow outbound access")
+require(set(services["paperclip"].get("networks", {})) == {"app", "data"}, "Paperclip must use only app and data networks")
+require(set(services["postgres"].get("networks", {})) == {"data"}, "PostgreSQL must remain on the internal data network")
 
 paperclip_env = services["paperclip"].get("environment", {})
 require(paperclip_env.get("PAPERCLIP_DEPLOYMENT_MODE") == "authenticated", "Paperclip auth mode is wrong")
-require(paperclip_env.get("PAPERCLIP_DEPLOYMENT_EXPOSURE") == "public", "public ingress must use public exposure mode")
+require(paperclip_env.get("PAPERCLIP_DEPLOYMENT_EXPOSURE") == "private", "tailnet ingress must use private exposure mode")
+require(paperclip_env.get("PAPERCLIP_PUBLIC_URL") == "https://nix-os.test-tailnet.ts.net", "Paperclip public URL is wrong")
 require(paperclip_env.get("PAPERCLIP_MIGRATION_AUTO_APPLY") == "true", "migration policy must be explicit")
 require(paperclip_env.get("PAPERCLIP_ENABLE_COMPANY_DELETION") == "false", "company deletion must be disabled")
 
-caddyfile = (repo_root / "deploy/caddy/Caddyfile").read_text()
-require("{$PAPERCLIP_HOSTNAME}" in caddyfile, "Caddy hostname must remain configurable")
-require("reverse_proxy paperclip:3100" in caddyfile, "Caddy must proxy only to Paperclip")
+require(not (repo_root / "deploy/caddy").exists(), "Caddy runtime configuration must be removed")
 
 for script in (
     "backup-config",
     "bootstrap-ceo",
     "check-migrations",
+    "check-tailscale-serve-state",
+    "configure-tailscale",
     "initialize-paperclip",
     "restore-config",
     "vps-preflight",
@@ -63,11 +69,22 @@ workflow = (repo_root / ".github/workflows/ci.yml").read_text()
 require("recovery:" in workflow, "CI must include the required recovery job")
 require("./tests/smoke/backup-restore.sh" in workflow, "CI recovery job must run the Docker restore smoke")
 
+tailscale_script = (repo_root / "scripts/configure-tailscale").read_text()
+require("tailscale set --hostname=nix-os" in tailscale_script, "Tailscale machine naming is not reproducible")
+require("tailscale set --operator=nix" in tailscale_script, "Tailscale operator user is not configured")
+require("tailscale serve reset" in tailscale_script, "stale Tailscale web-serving state is not reset")
+require("tailscale serve status --json" in tailscale_script, "complete Tailscale state is not inspected")
+require("tailscale serve --bg --yes --https=443" in tailscale_script, "exclusive HTTPS Serve route is not explicit")
+require("check-tailscale-serve-state" in tailscale_script, "final Tailscale state policy is not enforced")
+
+paperclip_environment = services["paperclip"].get("environment", {})
+require(paperclip_environment.get("HOST") == "0.0.0.0", "container listener must support Docker forwarding")
+
 example = (repo_root / ".env.example").read_text()
 for key in (
     "COMPOSE_PROJECT_NAME",
-    "PAPERCLIP_HOSTNAME",
-    "ACME_EMAIL",
+    "PAPERCLIP_PUBLIC_URL",
+    "PAPERCLIP_HOST_PORT",
     "POSTGRES_ENV_FILE",
     "PAPERCLIP_ENV_FILE",
     "PAPERCLIP_AUTH_DISABLE_SIGN_UP",
@@ -76,7 +93,7 @@ for key in (
     require(f"{key}=" in example, f".env.example does not document {key}")
 
 gitignore = (repo_root / ".gitignore").read_text()
-for ignored in (".env", "secrets/", "backups/", "*.dump", "*.age"):
+for ignored in (".env", "secrets/", "backups/", "*.dump", "*.age", ".config/nix/age/identity.txt"):
     require(ignored in gitignore, f".gitignore does not cover {ignored}")
 
 print("Rendered Compose invariants passed.")

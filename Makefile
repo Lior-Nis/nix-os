@@ -1,7 +1,7 @@
 CONFIG_FILE ?= .env
 export CONFIG_FILE
 
-.PHONY: vps-preflight validate init-secrets initialize-paperclip deploy upgrade bootstrap-ceo status health logs restart backup backup-config restore-config restore-smoke ci
+.PHONY: vps-preflight validate init-secrets initialize-paperclip deploy configure-tailscale upgrade bootstrap-ceo status health logs restart backup backup-config restore-config restore-smoke ci
 
 vps-preflight:
 	./scripts/vps-preflight
@@ -17,6 +17,9 @@ initialize-paperclip:
 
 deploy:
 	./scripts/ops deploy
+
+configure-tailscale:
+	./scripts/configure-tailscale "$(CONFIG_FILE)"
 
 upgrade:
 	./scripts/ops upgrade

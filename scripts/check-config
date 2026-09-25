@@ -52,18 +52,23 @@ if grep -Eq '^(POSTGRES_PASSWORD|PAPERCLIP_DB_PASSWORD|DATABASE_URL|BETTER_AUTH_
 fi
 
 project_name=$(require_config COMPOSE_PROJECT_NAME)
-hostname=$(require_config PAPERCLIP_HOSTNAME)
-acme_email=$(require_config ACME_EMAIL)
+public_url=$(require_config PAPERCLIP_PUBLIC_URL)
+host_port=$(require_config PAPERCLIP_HOST_PORT)
 postgres_env=$(require_config POSTGRES_ENV_FILE)
 paperclip_env=$(require_config PAPERCLIP_ENV_FILE)
 signup_disabled=$(require_config PAPERCLIP_AUTH_DISABLE_SIGN_UP)
 
 [[ "$project_name" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || fail "COMPOSE_PROJECT_NAME must match [a-z0-9][a-z0-9_-]*"
 [[ "$signup_disabled" == "true" || "$signup_disabled" == "false" ]] || fail "PAPERCLIP_AUTH_DISABLE_SIGN_UP must be true or false"
+[[ "$host_port" =~ ^[0-9]+$ ]] || fail "PAPERCLIP_HOST_PORT must be an integer"
 
 if [[ ${NIX_ALLOW_TEST_CONFIG:-0} != 1 ]]; then
-  [[ "$hostname" != *.invalid && "$hostname" != *.example && "$hostname" != *.example.com ]] || fail "replace the PAPERCLIP_HOSTNAME placeholder"
-  [[ "$acme_email" != *@example.invalid && "$acme_email" != *@example.com ]] || fail "replace the ACME_EMAIL placeholder"
+  [[ "$public_url" =~ ^https://nix-os\.[a-z0-9-]+\.ts\.net$ ]] \
+    || fail "PAPERCLIP_PUBLIC_URL must be the discovered https://nix-os.<tailnet-name>.ts.net URL"
+  (( host_port >= 1024 && host_port <= 65535 )) || fail "PAPERCLIP_HOST_PORT must be between 1024 and 65535"
+else
+  [[ "$public_url" =~ ^https://[^/]+$ ]] || fail "PAPERCLIP_PUBLIC_URL must be an HTTPS origin without a path"
+  (( host_port >= 0 && host_port <= 65535 )) || fail "test PAPERCLIP_HOST_PORT must be between 0 and 65535"
 fi
 
 for secret_file in "$postgres_env" "$paperclip_env"; do

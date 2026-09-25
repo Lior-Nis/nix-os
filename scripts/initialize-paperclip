@@ -18,7 +18,7 @@ fail() {
 "$repo_root/scripts/check-migrations" "$config_file"
 
 # shellcheck disable=SC2016
-config_probe='const fs=require("node:fs");const p="/paperclip/instances/default/config.json";const c=JSON.parse(fs.readFileSync(p,"utf8"));if(c?.$meta?.source!=="onboard"||c?.database?.mode!=="postgres"||c?.server?.deploymentMode!=="authenticated"||c?.server?.exposure!=="public"||c?.auth?.baseUrlMode!=="explicit"||c?.auth?.publicBaseUrl!==process.env.PAPERCLIP_PUBLIC_URL||c?.storage?.provider!=="local_disk"||c?.secrets?.provider!=="local_encrypted")process.exit(1)'
+config_probe='const fs=require("node:fs");const p="/paperclip/instances/default/config.json";const c=JSON.parse(fs.readFileSync(p,"utf8"));if(c?.$meta?.source!=="onboard"||c?.database?.mode!=="postgres"||c?.server?.deploymentMode!=="authenticated"||c?.server?.exposure!=="private"||c?.auth?.baseUrlMode!=="explicit"||c?.auth?.publicBaseUrl!==process.env.PAPERCLIP_PUBLIC_URL||c?.storage?.provider!=="local_disk"||c?.secrets?.provider!=="local_encrypted")process.exit(1)'
 
 if "${compose[@]}" run --rm --no-deps --entrypoint node paperclip -e "$config_probe" >/dev/null 2>&1; then
   printf 'Paperclip instance configuration already exists and is valid.\n'
@@ -30,8 +30,8 @@ set +e
 "${compose[@]}" run --rm --no-deps --entrypoint sh paperclip -ec '
   set +e
   # Selecting the default Quickstart path without --yes is intentional: this
-  # release then honors the public deployment environment instead of forcing
-  # one of the private --bind presets. Cold CI hosts can take more than five
+  # release then honors the authenticated/private deployment environment and
+  # explicit public URL. Cold CI hosts can take more than five
   # seconds to initialize the CLI, so wait conservatively before supplying the
   # one official prompt and then declining the foreground server start.
   { sleep 20; printf "\r"; sleep 10; printf "n"; } | \

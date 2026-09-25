@@ -1,0 +1,63 @@
+#!/usr/bin/env python3
+"""Validate the complete legacy JSON emitted by `tailscale serve status --json`."""
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+
+def fail(message: str) -> None:
+    print(f"Tailscale Serve state error: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--expect", choices=("inspect", "empty", "paperclip"), required=True)
+parser.add_argument("--fqdn")
+parser.add_argument("--target")
+parser.add_argument("status_json", type=Path)
+args = parser.parse_args()
+
+try:
+    state = json.loads(args.status_json.read_text())
+except (OSError, json.JSONDecodeError) as error:
+    fail(f"cannot read valid JSON: {error}")
+
+if not isinstance(state, dict):
+    fail("top-level status must be a JSON object")
+
+if args.expect == "inspect":
+    print(f"Existing Tailscale web-serving state inspected (configured={str(bool(state)).lower()}).")
+    raise SystemExit(0)
+
+if args.expect == "empty":
+    if state:
+        fail("reset did not produce an empty Serve/Funnel configuration")
+    print("Tailscale Serve/Funnel state is empty after reset.")
+    raise SystemExit(0)
+
+if not args.fqdn or not args.target:
+    fail("--fqdn and --target are required for the Paperclip policy")
+
+expected_host_port = f"{args.fqdn}:443"
+expected_tcp = {"443": {"HTTPS": True}}
+expected_web = {
+    expected_host_port: {
+        "Handlers": {
+            "/": {"Proxy": args.target},
+        }
+    }
+}
+
+# An exact key set intentionally rejects AllowFunnel even when its value is
+# false, foreground sessions, Tailscale Services, and future handler surfaces
+# until they are reviewed explicitly.
+if set(state) != {"TCP", "Web"}:
+    fail("only top-level TCP and Web configuration is permitted")
+if state["TCP"] != expected_tcp:
+    fail("only tailnet HTTPS on port 443 is permitted")
+if state["Web"] != expected_web:
+    fail("only the root Paperclip proxy handler for the expected FQDN is permitted")
+
+print(f"Verified exclusive tailnet Serve route: https://{args.fqdn}:443/ -> {args.target}.")

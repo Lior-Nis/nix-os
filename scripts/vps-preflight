@@ -21,7 +21,7 @@ else
   missing "/etc/os-release is unavailable"
 fi
 
-for command_name in docker git bash curl openssl tar sha256sum age rclone; do
+for command_name in docker git bash curl openssl tar sha256sum age rclone tailscale jq; do
   if command -v "$command_name" >/dev/null 2>&1; then ok "$command_name available"; else missing "$command_name"; fi
 done
 
@@ -41,6 +41,18 @@ if command -v docker >/dev/null 2>&1; then
   else
     missing "Docker Compose 2.30.0 or newer (found ${compose_version:-none})"
   fi
+fi
+
+if command -v tailscale >/dev/null 2>&1; then
+  tailscale_state=$(tailscale status --json 2>/dev/null | jq -r '.BackendState // empty' 2>/dev/null || true)
+  if [[ "$tailscale_state" == Running ]]; then ok "Tailscale connected"; else missing "Tailscale must be joined and connected"; fi
+fi
+
+available_kib=$(df -Pk /var/lib/docker 2>/dev/null | awk 'NR==2 {print $4}' || true)
+if [[ "$available_kib" =~ ^[0-9]+$ ]] && (( available_kib >= 10485760 )); then
+  ok "at least 10 GiB available under /var/lib/docker"
+else
+  missing "at least 10 GiB available under /var/lib/docker"
 fi
 
 if (( failures > 0 )); then
