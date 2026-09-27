@@ -1,6 +1,6 @@
 # Nix Business OS V0 implementation plan
 
-Status: Slice 0 live deployment and downloaded-off-host recovery passed; acceptance awaits evidence-PR merge and confirmation of a second safe age-identity copy. Updated 2026-09-27.
+Status: Slice 0 live deployment and downloaded-off-host recovery passed; acceptance awaits the evidence PR merging with hosted CI green. Updated 2026-09-27.
 
 ## How to use this plan
 
@@ -150,7 +150,7 @@ Repository validation covers Compose rendering, loopback-only Paperclip publishi
 
 ### Live acceptance record — 2026-09-25 through 2026-09-27
 
-Status: **LIVE GATES PASSED — final acceptance awaits this evidence PR and confirmation of the second safe age-identity copy.**
+Status: **LIVE GATES PASSED — final acceptance awaits this evidence PR merging with hosted CI green.**
 
 | Gate | Evidence | Status |
 |---|---|---|
@@ -166,7 +166,7 @@ Status: **LIVE GATES PASSED — final acceptance awaits this evidence PR and con
 | Off-host round trip | All four files were downloaded from Google Drive into a separate recovery directory. Sidecars verified on the VPS and Mac; the Mac-held identity decrypted both downloaded ciphertexts without printing contents. Google Drive contains ciphertext and sidecars only. | Passed |
 | Isolated recovery | Downloaded artifacts restored into fresh project `nix-os-live-restore-20260926`. `/paperclip` hashes and database counts matched; the migration preflight passed with 211 tables and a Drizzle journal; PostgreSQL and Paperclip became healthy. Lior authenticated as restored CEO. Company/issue IDs and relationship matched; attachment bytes matched the recorded SHA-256. A restored-master-key SSH-environment probe added exactly one successful canary access event without outputting plaintext. | Passed |
 | Recovery cleanup | The isolated containers, networks, and both fresh volumes were destroyed. Temporary plaintext config/state files were removed from the VPS and Mac. Production and encrypted local/off-host artifacts were retained. Production health, auth, migrations, volumes, Serve state, and non-exposure checks passed afterward at 2026-09-27T20:48:55Z. | Passed |
-| Age custody | Private identity remains only at `~/.config/nix/age/identity.txt` on Lior's Mac with mode `0600`; the public recipient is `age15fxuw6eqj5sk9w9znpyxpqmkprzcpcfc60luaxg4auafu6ndhf8q0dagj0`. It was never copied to the VPS or Git. | Second safe-copy confirmation pending |
+| Age custody | Private identity remains only at `~/.config/nix/age/identity.txt` on Lior's Mac with mode `0600`; the public recipient is `age15fxuw6eqj5sk9w9znpyxpqmkprzcpcfc60luaxg4auafu6ndhf8q0dagj0`. It was never copied to the VPS or Git. Lior confirmed a second safe personal copy on 2026-09-27. | Passed |
 
 Current upstream constraints:
 
@@ -177,9 +177,9 @@ Current upstream constraints:
 - Tailscale Serve `--bg` persists across daemon/host restarts and remains tailnet-only. `tailscale serve reset` clears prior node-level web-serving configuration; Nix validates the raw JSON after reset and after applying the exclusive route. Tailscale HTTPS may require admin web consent. Funnel is not used.
 - rclone's shared Google OAuth client ID is being retired during 2026; live Google Drive setup should use Lior's own Desktop OAuth client. Its OAuth config is a runtime secret and may be recreated in recovery.
 
-Remaining Slice 0 prerequisites are limited to confirming a second safe personal copy of the Mac age identity and merging this non-secret evidence update through the documented PR workflow with hosted `foundation` and `recovery` CI green.
+The only remaining Slice 0 prerequisite is merging this non-secret evidence update through the documented PR workflow with hosted `foundation` and `recovery` CI green.
 
-Slice 1 entry condition: confirm the second safe age-identity copy, merge this evidence PR after hosted CI is green, mark `SLICE 0: ACCEPTED`, and stop. Slice 1 still requires separate explicit authorization.
+Slice 1 entry condition: merge this evidence PR after hosted CI is green, mark `SLICE 0: ACCEPTED`, and stop. Slice 1 still requires separate explicit authorization.
 
 ---
 
