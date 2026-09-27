@@ -1,0 +1,44 @@
+model:
+  provider: openai-codex
+  default: gpt-5.4
+
+gateway:
+  multiplex_profiles: false
+
+platform_toolsets:
+  cli: [terminal, file, skills]
+  telegram: [terminal, file, skills]
+
+unauthorized_dm_behavior: ignore
+platforms:
+  telegram:
+    unauthorized_dm_behavior: ignore
+    guest_mode: false
+    group_policy: disabled
+    # Telegram group IDs are negative. Restricting allowed chats to Lior's
+    # positive user ID makes Slice 1 DM-only; Slice 3 will replace this with
+    # explicit group/topic routes when multiplexing is enabled.
+    allowed_chats: ["${TELEGRAM_ALLOWED_USERS}"]
+
+mcp_servers:
+  paperclip:
+    command: npx
+    args: ["-y", "--min-release-age=0", "@paperclipai/mcp-server@2026.916.1"]
+    env:
+      PAPERCLIP_API_URL: "http://paperclip:3100"
+      PAPERCLIP_API_KEY: "${PAPERCLIP_API_KEY}"
+      PAPERCLIP_COMPANY_ID: "${PAPERCLIP_COMPANY_ID}"
+      PAPERCLIP_AGENT_ID: "${PAPERCLIP_AGENT_ID}"
+    tools:
+      include:
+        - paperclipMe
+        - paperclipListIssues
+        - paperclipGetIssue
+        - paperclipListComments
+        - paperclipListProjects
+        - paperclipGetProject
+        - paperclipCreateIssue
+        - paperclipUpdateIssue
+        - paperclipAddComment
+      resources: false
+      prompts: false

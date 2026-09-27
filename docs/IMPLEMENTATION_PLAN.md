@@ -1,6 +1,6 @@
 # Nix Business OS V0 implementation plan
 
-Status: **SLICE 0: ACCEPTED.** Live deployment and downloaded-off-host recovery passed. Updated 2026-09-27.
+Status: **SLICE 0: ACCEPTED. SLICE 1: IMPLEMENTED, REVIEW PENDING.** Slice 1 has not been deployed or live-accepted. Updated 2026-09-28.
 
 ## How to use this plan
 
@@ -33,9 +33,9 @@ These are not needed to author Slice 0 code, but are needed for the indicated ma
 | Tailscale MagicDNS/HTTPS enablement | Slice 0 deploy | discover the real suffix from the VPS; never invent it; web consent may be interactive |
 | Google Drive OAuth for `rclone` | Slice 0 exit | use Lior's account and owned Desktop OAuth client; upload ciphertext only |
 | age identity custody | Slice 0 exit | generated on Lior's Mac; keep a second safe copy outside the VPS and never Git |
-| model/provider credential and chosen model | Slice 1 | keep provider portable; no model is locked by architecture |
-| Telegram bot token, Lior's numeric Telegram user ID, private group/topic identifiers | Slice 1 | exact multi-topic UX is proven later in Slice 3 |
-| separate private GitHub repo for `nix-brain` | Slice 4 | create manually or with an approved GitHub operation |
+| ChatGPT/Codex subscription device authorization | Slice 1 live deploy | stored in the Hermes volume; no paid API key by default |
+| Telegram bot token and Lior's numeric Telegram user ID | Slice 1 live deploy | enter directly in `/etc/nix-os/hermes.env`; exact multi-topic UX remains Slice 3 |
+| canonical private `nix-brain` clone | Slice 1 live deploy | mount read-only for Chief; PR write access remains Slice 4 |
 | Todoist project/token or OAuth app details | Slice 7 | not required earlier |
 
 If deploy credentials are unavailable, an agent may complete local automated work for a slice but must not mark the slice done or fabricate manual verification.
@@ -201,44 +201,48 @@ In the private Chief of Staff Telegram context, Lior can say “Create a work it
 
 ### Components/files affected
 
-- Add Hermes service, private network, persistent profile volume, resource limits, and health check to Compose.
-- `config/hermes/chief/config.yaml` and `SOUL.md` templates without secrets.
-- Secret-name additions to `.env.example`/runbook.
-- Idempotent operator provisioning step for Chief Paperclip agent key and Hermes API key.
-- `tests/contracts/paperclip-mcp.*` and `tests/e2e/telegram-work-creation.md`.
-- Architecture/runbook updates if verified behavior differs.
+- Hermes service, internal `agent` network, persistent `/opt/data` volume, resource limits, and health check in Compose.
+- `deploy/hermes/config.yaml` and `SOUL.md`: the default profile is Chief of Staff; multiplexing remains off.
+- `HERMES_ENV_FILE` and read-only `NIX_BRAIN_HOST_PATH` configuration, plus safe secret initialization.
+- Supported Paperclip `hermes_gateway` invite/approve/claim procedure and distinct credentials.
+- Extended encrypted config/data backup, isolated Hermes volume restore, pinned-image/MCP/multiplex contracts, and live E2E checklist.
+- ADR 0006 and deployment/recovery documentation.
 
 ### Exact acceptance criteria
 
 1. One Hermes profile named/identified as Chief of Staff has isolated persistent state and starts under upstream-supported gateway supervision.
 2. Telegram is handled by Hermes' native adapter. There is no custom Telegram receiver and Paperclip's Telegram connector is disabled.
-3. Only Lior's allowlisted Telegram identity is accepted; an unauthorized identity receives no agent/tool access.
+3. Only Lior's allowlisted Telegram identity in the private direct chat is accepted; an unauthorized identity or any group chat receives no agent/tool access.
 4. Hermes' Runs API is private to Compose and requires a unique `API_SERVER_KEY` even internally.
 5. The Chief profile receives a separate revocable Paperclip agent key and can call the official `@paperclipai/mcp-server` at the internal Paperclip URL.
-6. The MCP server/package is pinned; its tool allowlist permits health/identity, issue list/get/create/update/comment/question/confirmation operations needed by the slice and excludes project/goal creation, approvals decisions, arbitrary API escape hatch, and destructive tools.
+6. The MCP server/package is pinned; its exact allowlist permits identity, project/issue reads, issue create/update, and comment read/write, and excludes project/goal creation, approvals, arbitrary API escape hatch, connections, runtime control, and destructive tools.
 7. A Telegram commitment creates exactly one Paperclip issue with useful title/body, source context, and Chief ownership or routing. Chief replies with the actual issue identifier only after the API succeeds.
 8. A Telegram question or clarification exchange creates no issue unless Lior explicitly creates a commitment.
 9. A request to create a new top-level project/goal is not executed; Chief asks for/records approval through the allowed conversational path.
-10. A simulated Telegram redelivery is handled by Hermes/Telegram update identity without duplicate tool execution, or the limitation is evidenced and a bounded idempotency mechanism is added at the workflow edge—not a general event bus.
+10. The default profile topology remains compatible with the pinned release's future Telegram chat/thread-to-profile routing without enabling or creating later employees.
 11. Restarting Hermes preserves the Chief profile and conversation continuity.
-12. No Todoist object is created; Todoist is not configured.
+12. Chief can read the canonical `nix-brain` checkout through a read-only mount; it has no brain write credential.
+13. Paperclip stores Chief as a real `hermes_gateway` agent using `http://hermes:8642`, issue-scoped Paperclip sessions, and the bounded same-host HTTP exception from ADR 0006.
+14. No Todoist object is created; Todoist is not configured.
 
 ### Automated tests
 
 - Config schema/static checks: no secret literals, API server not publicly published, allowlist required, MCP package pinned, dangerous tools absent.
-- Contract test against the pinned Paperclip OpenAPI/MCP surface: authenticate as Chief, list, create, fetch, and comment on a disposable issue; clean up through a board test fixture.
-- Hermes readiness contract: `/health`, `/v1/capabilities`, authenticated run creation/SSE/stop on the private network.
-- Unauthorized Telegram/user fixture test if upstream provides an adapter harness; otherwise capture this as mandatory manual evidence.
-- Restart test checks profile files/state persist.
+- Pinned Paperclip MCP stdio discovery proves every allowlisted tool still exists; live acceptance exercises list/create/fetch/update/comment as Chief.
+- Pinned Hermes image test proves `/health`, authenticated `/v1/capabilities`, unauthenticated rejection, official `grill-me` availability, and named-volume restart continuity.
+- Pinned Hermes routing test proves representative Telegram chat/thread routes select future isolated profiles while production multiplexing remains disabled.
+- Compose/static checks prove no Hermes host port, exact service/network boundaries, required user allowlist and DM-only chat gate, read-only brain mount, pinned images/packages, and dangerous MCP tools absent.
+- Encrypted configuration round trip includes `hermes.env`; coordinated data recovery verifies byte-identical Hermes profile/memory/session/skill state. Real provider and Telegram recovery remain a live gate.
 
 ### Manual end-to-end verification
 
-1. Message Chief from Lior's account with a pure question; confirm a useful reply and zero new Paperclip issues.
-2. Send an explicit work commitment with an unusual marker string.
-3. Confirm Chief replies with one Paperclip ID, and that issue contains the marker/source and correct assignee.
-4. Ask Chief to retrieve the issue by ID and summarize its current state.
-5. Restart Hermes and continue the Telegram conversation.
-6. Attempt access from a non-allowlisted test identity and verify denial in sanitized logs.
+1. Create the one private Telegram bot, discover Lior's numeric ID, authorize only that ID, and complete `openai-codex` device authorization without exposing tokens.
+2. Create or identify the already-approved `Nix Business OS V0` Paperclip project, onboard Chief through the supported `hermes_gateway` invite/approve/claim flow, and record the non-secret company/project/agent IDs.
+3. Message Chief from Lior's account with `ping`; confirm a reply. Attempt from a non-allowlisted identity and verify silent denial without tool access.
+4. Store a harmless continuity fact with supported Hermes memory, restart Hermes, and verify recall.
+5. Ask what work exists; verify the response is retrieved from live Paperclip. Create `Slice 1 integration test` at low priority, verify its real project/identifier/status, add a harmless comment/update, then directly change it in Paperclip and prove Chief reads the current state rather than stale chat memory.
+6. Restart the runtime and then reboot the VPS. Verify Paperclip, Hermes, Telegram, provider auth, brain read, and Paperclip access all return.
+7. Create encrypted config/state backups, upload/download them through Google Drive, restore into fresh isolated volumes, and verify Chief identity, memory/session/skill files, API auth, Paperclip linkage, Telegram resume, and provider auth or the documented reauthorization path. Destroy only the isolated restore runtime.
 
 ### Failure modes
 
@@ -246,12 +250,24 @@ In the private Chief of Staff Telegram context, Lior can say “Create a work it
 - MCP package/API drift: startup/contract check fails with the incompatible version and route/tool name.
 - Agent key revoked: Paperclip returns 401; Chief cannot mutate work and escalation names credential repair, not a model failure.
 - Model/provider unavailable: Hermes reports failure while Paperclip remains healthy; no half-created commitment is claimed.
-- Bot token conflict or duplicate gateway: upstream token lock prevents the second writer from starting.
+- Bot token conflict or duplicate polling process: Telegram reports the conflict; stop the extra gateway rather than adding a relay.
 - Tool call proposes forbidden top-level project/goal: capability is absent and Chief asks Lior instead.
 
 ### Deliberately deferred
 
-Paperclip-triggered execution, Product/Growth/Operations, Telegram topic multiplexing, brain access, OpenCode, Todoist, n8n, external communication, and spending tools.
+Paperclip-triggered issue execution lifecycle, Product/Growth/Operations, enabled Telegram topic multiplexing, brain PR writeback, OpenCode, Todoist, n8n, Project Inception, external communication, and spending tools.
+
+### Repository implementation record — 2026-09-28
+
+Implemented on `slice-1-chief-of-staff` for independent review; no production changes have been made.
+
+- Pinned Hermes `v2026.9.14` image and Paperclip MCP `2026.916.1`.
+- The Hermes image's 14-day npm release-age policy rejects this matching recent Paperclip package, so only that exact pinned `npx` invocation uses `--min-release-age=0`; the package tool contract is tested from the pinned image.
+- Added only one new runtime service, `hermes`; the complete stack is Paperclip, PostgreSQL, and Hermes.
+- The default Hermes profile is Chief of Staff, with Git-controlled config/SOUL, persistent `/opt/data`, native Telegram polling, `openai-codex`, one optional `grill-me` skill, read-only `nix-brain`, and a least-capability Paperclip MCP allowlist.
+- Added an internal-only Paperclip/Hermes network and no host publication. The Runs API requires a separate generated key.
+- Extended state backup format to version 2 and config-pack format to version 2 to include Hermes state and `hermes.env`.
+- Local automated validation covers the pinned image/API/routing/skill contract and byte-identical Hermes state recovery. Telegram, provider OAuth, real Paperclip onboarding/project IDs, VPS reboot, and downloaded Google Drive recovery necessarily remain live acceptance after independent review.
 
 ---
 
@@ -272,8 +288,7 @@ Lior assigns/wakes a bounded issue in Paperclip. The Chief checks it out, perfor
 
 ### Components/files affected
 
-- Chief Paperclip adapter configuration (`hermes_gateway`) with secret reference, internal URL, issue-scoped session strategy, timeout, and reconnect policy.
-- Idempotent join/approve/claim operator procedure.
+- Exercise the existing Slice 1 `hermes_gateway` configuration for Paperclip-triggered execution; do not create a second Chief identity or gateway.
 - Chief operating instructions for checkout, status, child work, approval, and escalation.
 - `tests/e2e/paperclip-hermes-loop.*` and runbook diagnostics.
 
@@ -727,6 +742,4 @@ Every locked requirement is implemented or explicitly delayed to a named slice.
 
 ## Exact next implementation task
 
-Activate **Slice 0 in production** using `docs/runbooks/DEPLOY.md`, then complete the production and downloaded-off-host restore evidence listed in the Slice 0 implementation record. This is operational completion of Slice 0, not Slice 1 implementation.
-
-After the Slice 1 entry condition above is satisfied, implement only the Telegram → Hermes Chief of Staff → Paperclip work-creation path. Do not add later-slice services while doing so.
+Obtain independent review of `slice-1-chief-of-staff`. If approved, merge through a green hosted PR and execute the Slice 1 deployment/live-acceptance section in `docs/runbooks/DEPLOY.md`, followed by the downloaded-artifact recovery proof in `docs/runbooks/RESTORE.md`. Do not begin Slice 2 until every live Slice 1 gate is evidenced and this status becomes `SLICE 1: ACCEPTED`.

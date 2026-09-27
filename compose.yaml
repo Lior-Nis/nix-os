@@ -33,6 +33,7 @@ services:
     networks:
       - app
       - data
+      - agent
     depends_on:
       postgres:
         condition: service_healthy
@@ -45,6 +46,38 @@ services:
       retries: 10
       start_period: 90s
     stop_grace_period: 30s
+
+  hermes:
+    image: nousresearch/hermes-agent:v2026.9.14@sha256:99641e57ec762c59e54cb44aa6746b7fc68c18b3c5ddb088af54234c613d9294
+    restart: unless-stopped
+    pids_limit: 2048
+    env_file:
+      - ${HERMES_ENV_FILE:?Set HERMES_ENV_FILE to an absolute secret-file path}
+    environment:
+      HERMES_GATEWAY_BOOTSTRAP_STATE: running
+      API_SERVER_ENABLED: "true"
+      API_SERVER_HOST: 0.0.0.0
+      API_SERVER_PORT: "8642"
+    command: ["gateway", "run"]
+    volumes:
+      - hermes_data:/opt/data
+      - ./deploy/hermes/config.yaml:/opt/data/config.yaml:ro
+      - ./deploy/hermes/SOUL.md:/opt/data/SOUL.md:ro
+      - ${NIX_BRAIN_HOST_PATH:?Set NIX_BRAIN_HOST_PATH to the canonical nix-brain checkout}:/workspace/nix-brain:ro
+    working_dir: /workspace
+    networks:
+      - hermes_egress
+      - agent
+    depends_on:
+      paperclip:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8642/health >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    stop_grace_period: 45s
 
   postgres:
     image: postgres:17.11-alpine3.24@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
@@ -69,7 +102,10 @@ services:
 
 networks:
   app:
+  hermes_egress:
   data:
+    internal: true
+  agent:
     internal: true
 
 volumes:
@@ -77,3 +113,5 @@ volumes:
     name: ${COMPOSE_PROJECT_NAME:-nix-os}_paperclip_data
   postgres_data:
     name: ${COMPOSE_PROJECT_NAME:-nix-os}_postgres_data
+  hermes_data:
+    name: ${COMPOSE_PROJECT_NAME:-nix-os}_hermes_data

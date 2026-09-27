@@ -16,11 +16,19 @@ printf 'PAPERCLIP_DB_PASSWORD=%s\n' "$paperclip_db_password" >>"$test_tmp_dir/po
   printf 'PAPERCLIP_TOOL_ACTION_SIGNING_SECRET=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n'
 } >"$test_tmp_dir/paperclip.env"
 {
+  printf 'API_SERVER_KEY=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\n'
+  printf 'TELEGRAM_BOT_TOKEN=test-token\nTELEGRAM_ALLOWED_USERS=123456789\n'
+  printf 'TELEGRAM_ALLOW_ALL_USERS=false\nGATEWAY_ALLOW_ALL_USERS=false\n'
+} >"$test_tmp_dir/hermes.env"
+mkdir "$test_tmp_dir/nix-brain"
+{
   printf 'COMPOSE_PROJECT_NAME=nix-os-test\n'
   printf 'PAPERCLIP_PUBLIC_URL=https://nix-os.test-tailnet.ts.net\n'
   printf 'PAPERCLIP_HOST_PORT=0\n'
   printf 'POSTGRES_ENV_FILE=%s\n' "$test_tmp_dir/postgres.env"
   printf 'PAPERCLIP_ENV_FILE=%s\n' "$test_tmp_dir/paperclip.env"
+  printf 'HERMES_ENV_FILE=%s\n' "$test_tmp_dir/hermes.env"
+  printf 'NIX_BRAIN_HOST_PATH=%s\n' "$test_tmp_dir/nix-brain"
   printf 'PAPERCLIP_AUTH_DISABLE_SIGN_UP=true\n'
   printf 'BACKUP_OUTPUT_DIR=%s\n' "$test_tmp_dir/backups"
 } >"$test_tmp_dir/test.env"
@@ -35,6 +43,15 @@ if NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$test_tmp_dir/miss
   printf 'missing required configuration unexpectedly passed\n' >&2
   exit 1
 fi
+
+cp "$test_tmp_dir/hermes.env" "$test_tmp_dir/hermes-safe.env"
+sed 's/^TELEGRAM_ALLOW_ALL_USERS=false$/TELEGRAM_ALLOW_ALL_USERS=true/' \
+  "$test_tmp_dir/hermes-safe.env" >"$test_tmp_dir/hermes.env"
+if NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$test_tmp_dir/test.env" >/dev/null 2>&1; then
+  printf 'unsafe Telegram allow-all configuration unexpectedly passed\n' >&2
+  exit 1
+fi
+mv "$test_tmp_dir/hermes-safe.env" "$test_tmp_dir/hermes.env"
 
 age_private_pattern='AGE-SECRET-KEY-(PQ-)?1[[:alnum:]]{20,}|AGE-PLUGIN-[A-Z0-9-]+-1[[:alnum:]]{20,}'
 

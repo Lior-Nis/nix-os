@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+config_file=${2:-${CONFIG_FILE:-$repo_root/.env}}
+action=${1:-}
+compose=(docker compose --env-file "$config_file")
+
+fail() { printf 'Hermes configuration error: %s\n' "$*" >&2; exit 1; }
+read_config() { grep -E "^${1}=" "$config_file" | tail -n 1 | cut -d= -f2- || true; }
+
+[[ -f "$config_file" ]] || fail "configuration file does not exist: $config_file"
+hermes_env=$(read_config HERMES_ENV_FILE)
+[[ -n "$hermes_env" && -f "$hermes_env" ]] || fail "HERMES_ENV_FILE is missing"
+
+case "$action" in
+  install-skill)
+    "$repo_root/scripts/check-config" "$config_file" >/dev/null
+    "${compose[@]}" exec -T hermes hermes skills install official/software-development/grill-me --yes
+    "${compose[@]}" exec -T hermes sh -ec 'test -f /opt/data/skills/grill-me/SKILL.md'
+    printf 'The official grill-me skill is installed in persistent Hermes state.\n'
+    ;;
+  auth)
+    "$repo_root/scripts/check-config" "$config_file" >/dev/null
+    printf 'Complete the OpenAI device authorization in your browser. Tokens stay in the Hermes volume.\n'
+    "${compose[@]}" exec hermes hermes auth add openai-codex --type oauth --priority 0
+    "${compose[@]}" exec -T hermes hermes auth status openai-codex >/dev/null
+    printf 'Hermes reports an openai-codex credential.\n'
+    ;;
+  verify)
+    "$repo_root/scripts/check-config" "$config_file" >/dev/null
+    api_key=$(grep -E '^API_SERVER_KEY=' "$hermes_env" | tail -n 1 | cut -d= -f2-)
+    [[ -n "$api_key" ]] || fail "API_SERVER_KEY is missing"
+    "${compose[@]}" exec -T hermes curl -fsS http://127.0.0.1:8642/health >/dev/null
+    status=$("${compose[@]}" exec -T paperclip curl -sS -o /dev/null -w '%{http_code}' http://hermes:8642/v1/capabilities)
+    [[ "$status" == 401 ]] || fail "Hermes API did not reject an unauthenticated request (HTTP $status)"
+    printf 'header = "Authorization: Bearer %s"\n' "$api_key" \
+      | "${compose[@]}" exec -T paperclip curl -fsS -K - http://hermes:8642/v1/capabilities >/dev/null
+    "${compose[@]}" exec -T hermes curl -fsS http://paperclip:3100/api/health >/dev/null
+    "${compose[@]}" exec -T hermes hermes auth status openai-codex >/dev/null
+    "${compose[@]}" exec -T hermes sh -ec 'test -f /opt/data/skills/grill-me/SKILL.md'
+    "${compose[@]}" exec -T hermes python3 -c '
+import os, urllib.request
+from dotenv import load_dotenv
+load_dotenv("/opt/data/.env", override=True)
+key = os.environ.get("PAPERCLIP_API_KEY", "")
+company = os.environ.get("PAPERCLIP_COMPANY_ID", "")
+agent = os.environ.get("PAPERCLIP_AGENT_ID", "")
+assert key.startswith("pcp_") and company and agent
+request = urllib.request.Request("http://paperclip:3100/api/agents/me", headers={"Authorization": "Bearer " + key})
+with urllib.request.urlopen(request, timeout=10) as response:
+    assert response.status == 200
+' >/dev/null
+    printf 'Hermes API auth, private network paths, provider auth, and grill-me skill are ready.\n'
+    ;;
+  *)
+    printf 'Usage: %s {install-skill|auth|verify} [/absolute/path/to/deployment.env]\n' "$0" >&2
+    exit 2
+    ;;
+esac

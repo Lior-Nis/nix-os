@@ -1,6 +1,6 @@
 # Nix Business OS V0 architecture
 
-Status: Slice 0 tailnet-only amendment implemented locally, 2026-09-25. No live runtime has been deployed from this repository yet.
+Status: Slice 0 is accepted in production. Slice 1 Chief of Staff integration is implemented for review as of 2026-09-28 and is not yet deployed.
 
 ## Purpose and scope
 
@@ -151,6 +151,8 @@ Per [ADR 0001](decisions/0001-single-vps-compose.md), V0 runs on one Hostinger L
 - Paperclip has a non-internal Compose network for required outbound access and a separate internal data network; neither publishes ingress.
 - PostgreSQL has no host-published port.
 - Hermes Runs API and dashboard are private to the Compose network; Telegram access is outbound from Hermes.
+- Slice 1 runs one official Hermes container using its default profile as Chief of Staff. `/opt/data` is a named volume; Git supplies the read-only SOUL/config, and a clean `nix-brain` clone is mounted read-only at `/workspace/nix-brain`.
+- Hermes and Paperclip share only the internal `agent` network. Paperclip calls `http://hermes:8642` with a dedicated API key; Hermes calls `http://paperclip:3100` through the pinned official MCP server with a different claimed agent key. Neither internal endpoint is host-published. See [ADR 0006](decisions/0006-private-hermes-gateway-network.md).
 - n8n is absent until its first required workflow. When added, only its signed webhook routes and authenticated UI are exposed.
 - Containers run without privileged mode, Docker socket mounts, or host networking unless a documented upstream limitation and a new ADR require it.
 - Health checks cover process readiness and dependency reachability, not just open ports.
@@ -164,10 +166,10 @@ A fresh Paperclip volume is initialized with the pinned release's official `pape
 | Class | Examples | Location and recovery |
 |---|---|---|
 | Git-controlled configuration | Compose files, Tailscale Serve reconstruction command, redacted Hermes config/SOUL templates, policy text, tests, n8n workflow JSON after Slice 7 | GitHub `nix-os`; rebuildable from a commit |
-| External deployment configuration | deployment `.env` and service env files required to reconstruct runtime configuration | separate age-encrypted configuration pack, restored to recorded paths with mode `0600` and verified checksums |
-| Runtime state | Paperclip PostgreSQL data, Paperclip uploads/config, Hermes `state.db`/sessions/memory, n8n database and storage, local worktrees/logs | named volumes/host state directory; restored from verified off-host backups |
+| External deployment configuration | deployment `.env`, PostgreSQL/Paperclip env files, and Hermes env file containing the Telegram token/allowlist plus Runs API key | separate age-encrypted configuration pack, restored to recorded paths with mode `0600` and verified checksums |
+| Runtime state | Paperclip PostgreSQL data, Paperclip uploads/config, Hermes provider OAuth/profile memory/sessions/skills/gateway state, n8n database and storage, local worktrees/logs | named volumes/host state directory; restored from verified off-host backups |
 | Durable company knowledge | `nix-brain` Markdown and Git history | separate private GitHub repository; local clones are disposable |
-| Secrets | bot token, model keys, Hermes API keys, Paperclip agent keys, DB passwords, GitHub App key, Todoist token, n8n encryption key | root-owned files or an operator secret store outside the checkout; per-service injection; separately backed up encrypted |
+| Secrets | bot token, model credentials, Hermes API keys, Paperclip agent keys, DB passwords, GitHub App key, Todoist token, n8n encryption key | root-owned external files or the relevant encrypted persistent service state outside the checkout; per-service injection; separately backed up encrypted |
 
 Configuration portability is not state portability. A Compose file cannot restore an employee's memory, a work graph, credentials, or encryption keys.
 
@@ -181,7 +183,7 @@ Slice 0 establishes the procedure; later slices extend its manifest.
 | Paperclip database | nightly compressed logical dump, encrypted and copied off-host | restore to an isolated database; CEO authenticates and real company/issue values and relationships match |
 | Paperclip home/storage | encrypted file backup coordinated with the database backup | attachment bytes match a known SHA-256; config and encrypted-secret master key are preserved |
 | Paperclip portable company bundle | periodic export including company, agents, projects, skills, issues | preview/import to a disposable company |
-| Hermes profile state | quiesced volume snapshot or stop-the-gateway file backup | profile starts; Telegram allowlist, memory, and a sample session survive |
+| Hermes profile state | stop Hermes, archive the complete `/opt/data` volume with the coordinated Paperclip backup | profile identity, provider OAuth, memory, sessions, installed skill, Telegram gateway state, and API state survive; live Telegram/provider operation is rechecked without exposing secrets |
 | `nix-brain` and source repos | private GitHub remote plus feature-branch/PR/green-CI convention | fresh clone and CI pass |
 | n8n (when added) | its database, storage volume, workflow exports, and `N8N_ENCRYPTION_KEY` | credentials decrypt and Todoist test workflow runs |
 

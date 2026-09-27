@@ -1,7 +1,7 @@
 CONFIG_FILE ?= .env
 export CONFIG_FILE
 
-.PHONY: vps-preflight validate init-secrets initialize-paperclip deploy configure-tailscale upgrade bootstrap-ceo status health logs restart backup backup-config restore-config restore-smoke ci
+.PHONY: vps-preflight validate init-secrets init-hermes-secrets initialize-paperclip configure-hermes hermes-auth hermes-agent-submit hermes-agent-claim deploy configure-tailscale upgrade bootstrap-ceo status health logs restart backup backup-config restore-config restore-smoke ci
 
 vps-preflight:
 	./scripts/vps-preflight
@@ -12,8 +12,23 @@ validate:
 init-secrets:
 	./scripts/init-secrets "$(CONFIG_FILE)"
 
+init-hermes-secrets:
+	./scripts/init-hermes-secrets "$(CONFIG_FILE)"
+
 initialize-paperclip:
 	./scripts/initialize-paperclip "$(CONFIG_FILE)"
+
+configure-hermes:
+	./scripts/configure-hermes install-skill "$(CONFIG_FILE)"
+
+hermes-auth:
+	./scripts/configure-hermes auth "$(CONFIG_FILE)"
+
+hermes-agent-submit:
+	./scripts/onboard-hermes-agent submit "$(CONFIG_FILE)"
+
+hermes-agent-claim:
+	./scripts/onboard-hermes-agent claim "$(CONFIG_FILE)"
 
 deploy:
 	./scripts/ops deploy

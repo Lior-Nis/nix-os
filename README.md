@@ -9,7 +9,7 @@ Start here:
 3. Check the [upstream compatibility snapshot](docs/UPSTREAM.md).
 4. Execute exactly one unblocked slice from [the implementation plan](docs/IMPLEMENTATION_PLAN.md).
 
-The repository was empty when the initial architecture pass began on 2026-09-22. Slice 0 now contains the local Compose, validation, backup, restore, CI, and operator foundation. It has not yet been deployed to a VPS because the external prerequisites listed in the implementation plan have not been supplied.
+Slice 0 is accepted and running on the private tailnet. The current feature branch implements Slice 1 for independent review: one persistent Hermes Chief of Staff with native Telegram ingress and bounded Paperclip access. Production deployment remains gated on review, a green pull request, and the live acceptance procedure in the runbooks.
 
 ## Authority boundaries
 
@@ -32,8 +32,9 @@ Slices add directories only when they need them:
 │   ├── IMPLEMENTATION_PLAN.md
 │   ├── UPSTREAM.md
 │   └── decisions/
-├── compose.yaml            # Slice 0 services and state boundaries
+├── compose.yaml            # Current-slice services and state boundaries
 ├── deploy/
+│   ├── hermes/             # Chief of Staff configuration and SOUL
 │   └── postgres/           # First-start least-privilege role initialization
 ├── scripts/                # Small operator scripts, not a runtime
 ├── tests/smoke/            # Configuration and recovery tests

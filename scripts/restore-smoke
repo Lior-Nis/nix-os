@@ -71,7 +71,8 @@ restore_project=${RESTORE_PROJECT_NAME:-nix-os-restore-$$}
 
 restore_postgres_volume="${restore_project}_postgres_data"
 restore_paperclip_volume="${restore_project}_paperclip_data"
-for restore_volume in "$restore_postgres_volume" "$restore_paperclip_volume"; do
+restore_hermes_volume="${restore_project}_hermes_data"
+for restore_volume in "$restore_postgres_volume" "$restore_paperclip_volume" "$restore_hermes_volume"; do
   if docker volume inspect "$restore_volume" >/dev/null 2>&1; then
     fail "restore target volume already exists: $restore_volume"
   fi
@@ -79,14 +80,19 @@ done
 
 restore_postgres_env="$restore_tmp_dir/postgres.env"
 restore_paperclip_env="$restore_tmp_dir/paperclip.env"
+restore_hermes_env="$restore_tmp_dir/hermes.env"
+restore_brain="$restore_tmp_dir/nix-brain"
 restore_config="$restore_tmp_dir/restore.env"
-if [[ -n ${RESTORE_POSTGRES_ENV_FILE:-} || -n ${RESTORE_PAPERCLIP_ENV_FILE:-} ]]; then
+if [[ -n ${RESTORE_POSTGRES_ENV_FILE:-} || -n ${RESTORE_PAPERCLIP_ENV_FILE:-} || -n ${RESTORE_HERMES_ENV_FILE:-} ]]; then
   [[ -n ${RESTORE_POSTGRES_ENV_FILE:-} && -f "$RESTORE_POSTGRES_ENV_FILE" ]] \
     || fail "RESTORE_POSTGRES_ENV_FILE must name the restored PostgreSQL secret file"
   [[ -n ${RESTORE_PAPERCLIP_ENV_FILE:-} && -f "$RESTORE_PAPERCLIP_ENV_FILE" ]] \
     || fail "RESTORE_PAPERCLIP_ENV_FILE must name the restored Paperclip secret file"
+  [[ -n ${RESTORE_HERMES_ENV_FILE:-} && -f "$RESTORE_HERMES_ENV_FILE" ]] \
+    || fail "RESTORE_HERMES_ENV_FILE must name the restored Hermes secret file"
   install -m 0600 "$RESTORE_POSTGRES_ENV_FILE" "$restore_postgres_env"
   install -m 0600 "$RESTORE_PAPERCLIP_ENV_FILE" "$restore_paperclip_env"
+  install -m 0600 "$RESTORE_HERMES_ENV_FILE" "$restore_hermes_env"
 else
   postgres_password=$(openssl rand -hex 32)
   paperclip_db_password=$(openssl rand -hex 32)
@@ -99,31 +105,50 @@ else
     printf 'BETTER_AUTH_SECRET=%s\n' "$better_auth_secret"
     printf 'PAPERCLIP_TOOL_ACTION_SIGNING_SECRET=%s\n' "$tool_action_secret"
   } >"$restore_paperclip_env"
+  {
+    printf 'API_SERVER_KEY=%s\n' "$(openssl rand -hex 32)"
+    printf 'TELEGRAM_BOT_TOKEN=test-token\n'
+    printf 'TELEGRAM_ALLOWED_USERS=123456789\n'
+    printf 'TELEGRAM_ALLOW_ALL_USERS=false\nGATEWAY_ALLOW_ALL_USERS=false\n'
+  } >"$restore_hermes_env"
 fi
+mkdir -p "$restore_brain"
 {
   printf 'COMPOSE_PROJECT_NAME=%s\n' "$restore_project"
   printf 'PAPERCLIP_PUBLIC_URL=https://nix-os.restore-test.ts.net\n'
   printf 'PAPERCLIP_HOST_PORT=0\n'
   printf 'POSTGRES_ENV_FILE=%s\n' "$restore_postgres_env"
   printf 'PAPERCLIP_ENV_FILE=%s\n' "$restore_paperclip_env"
+  printf 'HERMES_ENV_FILE=%s\n' "$restore_hermes_env"
+  printf 'NIX_BRAIN_HOST_PATH=%s\n' "$restore_brain"
   printf 'PAPERCLIP_AUTH_DISABLE_SIGN_UP=true\n'
   printf 'BACKUP_OUTPUT_DIR=%s\n' "$restore_tmp_dir/backups"
 } >"$restore_config"
-chmod 0600 "$restore_postgres_env" "$restore_paperclip_env" "$restore_config"
+chmod 0600 "$restore_postgres_env" "$restore_paperclip_env" "$restore_hermes_env" "$restore_config"
 
 compose_restore=(docker compose --env-file "$restore_config")
-"${compose_restore[@]}" create postgres paperclip >/dev/null
+"${compose_restore[@]}" create postgres paperclip hermes >/dev/null
 restore_started=1
 docker run --rm \
   --volume "$restore_paperclip_volume:/target" \
   --volume "$payload_dir:/backup:ro" \
-  "$archive_helper_image" sh -ec 'cd /target && tar -xzf /backup/paperclip-data.tar.gz'
+  "$archive_helper_image" sh -ec 'find /target -mindepth 1 -delete && cd /target && tar -xzf /backup/paperclip-data.tar.gz'
 
 docker run --rm \
   --volume "$restore_paperclip_volume:/source:ro" \
   --volume "$restore_tmp_dir:/verify" \
   "$archive_helper_image" sh -ec 'cd /source && find . -type f -exec sha256sum {} \; | sort > /verify/restored-paperclip-files.sha256'
 diff -u "$payload_dir/paperclip-files.sha256" "$restore_tmp_dir/restored-paperclip-files.sha256"
+
+docker run --rm \
+  --volume "$restore_hermes_volume:/target" \
+  --volume "$payload_dir:/backup:ro" \
+  "$archive_helper_image" sh -ec 'find /target -mindepth 1 -delete && cd /target && tar -xzf /backup/hermes-data.tar.gz'
+docker run --rm \
+  --volume "$restore_hermes_volume:/source:ro" \
+  --volume "$restore_tmp_dir:/verify" \
+  "$archive_helper_image" sh -ec 'cd /source && find . -type f -exec sha256sum {} \; | sort > /verify/restored-hermes-files.sha256'
+diff -u "$payload_dir/hermes-files.sha256" "$restore_tmp_dir/restored-hermes-files.sha256"
 
 "${compose_restore[@]}" up -d --wait postgres
 "${compose_restore[@]}" exec -T postgres pg_restore \

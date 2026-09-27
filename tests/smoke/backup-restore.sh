@@ -12,6 +12,7 @@ compose=(docker compose --env-file "$config_file")
 source_cookie=/tmp/nix-os-source-cookie.txt
 source_response=/tmp/nix-os-source-response.json
 restore_config=''
+archive_helper_image='postgres:17.11-alpine3.24@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24'
 
 fail() { printf 'backup/restore smoke error: %s\n' "$*" >&2; exit 1; }
 hash_stream() { if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1; else shasum -a 256 | cut -d' ' -f1; fi; }
@@ -23,7 +24,7 @@ assert_project_absent() {
     || fail "unexpected pre-existing containers for Compose project $project"
   [[ -z $(docker network ls -q --filter "label=com.docker.compose.project=$project") ]] \
     || fail "unexpected pre-existing networks for Compose project $project"
-  for resource in postgres_data paperclip_data; do
+  for resource in postgres_data paperclip_data hermes_data; do
     if docker volume inspect "${project}_${resource}" >/dev/null 2>&1; then
       fail "unexpected pre-existing volume ${project}_${resource}"
     fi
@@ -74,14 +75,31 @@ printf 'POSTGRES_PASSWORD=%s\nPAPERCLIP_DB_PASSWORD=%s\n' "$postgres_password" "
   printf 'PAPERCLIP_TOOL_ACTION_SIGNING_SECRET=%s\n' "$(openssl rand -hex 32)"
 } >"$smoke_tmp_dir/paperclip.env"
 {
+  printf 'API_SERVER_KEY=%s\n' "$(openssl rand -hex 32)"
+  printf 'TELEGRAM_BOT_TOKEN=test-token\nTELEGRAM_ALLOWED_USERS=123456789\n'
+  printf 'TELEGRAM_ALLOW_ALL_USERS=false\nGATEWAY_ALLOW_ALL_USERS=false\n'
+} >"$smoke_tmp_dir/hermes.env"
+mkdir "$smoke_tmp_dir/nix-brain"
+{
   printf 'COMPOSE_PROJECT_NAME=%s\n' "$smoke_project"
   printf 'PAPERCLIP_PUBLIC_URL=https://nix-os.test-tailnet.ts.net\nPAPERCLIP_HOST_PORT=0\n'
   printf 'POSTGRES_ENV_FILE=%s\nPAPERCLIP_ENV_FILE=%s\n' "$smoke_tmp_dir/postgres.env" "$smoke_tmp_dir/paperclip.env"
+  printf 'HERMES_ENV_FILE=%s\nNIX_BRAIN_HOST_PATH=%s\n' "$smoke_tmp_dir/hermes.env" "$smoke_tmp_dir/nix-brain"
   printf 'PAPERCLIP_AUTH_DISABLE_SIGN_UP=false\nBACKUP_OUTPUT_DIR=%s\n' "$smoke_tmp_dir/backups"
 } >"$config_file"
 chmod 0600 "$smoke_tmp_dir"/*.env
 
 NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$config_file"
+docker volume create "${smoke_project}_hermes_data" >/dev/null
+docker run --rm --volume "${smoke_project}_hermes_data:/state" "$archive_helper_image" sh -ec '
+  install -d /state/memories /state/sessions /state/skills/grill-me
+  printf "chief-of-staff-continuity-v1\n" >/state/memories/slice-1-continuity.txt
+  printf "telegram-session-fixture-v1\n" >/state/sessions/slice-1-session.json
+  printf "%s\n" "---" "name: grill-me" "---" >/state/skills/grill-me/SKILL.md
+  printf "%s\n" "PAPERCLIP_API_KEY=pcp_fixture_only" "PAPERCLIP_COMPANY_ID=fixture-company" "PAPERCLIP_AGENT_ID=fixture-agent" >/state/.env
+  printf "%s\n" "{\"provider\":\"openai-codex\",\"fixture\":true}" >/state/auth.json
+  printf "%s\n" "{\"desired_state\":\"running\",\"fixture\":true}" >/state/gateway_state.json
+'
 "${compose[@]}" up -d --wait postgres
 NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-migrations" "$config_file"
 "${compose[@]}" exec -T postgres psql -U paperclip -d paperclip -c 'CREATE TABLE migration_preflight_canary (id integer);' >/dev/null
@@ -173,6 +191,7 @@ restore_config="$restore_work_dir/restore.env"
 RESTORE_PROJECT_NAME="$restore_project" RESTORE_KEEP=true RESTORE_WORK_DIR="$restore_work_dir" \
   AGE_IDENTITY_FILE="$smoke_tmp_dir/backup-identity.txt" \
   RESTORE_POSTGRES_ENV_FILE="$smoke_tmp_dir/postgres.env" RESTORE_PAPERCLIP_ENV_FILE="$smoke_tmp_dir/paperclip.env" \
+  RESTORE_HERMES_ENV_FILE="$smoke_tmp_dir/hermes.env" \
   "$repo_root/scripts/restore-smoke" "$artifact"
 
 [[ -f "$restore_config" ]] || fail "could not locate retained restore configuration"
@@ -216,6 +235,14 @@ jq -e --arg environment_id "$environment_id" '.[0] | select(.outcome == "success
   >/dev/null <<<"$restored_access_events" || fail "restored canary could not be decrypted with the recovered master key"
 restored_health=$("${restore_compose[@]}" exec -T paperclip curl -fsS http://127.0.0.1:3100/api/health)
 grep -q '"status":"ok"' <<<"$restored_health" || fail "restored Paperclip health did not report ok"
+docker run --rm --volume "${restore_project}_hermes_data:/state:ro" "$archive_helper_image" sh -ec '
+  grep -qx chief-of-staff-continuity-v1 /state/memories/slice-1-continuity.txt
+  grep -qx telegram-session-fixture-v1 /state/sessions/slice-1-session.json
+  grep -q "name: grill-me" /state/skills/grill-me/SKILL.md
+  grep -q "PAPERCLIP_AGENT_ID=fixture-agent" /state/.env
+  grep -q "openai-codex" /state/auth.json
+  grep -q "desired_state" /state/gateway_state.json
+' || fail "restored Hermes identity/session/skill fixtures are incomplete"
 
 "${restore_compose[@]}" down --volumes --remove-orphans
 printf 'Fresh bootstrap and realistic Paperclip backup/restore smoke passed.\n'
