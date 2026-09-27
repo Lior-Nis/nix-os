@@ -1,6 +1,6 @@
 # Nix Business OS V0 implementation plan
 
-Status: Slice 0 tailnet-only amendment is being validated on `slice-0-tailnet-private`; live activation remains pending independent review. Updated 2026-09-25.
+Status: **SLICE 0: ACCEPTED.** Live deployment and downloaded-off-host recovery passed. Updated 2026-09-27.
 
 ## How to use this plan
 
@@ -12,7 +12,7 @@ Each slice is vertical: it ends in a behavior Lior can observe and a failure Lio
 
 ### Repository facts
 
-The supplied directory was empty on 2026-09-22. The reviewed foundation and remediation were merged through PRs; after PR #2, canonical `main` is `c6c56d521edec0451c073662c383605c9f769a41`. The tailnet-only amendment is isolated on `slice-0-tailnet-private`.
+The supplied directory was empty on 2026-09-22. The reviewed foundation and remediation were merged through PRs. The reviewed tailnet-only amendment passed hosted `foundation` and `recovery` CI in PR #3 and merged as canonical production commit `a6205378c70048c76a8ad15c73da3c6777e6404f`.
 
 ### Decisions already made
 
@@ -117,7 +117,7 @@ Lior can open Paperclip over HTTPS, authenticate, create the Nix company and a d
 ### Manual end-to-end verification
 
 1. Deploy from a clean clone at a recorded commit, create/prove the `nix` operator, name the Tailscale node `nix-os`, and discover its real MagicDNS FQDN.
-2. Configure the exclusive Tailscale Serve state and confirm tailnet access. From outside the VPS/tailnet, prove ports 80, 443, 3100, 5432, 8443, and 10000 are not publicly reachable; also prove the Tailscale FQDN has no public Funnel endpoint on 443, 8443, or 10000.
+2. Configure the exclusive Tailscale Serve state and confirm tailnet access. From outside the VPS/tailnet, prove ports 80, 443, 3100, 5432, 8443, and 10000 do not expose Nix; attribute any pre-existing unrelated public listener explicitly. Also prove the Tailscale FQDN has no public Funnel endpoint on 443, 8443, or 10000.
 3. Complete authenticated private signup and browser ownership claim, disable signup, prove new signup is rejected, and prove the existing CEO can sign in.
 4. Create the Nix company, set a deliberately tiny initial budget, and add a disposable issue, known-byte attachment, and harmless encrypted-secret canary.
 5. Run `docker compose down` without volume deletion, start again, and verify both objects.
@@ -148,18 +148,25 @@ The production age identity was generated on Lior's Mac, not the VPS. Its privat
 
 Repository validation covers Compose rendering, loopback-only Paperclip publishing, internal-only PostgreSQL, pinned images, private authenticated onboarding and browser claim, signup closure, migration guard/preflight, realistic encrypted backup/restore, configuration-pack round trip, ShellCheck, and CI workflow lint. Real Tailscale integration is intentionally not faked locally.
 
-### Live acceptance record — amended, pending review
+### Live acceptance record — 2026-09-25 through 2026-09-27
 
-Status: **INCOMPLETE — do not deploy until this amendment passes independent review.**
+Status: **SLICE 0: ACCEPTED.** All repository and live acceptance gates passed; this record entered canonical `main` through the documented evidence-PR workflow with hosted CI green.
 
 | Gate | Evidence | Status |
 |---|---|---|
-| GitHub baseline | PR #2 checks were green and PR #2 was merged; canonical `main` is `c6c56d521edec0451c073662c383605c9f769a41`. Amendment branch is `slice-0-tailnet-private`. | Baseline complete; amendment PR pending |
-| VPS/operator | Tailscale is reported installed/joined. `nix` user creation, tailnet SSH, sudo, Docker, Ubuntu/tool/storage preflight not yet performed. | Pending live acceptance |
-| Network | Repository enforces loopback-only Paperclip and internal-only PostgreSQL. Public probes and firewall inspection are not local tests. | Pending live acceptance |
-| MagicDNS/HTTPS | `scripts/configure-tailscale` inspects and resets Nix-owned state, proves reset is empty, applies one route, and validates the complete final JSON against an exact policy. Actual suffix, HTTPS consent, certificate, port probes, and Serve health require the VPS/tailnet. | Pending live acceptance |
-| Paperclip bootstrap | Local clean-volume smoke uses `authenticated/private`, supported browser claim API, signup closure, and subsequent login. Real browser verification is pending. | Pending live acceptance |
-| Google Drive/off-host recovery | Runbooks use encrypted-only `rclone` uploads to `gdrive:Nix/backups/{config,state}` and require downloading remote copies. OAuth is intentionally not configured before review. | Pending live acceptance |
+| GitHub baseline | Reviewed amendment PR #3 completed the documented feature-branch workflow; hosted `foundation` and `recovery` jobs were green before merge. Canonical/deployed `main` is `a6205378c70048c76a8ad15c73da3c6777e6404f`. | Passed |
+| VPS prerequisites | Hostinger VPS runs Ubuntu 24.04.4 LTS, x86_64, kernel 6.8.0-134-generic, Docker Engine 29.6.1, Compose 5.3.1, Tailscale 1.102.2, rclone 1.75.1, age 1.1.1, jq 1.7, and Git 2.43.0. Preflight passed with approximately 70 GB free and 7.8 GiB RAM. | Passed |
+| Operator | User `nix` owns `/opt/nix-os`, authenticates with the existing SSH key over `ssh nix@nix-os`, and passed non-interactive sudo, Docker, and repository-operation checks. Root/public-IP SSH remains available for recovery. | Passed |
+| Tailnet identity and HTTPS | Node name is `nix-os`; MagicDNS resolves `nix-os.tailee691f.ts.net` to `100.82.50.51`. Tailnet HTTPS health passed. Certificate CN/SAN matches the FQDN, issuer is Let's Encrypt YE1, and validity is 2026-09-25 through 2026-12-24. | Passed |
+| Serve/Funnel invariant | Final raw state is exactly `TCP.443.HTTPS=true` plus `/ -> http://127.0.0.1:3100` for `nix-os.tailee691f.ts.net:443`. The repository validator passed; no `AllowFunnel`, Funnel state, extra handler, port, or target exists. | Passed |
+| Host/public exposure | Docker publishes Paperclip only as `127.0.0.1:3100`; PostgreSQL has no host publication. External probes found 443, 3100, 5432, 8443, and 10000 closed/filtered. Port 22 is the retained recovery SSH path. Port 80 is open only for a pre-existing unrelated nginx workload and does not route to Nix. Listener inspection attributes tailnet `:443` exclusively to `tailscaled`. | Passed |
+| Paperclip bootstrap/auth | Production is healthy at pinned Paperclip `2026.916.1`, `authenticated/private`, bootstrap `ready`, with no active invite. Lior claimed CEO/admin, signed out/in, and a final authenticated production dashboard check succeeded. Signup returns `EMAIL_PASSWORD_SIGN_UP_DISABLED`; anonymous session and company API calls return 401 and 403 respectively. | Passed |
+| Recovery fixtures | Company `45726d0d-f871-4391-8af8-f4b509bc51ba` (`RECOVERY CANARY - Slice 0 - 2026-09-26`) contains related issue `f919084c-c0b8-4c18-9adb-396637b321b0` (`REC-1`). Attachment `c35e7432-5621-4391-872c-a2ae05f12ed7` has SHA-256 `cf797f279b650e40f883fcd28830670b81a584642bc0616e8c1d2ebcb3173923`. Secret `6858a93f-5660-4753-b6d7-56e7176335fc` is `local_encrypted`; its plaintext was never logged. | Passed |
+| Encrypted backups | Configuration artifact `nix-os-config-20260926T082005Z.tar.gz.age` SHA-256 is `7310f6b77507b01a94ce7ff6bbdcc12e74b80800dd0019be2fefa3e3063e6123`. State artifact `nix-os-nix-os-20260926T082015Z.tar.gz.age` SHA-256 is `26f957a692f1c59d009b2b7658386fa3e5f927c1135dff553eb1e9c7f74a6a87`. Both ciphertexts and checksum sidecars exist under `gdrive:Nix/backups/{config,state}`. | Passed |
+| Off-host round trip | All four files were downloaded from Google Drive into a separate recovery directory. Sidecars verified on the VPS and Mac; the Mac-held identity decrypted both downloaded ciphertexts without printing contents. Google Drive contains ciphertext and sidecars only. | Passed |
+| Isolated recovery | Downloaded artifacts restored into fresh project `nix-os-live-restore-20260926`. `/paperclip` hashes and database counts matched; the migration preflight passed with 211 tables and a Drizzle journal; PostgreSQL and Paperclip became healthy. Lior authenticated as restored CEO. Company/issue IDs and relationship matched; attachment bytes matched the recorded SHA-256. A restored-master-key SSH-environment probe added exactly one successful canary access event without outputting plaintext. | Passed |
+| Recovery cleanup | The isolated containers, networks, and both fresh volumes were destroyed. Temporary plaintext config/state files were removed from the VPS and Mac. Production and encrypted local/off-host artifacts were retained. Production health, auth, migrations, volumes, Serve state, and non-exposure checks passed afterward at 2026-09-27T20:48:55Z. | Passed |
+| Age custody | Private identity remains only at `~/.config/nix/age/identity.txt` on Lior's Mac with mode `0600`; the public recipient is `age15fxuw6eqj5sk9w9znpyxpqmkprzcpcfc60luaxg4auafu6ndhf8q0dagj0`. It was never copied to the VPS or Git. Lior confirmed a second safe personal copy on 2026-09-27. | Passed |
 
 Current upstream constraints:
 
@@ -170,9 +177,9 @@ Current upstream constraints:
 - Tailscale Serve `--bg` persists across daemon/host restarts and remains tailnet-only. `tailscale serve reset` clears prior node-level web-serving configuration; Nix validates the raw JSON after reset and after applying the exclusive route. Tailscale HTTPS may require admin web consent. Funnel is not used.
 - rclone's shared Google OAuth client ID is being retired during 2026; live Google Drive setup should use Lior's own Desktop OAuth client. Its OAuth config is a runtime secret and may be recreated in recovery.
 
-Exact live prerequisites are: amendment independent review and merge with hosted CI green; Hostinger root access to create/prove the `nix` operator; actual MagicDNS suffix and any HTTPS consent; VPS prerequisite/firewall/port verification; interactive Paperclip browser claim; interactive Google Drive OAuth; encrypted upload/download; and isolated restore from downloaded production artifacts.
+No Slice 0 prerequisites remain. The non-secret evidence update is merged through the documented PR workflow only after hosted `foundation` and `recovery` CI are green.
 
-Slice 1 entry condition: the amendment is merged through the documented PR convention; `nix`/Tailscale access and tailnet-only network exposure are proven; CEO claim, signup closure, and subsequent login pass; encrypted config and data artifacts are downloaded from Google Drive and pass isolated restore with restored authentication, company/issue relationship, attachment bytes, canary secret resolution, and health. Only then mark `SLICE 0: ACCEPTED`, stop, and separately authorize Slice 1.
+Slice 1 entry condition is satisfied. Stop here: Slice 1 still requires separate explicit authorization.
 
 ---
 
