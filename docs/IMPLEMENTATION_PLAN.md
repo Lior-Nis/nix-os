@@ -1,6 +1,6 @@
 # Nix Business OS V0 implementation plan
 
-Status: **SLICE 0: ACCEPTED. SLICE 1: IMPLEMENTED, REVIEW PENDING.** Slice 1 has not been deployed or live-accepted. Updated 2026-09-28.
+Status: **SLICE 0: ACCEPTED. SLICE 1: IMPLEMENTED, HOSTED CI BLOCKED.** Slice 1 has not been independently reviewed, deployed, or live-accepted. Updated 2026-09-28.
 
 ## How to use this plan
 
@@ -268,6 +268,7 @@ Implemented on `slice-1-chief-of-staff` for independent review; no production ch
 - Added an internal-only Paperclip/Hermes network and no host publication. The Runs API requires a separate generated key.
 - Extended state backup format to version 2 and config-pack format to version 2 to include Hermes state and `hermes.env`.
 - Local automated validation covers the pinned image/API/routing/skill contract and byte-identical Hermes state recovery. Telegram, provider OAuth, real Paperclip onboarding/project IDs, VPS reboot, and downloaded Google Drive recovery necessarily remain live acceptance after independent review.
+- Pull request #5 was opened at commit `5413083432105662ca64077eae9c471a8f6b5b09`. Both the push and pull-request Actions runs were rejected before any step started because GitHub reported a failed account payment or insufficient Actions spending limit; `recovery` was consequently skipped. This is an external account gate, not a test failure. Resolve the GitHub billing/spending condition and rerun both required jobs before independent review or merge.
 
 ---
 
@@ -742,4 +743,4 @@ Every locked requirement is implemented or explicitly delayed to a named slice.
 
 ## Exact next implementation task
 
-Obtain independent review of `slice-1-chief-of-staff`. If approved, merge through a green hosted PR and execute the Slice 1 deployment/live-acceptance section in `docs/runbooks/DEPLOY.md`, followed by the downloaded-artifact recovery proof in `docs/runbooks/RESTORE.md`. Do not begin Slice 2 until every live Slice 1 gate is evidenced and this status becomes `SLICE 1: ACCEPTED`.
+Resolve the GitHub Actions billing/spending gate and rerun pull request #5 until both hosted `foundation` and `recovery` jobs are green. Then obtain independent review of `slice-1-chief-of-staff`. If approved, merge and execute the Slice 1 deployment/live-acceptance section in `docs/runbooks/DEPLOY.md`, followed by the downloaded-artifact recovery proof in `docs/runbooks/RESTORE.md`. Do not begin Slice 2 until every live Slice 1 gate is evidenced and this status becomes `SLICE 1: ACCEPTED`.
