@@ -1,6 +1,6 @@
 # Nix Business OS V0 implementation plan
 
-Status: Slice 0 live deployment and downloaded-off-host recovery passed; acceptance awaits the evidence PR merging with hosted CI green. Updated 2026-09-27.
+Status: **SLICE 0: ACCEPTED.** Live deployment and downloaded-off-host recovery passed. Updated 2026-09-27.
 
 ## How to use this plan
 
@@ -150,7 +150,7 @@ Repository validation covers Compose rendering, loopback-only Paperclip publishi
 
 ### Live acceptance record — 2026-09-25 through 2026-09-27
 
-Status: **LIVE GATES PASSED — final acceptance awaits this evidence PR merging with hosted CI green.**
+Status: **SLICE 0: ACCEPTED.** All repository and live acceptance gates passed; this record entered canonical `main` through the documented evidence-PR workflow with hosted CI green.
 
 | Gate | Evidence | Status |
 |---|---|---|
@@ -177,9 +177,9 @@ Current upstream constraints:
 - Tailscale Serve `--bg` persists across daemon/host restarts and remains tailnet-only. `tailscale serve reset` clears prior node-level web-serving configuration; Nix validates the raw JSON after reset and after applying the exclusive route. Tailscale HTTPS may require admin web consent. Funnel is not used.
 - rclone's shared Google OAuth client ID is being retired during 2026; live Google Drive setup should use Lior's own Desktop OAuth client. Its OAuth config is a runtime secret and may be recreated in recovery.
 
-The only remaining Slice 0 prerequisite is merging this non-secret evidence update through the documented PR workflow with hosted `foundation` and `recovery` CI green.
+No Slice 0 prerequisites remain. The non-secret evidence update is merged through the documented PR workflow only after hosted `foundation` and `recovery` CI are green.
 
-Slice 1 entry condition: merge this evidence PR after hosted CI is green, mark `SLICE 0: ACCEPTED`, and stop. Slice 1 still requires separate explicit authorization.
+Slice 1 entry condition is satisfied. Stop here: Slice 1 still requires separate explicit authorization.
 
 ---
 
