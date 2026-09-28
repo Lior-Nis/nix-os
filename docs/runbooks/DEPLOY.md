@@ -60,7 +60,7 @@ Keep root/public-IP recovery available. Review its tightening separately only af
 
 ## First deployment
 
-1. As `nix`, clone the private repository into an operator-owned directory, check out the reviewed merged SHA, and run `./scripts/vps-preflight`.
+1. As `nix`, clone the public `nix-os` repository into an operator-owned directory, check out the reviewed merged SHA, and run `./scripts/vps-preflight`. `nix-brain` remains a separate private clone.
 
 2. Create configuration:
 

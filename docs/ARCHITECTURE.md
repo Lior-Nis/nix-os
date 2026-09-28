@@ -184,7 +184,8 @@ Slice 0 establishes the procedure; later slices extend its manifest.
 | Paperclip home/storage | encrypted file backup coordinated with the database backup | attachment bytes match a known SHA-256; config and encrypted-secret master key are preserved |
 | Paperclip portable company bundle | periodic export including company, agents, projects, skills, issues | preview/import to a disposable company |
 | Hermes profile state | stop Hermes, archive the complete `/opt/data` volume with the coordinated Paperclip backup | profile identity, provider OAuth, memory, sessions, installed skill, Telegram gateway state, and API state survive; live Telegram/provider operation is rechecked without exposing secrets |
-| `nix-brain` and source repos | private GitHub remote plus feature-branch/PR/green-CI convention | fresh clone and CI pass |
+| `nix-os` source | public GitHub repository plus feature-branch/PR/green-CI convention | fresh clone and CI pass; secrets and runtime state remain excluded |
+| `nix-brain` | separate private GitHub repository | fresh authenticated clone and knowledge checks pass |
 | n8n (when added) | its database, storage volume, workflow exports, and `N8N_ENCRYPTION_KEY` | credentials decrypt and Todoist test workflow runs |
 
 The Paperclip portable bundle is not a full backup because upstream excludes approvals and activity/cost history. Database restore remains required. At least monthly, restore a downloaded off-host data artifact together with the original external configuration pack into an isolated Compose project. Verify CEO authentication, a company/issue relationship, attachment bytes, health, and a harmless encrypted-secret canary through a bound environment probe whose access event reports successful resolution without exposing its value; then record non-secret evidence in a Paperclip Operations issue.
