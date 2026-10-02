@@ -38,6 +38,11 @@ require(any(mount.get("target") == "/var/lib/postgresql/data" for mount in postg
 hermes_mounts = services["hermes"].get("volumes", [])
 require(any(mount.get("target") == "/opt/data" for mount in hermes_mounts), "Hermes state is not persistent")
 require(any(mount.get("target") == "/workspace/nix-brain" and mount.get("read_only") for mount in hermes_mounts), "nix-brain must be mounted read-only")
+for helper in ("claim-agent.py", "verify-paperclip-mcp.py", "validate-tool-boundary.py"):
+    require(
+        any(mount.get("target") == f"/opt/nix/{helper}" and mount.get("read_only") for mount in hermes_mounts),
+        f"Hermes operator helper must be mounted read-only: {helper}",
+    )
 require(
     any(mount.get("target") == "/docker-entrypoint-initdb.d/10-paperclip.sh" for mount in postgres_mounts),
     "non-superuser Paperclip role initialization is missing",
@@ -54,6 +59,7 @@ paperclip_env = services["paperclip"].get("environment", {})
 require(paperclip_env.get("PAPERCLIP_DEPLOYMENT_MODE") == "authenticated", "Paperclip auth mode is wrong")
 require(paperclip_env.get("PAPERCLIP_DEPLOYMENT_EXPOSURE") == "private", "tailnet ingress must use private exposure mode")
 require(paperclip_env.get("PAPERCLIP_PUBLIC_URL") == "https://nix-os.test-tailnet.ts.net", "Paperclip public URL is wrong")
+require(paperclip_env.get("PAPERCLIP_ALLOWED_HOSTNAMES") == "paperclip", "Paperclip must allow only its internal service hostname in addition to the configured public URL")
 require(paperclip_env.get("PAPERCLIP_MIGRATION_AUTO_APPLY") == "true", "migration policy must be explicit")
 require(paperclip_env.get("PAPERCLIP_ENABLE_COMPANY_DELETION") == "false", "company deletion must be disabled")
 
@@ -96,14 +102,21 @@ require("@sha256:99641e57" in services["hermes"].get("image", ""), "Hermes image
 hermes_config = (repo_root / "deploy/hermes/config.yaml").read_text()
 require("provider: openai-codex" in hermes_config, "Hermes provider is not explicit")
 require("multiplex_profiles: false" in hermes_config, "Slice 1 must not enable profile multiplexing")
-require("group_policy: disabled" in hermes_config, "Slice 1 Telegram groups must be disabled")
+require("group_policy:" not in hermes_config, "unsupported Telegram group_policy must not be present")
+require("allow_bots: none" in hermes_config, "Telegram bot senders must not receive a bypass")
 require('allowed_chats: ["${TELEGRAM_ALLOWED_USERS}"]' in hermes_config, "Slice 1 must hard-gate Telegram to Lior's direct chat")
 require("@paperclipai/mcp-server@2026.916.1" in hermes_config, "Paperclip MCP package is not pinned")
+expected_lane = "[file, skills, memory, session_search, paperclip]"
+for lane in ("cli", "telegram", "api_server"):
+    require(f"{lane}: {expected_lane}" in hermes_config, f"Chief {lane} lane is not explicitly restricted")
+for forbidden_toolset in ("terminal", "code_execution", "browser", "web", "connections", "delegation", "cronjob", "computer_use"):
+    require(f"    - {forbidden_toolset}" in hermes_config, f"global defense-in-depth suppression is missing: {forbidden_toolset}")
 for forbidden_tool in ("paperclipCreateApproval", "paperclipApprovalDecision", "paperclipApiRequest", "paperclipControlIssueWorkspaceServices"):
     require(forbidden_tool not in hermes_config, f"forbidden Paperclip tool is enabled: {forbidden_tool}")
 require((repo_root / "deploy/hermes/SOUL.md").is_file(), "Chief of Staff SOUL is missing")
 
 onboarding = (repo_root / "scripts/onboard-hermes-agent").read_text()
+claim_helper = (repo_root / "deploy/hermes/claim-agent.py").read_text()
 for required_join_setting in (
     'adapterType:"hermes_gateway"',
     'apiBaseUrl:"http://hermes:8642"',
@@ -112,7 +125,9 @@ for required_join_setting in (
     'dangerouslyAllowInsecureRemoteHttp:true',
 ):
     require(required_join_setting in onboarding, f"Hermes join contract is missing: {required_join_setting}")
-require("claim-api-key" in onboarding, "Hermes join flow must claim a supported Paperclip agent key")
+require("claim-api-key" in claim_helper, "Hermes join flow must claim a supported Paperclip agent key")
+require("claim-agent.py claim" in onboarding, "Hermes join claim must use the atomic in-profile helper")
+require("NIX_PAPERCLIP_API_KEY" not in onboarding, "Paperclip key must not cross a process argument/environment boundary")
 require("psql" not in onboarding and "postgres" not in onboarding.lower(), "Hermes onboarding must not manipulate PostgreSQL directly")
 
 example = (repo_root / ".env.example").read_text()

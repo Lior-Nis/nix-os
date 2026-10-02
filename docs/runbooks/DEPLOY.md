@@ -20,7 +20,7 @@ Run the read-only check:
 - Compose internal networks: PostgreSQL alone with Paperclip on `data`; Paperclip and Hermes alone on `agent`.
 - Never run `tailscale funnel`.
 
-Keep the current `root@72.61.190.172` SSH recovery path until the `nix` path is proven. Do not change sshd or firewall recovery policy during this amendment.
+Keep the current `root@<VPS_PUBLIC_IP>` SSH recovery path until the `nix` path is proven. Resolve the real address from Lior's local SSH configuration; do not publish it in repository documentation. Do not change sshd or firewall recovery policy during this amendment.
 
 ## Repository and external prerequisites
 
@@ -200,7 +200,7 @@ sudo -E CONFIG_FILE="$PWD/.env" ./scripts/init-hermes-secrets "$PWD/.env"
 sudoedit /etc/nix-os/hermes.env
 ```
 
-Replace both Telegram placeholders directly in the editor. Keep the generated `API_SERVER_KEY`; do not reuse it as any other credential. The completed file contains exactly the API server key, Telegram token/user allowlist, and two explicit false allow-all flags. Keep mode `0600`. The Git-controlled Hermes config also uses Lior's positive user ID as its non-empty `allowed_chats` value; because Telegram group IDs are negative, this is the pinned release's hard DM-only gate in addition to `guest_mode: false` and `group_policy: disabled`.
+Replace both Telegram placeholders directly in the editor. Keep the generated `API_SERVER_KEY`; do not reuse it as any other credential. The completed file contains exactly the API server key, Telegram token/user allowlist, and two explicit false allow-all flags. Keep mode `0600`. The Git-controlled Hermes config uses Lior's positive user ID as its non-empty `allowed_chats` value; because Telegram group/forum IDs are negative, this is the pinned release's hard DM-only gate in addition to `guest_mode: false` and `allow_bots: none`. `group_policy` is not a supported pinned-release setting and is intentionally absent.
 
 ### 2. Deploy and authorize the provider
 
@@ -213,7 +213,7 @@ sudo -E ./scripts/configure-hermes auth "$PWD/.env"
 sudo -E ./scripts/configure-hermes install-skill "$PWD/.env"
 ```
 
-The auth command starts Hermes' supported OpenAI device-code flow for `openai-codex`. Lior completes the displayed browser authorization; the OAuth credential is stored under persistent `/opt/data`, not in Git or `hermes.env`. The selected model is `gpt-5.4`; change it only through reviewed config if the subscription does not offer it.
+The tracked Paperclip runtime configuration adds only the isolated Docker service name `paperclip` to the upstream private-host allowlist; Compose policy and `scripts/initialize-paperclip` validate the setting. This is required for Hermes' internal URL, works with the existing Slice 0 instance file, and does not publish another listener. The auth command starts Hermes' supported OpenAI device-code flow for `openai-codex`. Lior completes the displayed browser authorization; the OAuth credential is stored under persistent `/opt/data`, not in Git or `hermes.env`. The selected model is `gpt-5.4`; change it only through reviewed config if the subscription does not offer it.
 
 Confirm the bot answers Lior's `ping`. Do not proceed if Telegram reports a second polling consumer. From a different Telegram identity, send a message and verify it is silently ignored and causes no tool call; sanitize logs before recording evidence.
 
@@ -244,7 +244,11 @@ sudo -E ./scripts/onboard-hermes-agent claim "$PWD/.env"
 sudo -E ./scripts/configure-hermes verify "$PWD/.env"
 ```
 
-The claim command writes the distinct Paperclip key and non-secret company/agent IDs to the profile's mode-`0600` `/opt/data/.env`, restarts Hermes, and deletes the temporary claim state. It prints only company and agent IDs. `verify` proves API auth in both directions, provider auth, and skill presence without displaying credentials.
+Before contacting the one-time claim endpoint, the claim command verifies the profile, ownership, writability, free space, and destination mode inside the Hermes container. It then claims, writes a prepared mode-`0600` temporary file, flushes it, atomically renames it to `/opt/data/.env`, flushes the directory, and verifies the resulting Paperclip identity. Only after those checks does it remove the pending marker and host-side claim state. It never prints the key or places it in a process argument. The command prints only company and agent IDs, restarts Hermes, and `verify` proves API auth, the exact restricted tool surface, provider auth, skill presence, and bounded Paperclip MCP identity without displaying credentials.
+
+The one-time secret cannot be replayed. If Paperclip consumed it but no valid `/opt/data/.env` can be recovered, preserve the helper's pending marker and inspect the volume first. If the credential is genuinely lost, use supported Paperclip administration to revoke the orphaned agent key (or remove the orphaned agent), issue a new agent invite, and repeat the flow. Never retry the consumed secret or edit the Paperclip database.
+
+The verified Chief surface must be identical for `cli`, `telegram`, and `api_server`: `file`, `skills`, `memory`, `session_search`, and bounded `paperclip`. The runtime validator expands these labels and fails if terminal, process management, code execution, browser/web/connectors, delegation, cron, computer-use, an unexpected MCP operation, or any other tool appears. The nine allowed Paperclip operations remain the only Paperclip write path.
 
 Inspect the agent in Paperclip and verify adapter type, URLs, issue session strategy, and responsible user. Confirm the Hermes Runs API has no host-published port:
 

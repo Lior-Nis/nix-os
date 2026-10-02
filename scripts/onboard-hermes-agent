@@ -51,42 +51,17 @@ case "$action" in
     ;;
   claim)
     [[ -f "$state_file" ]] || fail "pending join state is missing: $state_file"
-    request_id=$(jq -er '.id' "$state_file")
-    company_id=$(jq -er '.companyId' "$state_file")
-    claim_secret=$(jq -er '.claimSecret' "$state_file")
-    claim_body=$(jq -nc --arg claim_secret "$claim_secret" '{claimSecret:$claim_secret}')
-    response=$(printf '%s' "$claim_body" | "${compose[@]}" exec -T hermes curl -fsS \
-      -H 'Content-Type: application/json' -X POST \
-      "http://paperclip:3100/api/join-requests/${request_id}/claim-api-key" --data-binary @-)
-    unset claim_secret claim_body
-    paperclip_key=$(jq -er '.token' <<<"$response")
-    agent_id=$(jq -er '.agentId' <<<"$response")
-    [[ "$paperclip_key" == pcp_* ]] || fail "claimed Paperclip key has the wrong shape"
-    "${compose[@]}" exec -T \
-      -e NIX_PAPERCLIP_API_KEY="$paperclip_key" \
-      -e NIX_PAPERCLIP_COMPANY_ID="$company_id" \
-      -e NIX_PAPERCLIP_AGENT_ID="$agent_id" \
-      hermes python3 -c '
-import os, pathlib
-target = pathlib.Path("/opt/data/.env")
-preserved = []
-if target.exists():
-    for line in target.read_text().splitlines():
-        if not line.startswith(("PAPERCLIP_API_URL=", "PAPERCLIP_API_KEY=", "PAPERCLIP_COMPANY_ID=", "PAPERCLIP_AGENT_ID=")):
-            preserved.append(line)
-preserved.extend([
-    "PAPERCLIP_API_URL=http://paperclip:3100",
-    "PAPERCLIP_API_KEY=" + os.environ["NIX_PAPERCLIP_API_KEY"],
-    "PAPERCLIP_COMPANY_ID=" + os.environ["NIX_PAPERCLIP_COMPANY_ID"],
-    "PAPERCLIP_AGENT_ID=" + os.environ["NIX_PAPERCLIP_AGENT_ID"],
-])
-target.write_text("\n".join(preserved) + "\n")
-target.chmod(0o600)
-'
-    unset paperclip_key response
-    "${compose[@]}" restart hermes >/dev/null
+    "${compose[@]}" exec -T hermes python3 /opt/nix/claim-agent.py preflight >/dev/null
+    claim_result=$("${compose[@]}" exec -T hermes python3 /opt/nix/claim-agent.py claim <"$state_file") \
+      || fail "claim/persistence failed; keep the join state and follow the documented orphan-credential recovery procedure"
+    company_id=$(jq -er '.companyId' <<<"$claim_result")
+    agent_id=$(jq -er '.agentId' <<<"$claim_result")
+    # shellcheck disable=SC2016
+    "${compose[@]}" exec -T hermes sh -ec \
+      'test "$(stat -c %a /opt/data/.env)" = 600 && test -s /opt/data/.paperclip-claim-receipt.json'
     rm -f -- "$state_file"
-    printf 'Chief of Staff agent claimed without logging its key.\n'
+    "${compose[@]}" restart hermes >/dev/null
+    printf 'Chief of Staff agent claimed, atomically persisted, and identity-verified without logging its key.\n'
     printf 'Company ID: %s\nAgent ID: %s\n' "$company_id" "$agent_id"
     ;;
   *)

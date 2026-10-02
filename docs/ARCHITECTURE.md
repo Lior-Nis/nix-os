@@ -73,7 +73,9 @@ Temporary research subagents are children of the requesting Hermes employee. The
 4. Hermes replies with the Paperclip identifier and a concise statement of the commitment.
 5. Paperclip becomes authoritative immediately; Telegram is not later reconciled as a backlog.
 
-The MCP tool allowlist in the first slices includes issue reads/writes but excludes creation of top-level goals/projects. That makes the V0 approval rule a capability boundary as well as an instruction.
+The Slice 1 Chief profile has explicit, identical `cli`, `telegram`, and `api_server` toolsets containing only file access, skills, memory, session search, and the bounded Paperclip MCP. Terminal, process management, code execution, browser/web/connectors, cron, delegation, and computer-use are disabled. The MCP allowlist includes issue reads/writes but excludes creation of top-level goals/projects and administrative mutations. Because the profile has no generic execution or raw network tool, this is an enforced credential boundary rather than prompt-only policy.
+
+Per [ADR 0007](decisions/0007-separate-control-plane-credentials-from-execution.md), a control-plane employee may hold a privileged company credential only with a narrow tool surface. Future execution workers may receive terminal/browser/computer-use as required, but must not inherit the employee's broad control-plane credential. No execution worker is introduced in Slice 1.
 
 ### Paperclip to employee execution
 
@@ -152,7 +154,7 @@ Per [ADR 0001](decisions/0001-single-vps-compose.md), V0 runs on one Hostinger L
 - PostgreSQL has no host-published port.
 - Hermes Runs API and dashboard are private to the Compose network; Telegram access is outbound from Hermes.
 - Slice 1 runs one official Hermes container using its default profile as Chief of Staff. `/opt/data` is a named volume; Git supplies the read-only SOUL/config, and a clean `nix-brain` clone is mounted read-only at `/workspace/nix-brain`.
-- Hermes and Paperclip share only the internal `agent` network. Paperclip calls `http://hermes:8642` with a dedicated API key; Hermes calls `http://paperclip:3100` through the pinned official MCP server with a different claimed agent key. Neither internal endpoint is host-published. See [ADR 0006](decisions/0006-private-hermes-gateway-network.md).
+- Hermes and Paperclip share only the internal `agent` network. Paperclip calls `http://hermes:8642` with a dedicated API key; Hermes calls `http://paperclip:3100` through the pinned official MCP server with a different claimed agent key. The supported `PAPERCLIP_ALLOWED_HOSTNAMES=paperclip` setting admits that service hostname through Paperclip's private-host guard; Docker's internal network remains the reachability boundary. Neither internal endpoint is host-published. See [ADR 0006](decisions/0006-private-hermes-gateway-network.md).
 - n8n is absent until its first required workflow. When added, only its signed webhook routes and authenticated UI are exposed.
 - Containers run without privileged mode, Docker socket mounts, or host networking unless a documented upstream limitation and a new ADR require it.
 - Health checks cover process readiness and dependency reachability, not just open ports.
@@ -183,7 +185,7 @@ Slice 0 establishes the procedure; later slices extend its manifest.
 | Paperclip database | nightly compressed logical dump, encrypted and copied off-host | restore to an isolated database; CEO authenticates and real company/issue values and relationships match |
 | Paperclip home/storage | encrypted file backup coordinated with the database backup | attachment bytes match a known SHA-256; config and encrypted-secret master key are preserved |
 | Paperclip portable company bundle | periodic export including company, agents, projects, skills, issues | preview/import to a disposable company |
-| Hermes profile state | stop Hermes, archive the complete `/opt/data` volume with the coordinated Paperclip backup | profile identity, provider OAuth, memory, sessions, installed skill, Telegram gateway state, and API state survive; live Telegram/provider operation is rechecked without exposing secrets |
+| Hermes profile state | stop Hermes, archive the complete `/opt/data` volume with the coordinated Paperclip backup | restored Hermes boots with Telegram disabled, rejects unauthenticated API access, accepts the restored API key, loads the exact restricted tool surface and profile state, and resolves its claimed identity through bounded Paperclip MCP; live Telegram/provider operation is rechecked only after the isolated restore is destroyed |
 | `nix-os` source | public GitHub repository plus feature-branch/PR/green-CI convention | fresh clone and CI pass; secrets and runtime state remain excluded |
 | `nix-brain` | separate private GitHub repository | fresh authenticated clone and knowledge checks pass |
 | n8n (when added) | its database, storage volume, workflow exports, and `N8N_ENCRYPTION_KEY` | credentials decrypt and Todoist test workflow runs |

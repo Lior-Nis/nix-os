@@ -83,6 +83,7 @@ restore_paperclip_env="$restore_tmp_dir/paperclip.env"
 restore_hermes_env="$restore_tmp_dir/hermes.env"
 restore_brain="$restore_tmp_dir/nix-brain"
 restore_config="$restore_tmp_dir/restore.env"
+restore_override="$restore_tmp_dir/restore-compose.yaml"
 if [[ -n ${RESTORE_POSTGRES_ENV_FILE:-} || -n ${RESTORE_PAPERCLIP_ENV_FILE:-} || -n ${RESTORE_HERMES_ENV_FILE:-} ]]; then
   [[ -n ${RESTORE_POSTGRES_ENV_FILE:-} && -f "$RESTORE_POSTGRES_ENV_FILE" ]] \
     || fail "RESTORE_POSTGRES_ENV_FILE must name the restored PostgreSQL secret file"
@@ -126,7 +127,15 @@ mkdir -p "$restore_brain"
 } >"$restore_config"
 chmod 0600 "$restore_postgres_env" "$restore_paperclip_env" "$restore_hermes_env" "$restore_config"
 
-compose_restore=(docker compose --env-file "$restore_config")
+# Never let an isolated restore compete with the production Telegram long poll.
+printf '%s\n' \
+  'services:' \
+  '  hermes:' \
+  '    environment:' \
+  '      TELEGRAM_BOT_TOKEN: ""' >"$restore_override"
+chmod 0600 "$restore_override"
+
+compose_restore=(docker compose -f "$repo_root/compose.yaml" -f "$restore_override" --env-file "$restore_config")
 "${compose_restore[@]}" create postgres paperclip hermes >/dev/null
 restore_started=1
 docker run --rm \
@@ -169,7 +178,34 @@ NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-migrations" "$restore_config"
 health_json=$("${compose_restore[@]}" exec -T paperclip curl -fsS http://127.0.0.1:3100/api/health)
 grep -q '"status":"ok"' <<<"$health_json" || fail "restored Paperclip health did not report ok"
 
-printf 'Restore smoke passed for isolated project %s.\n' "$restore_project"
+"${compose_restore[@]}" up -d --wait hermes
+# shellcheck disable=SC2016
+"${compose_restore[@]}" exec -T hermes sh -ec 'test -z "${TELEGRAM_BOT_TOKEN:-}"' \
+  || fail "restored Hermes did not start with Telegram disabled"
+api_key=$(grep -E '^API_SERVER_KEY=' "$restore_hermes_env" | tail -n 1 | cut -d= -f2-)
+[[ ${#api_key} -ge 64 ]] || fail "restored Hermes API key is missing or too short"
+unauthorized=$("${compose_restore[@]}" exec -T paperclip curl -sS -o /dev/null -w '%{http_code}' \
+  http://hermes:8642/v1/capabilities)
+[[ "$unauthorized" == 401 ]] || fail "restored Hermes API accepted unauthenticated access (HTTP $unauthorized)"
+printf 'header = "Authorization: Bearer %s"\n' "$api_key" \
+  | "${compose_restore[@]}" exec -T paperclip curl -fsS -K - http://hermes:8642/v1/capabilities >/dev/null
+toolsets_json=$(printf 'header = "Authorization: Bearer %s"\n' "$api_key" \
+  | "${compose_restore[@]}" exec -T paperclip curl -fsS -K - http://hermes:8642/v1/toolsets)
+printf '%s' "$toolsets_json" \
+  | "${compose_restore[@]}" exec -T hermes python3 /opt/nix/validate-tool-boundary.py api >/dev/null
+"${compose_restore[@]}" exec -T hermes python3 /opt/nix/validate-tool-boundary.py runtime >/dev/null
+# shellcheck disable=SC2016
+"${compose_restore[@]}" exec -T hermes sh -ec '
+  test -f /opt/data/config.yaml
+  test -f /opt/data/SOUL.md
+  test -r /opt/data/.env
+  test "$(stat -c %a /opt/data/.env)" = 600
+  test -s /opt/data/.paperclip-claim-receipt.json
+' || fail "restored Chief profile or credential receipt is incomplete"
+"${compose_restore[@]}" exec -T hermes python3 /opt/nix/verify-paperclip-mcp.py >/dev/null \
+  || fail "restored Hermes could not resolve its identity through the bounded Paperclip MCP"
+
+printf 'Restore smoke passed for isolated project %s, including a booted restricted Hermes profile.\n' "$restore_project"
 if [[ ${RESTORE_KEEP:-false} == true ]]; then
   printf 'Restore project retained. Remove it with:\n  docker compose --env-file %s down --volumes\n' "$restore_config"
   printf 'RESTORE_CONFIG=%s\n' "$restore_config"

@@ -42,6 +42,7 @@ fi
 tests/smoke/tailscale-serve-policy.sh
 tests/smoke/foundation.sh
 tests/smoke/config-backup.sh
+PYTHONDONTWRITEBYTECODE=1 python3 tests/smoke/claim-agent.py
 
 if [[ ${RUN_DOCKER_SMOKE:-0} == 1 ]]; then
   tests/smoke/hermes-contract.sh

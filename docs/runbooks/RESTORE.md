@@ -90,7 +90,9 @@ sudo -E \
   ./scripts/restore-smoke /secure/recovery/<state-artifact>.tar.gz.age
 ```
 
-The smoke refuses production project names and pre-existing volumes and restores into fresh isolated state. Because Docker may seed a newly attached named volume from image contents during container creation, the script empties each already-validated fresh application volume immediately before extracting its archive. It compares database counts plus every `/paperclip` and Hermes `/opt/data` file hash and verifies Paperclip health. CI additionally creates a real CEO, company/issue relation, attachment bytes, encrypted canary, and representative Chief memory/session/skill/provider/gateway/Paperclip-link files; after restore it verifies all hashes, login, relationship, attachment checksum, and a new successful server-side secret-resolution audit event without revealing plaintext. CI cannot contact the real Telegram bot or OpenAI account.
+The smoke refuses production project names and pre-existing volumes and restores into fresh isolated state. Before backup, its real claimed Chief credential exercises all nine approved MCP operations across identity, existing-project reads, issue create/list/get/update, and comment add/list; the restricted runtime exposes no project/goal/admin mutation tool. The pinned server requires a heartbeat run for existing-issue mutations, so the fixture temporarily uses Paperclip's supported process adapter to hold a disposable issue run open without a model call, supplies that non-secret run ID to the official MCP, proves update/comment attribution, cancels the run, and restores the agent's `hermes_gateway` configuration before backup. Because Docker may seed a newly attached named volume from image contents during container creation, the script empties each already-validated fresh application volume immediately before extracting its archive. It compares database counts plus every `/paperclip` and Hermes `/opt/data` file hash and verifies Paperclip health. It then boots restored Hermes with an override that empties `TELEGRAM_BOT_TOKEN`, preventing duplicate polling. The test proves Hermes health, API-server `401` without the restored key, authenticated API success, the exact restricted API/runtime tool surface, Chief profile and receipt presence, and bounded `paperclipMe` identity against isolated restored Paperclip. CI additionally creates a real CEO, company/project/issue relation, MCP comment, attachment bytes, encrypted canary, and representative Chief memory/session/skill/provider/gateway state; after restore it verifies login, relationships, comment, attachment checksum, and a new successful server-side secret-resolution audit event without revealing plaintext. CI does not contact the real Telegram bot or OpenAI account.
+
+A clean restore requires outbound npm registry access the first time the exact `@paperclipai/mcp-server@2026.916.1` package is fetched by `npx`. The version is pinned; this network/cache dependency is reconstructible and is not backed up as critical state.
 
 The production acceptance gate uses the same supported Paperclip interfaces:
 
@@ -106,8 +108,10 @@ recovery-labelled company + related issue + known-byte attachment + harmless loc
 -> downloaded attachment SHA-256 matches
 -> bound environment probe creates one new successful canary access event without plaintext output
 -> Chief profile/SOUL, continuity memory, Telegram session, grill-me skill, gateway state, provider auth metadata, and claimed Paperclip identity are present
--> restored Hermes starts with its authenticated API private to Compose
--> Telegram bot resumes and Chief answers only Lior
+-> restored Hermes starts with Telegram explicitly disabled and its authenticated API private to Compose
+-> unauthenticated API gets 401; authenticated capabilities and exact restricted tool surfaces pass
+-> bounded Paperclip MCP resolves the restored Chief identity against isolated restored Paperclip
+-> after the isolated runtime is destroyed, production Telegram resumes and Chief answers only Lior
 -> openai-codex auth still works, or the documented device-code reauthentication is completed and recorded
 -> Chief reads the restored Paperclip issue and read-only nix-brain checkout
 -> application and database health pass

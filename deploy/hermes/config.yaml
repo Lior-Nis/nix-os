@@ -5,16 +5,34 @@ model:
 gateway:
   multiplex_profiles: false
 
+# The Chief holds a long-lived Paperclip agent key. Every production invocation
+# lane therefore uses the same explicit control-plane tool boundary. Do not use
+# the broad hermes-* presets here: they include terminal, code, browser, and web
+# capabilities that can bypass the Paperclip MCP allowlist.
 platform_toolsets:
-  cli: [terminal, file, skills]
-  telegram: [terminal, file, skills]
+  cli: [file, skills, memory, session_search, paperclip]
+  telegram: [file, skills, memory, session_search, paperclip]
+  api_server: [file, skills, memory, session_search, paperclip]
+
+# Defense in depth if a future upstream resolver or preset changes. The
+# concrete resolved tool surface is regression-tested from the pinned image.
+agent:
+  disabled_toolsets:
+    - terminal
+    - code_execution
+    - browser
+    - web
+    - connections
+    - delegation
+    - cronjob
+    - computer_use
 
 unauthorized_dm_behavior: ignore
 platforms:
   telegram:
     unauthorized_dm_behavior: ignore
     guest_mode: false
-    group_policy: disabled
+    allow_bots: none
     # Telegram group IDs are negative. Restricting allowed chats to Lior's
     # positive user ID makes Slice 1 DM-only; Slice 3 will replace this with
     # explicit group/topic routes when multiplexing is enabled.

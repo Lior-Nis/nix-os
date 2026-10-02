@@ -18,7 +18,7 @@ fail() {
 "$repo_root/scripts/check-migrations" "$config_file"
 
 # shellcheck disable=SC2016
-config_probe='const fs=require("node:fs");const p="/paperclip/instances/default/config.json";const c=JSON.parse(fs.readFileSync(p,"utf8"));if(c?.$meta?.source!=="onboard"||c?.database?.mode!=="postgres"||c?.server?.deploymentMode!=="authenticated"||c?.server?.exposure!=="private"||c?.auth?.baseUrlMode!=="explicit"||c?.auth?.publicBaseUrl!==process.env.PAPERCLIP_PUBLIC_URL||c?.storage?.provider!=="local_disk"||c?.secrets?.provider!=="local_encrypted")process.exit(1)'
+config_probe='const fs=require("node:fs");const p="/paperclip/instances/default/config.json";const c=JSON.parse(fs.readFileSync(p,"utf8"));const h=(process.env.PAPERCLIP_ALLOWED_HOSTNAMES??"").split(",").map(v=>v.trim()).filter(Boolean);if(c?.$meta?.source!=="onboard"||c?.database?.mode!=="postgres"||c?.server?.deploymentMode!=="authenticated"||c?.server?.exposure!=="private"||!h.includes("paperclip")||c?.auth?.baseUrlMode!=="explicit"||c?.auth?.publicBaseUrl!==process.env.PAPERCLIP_PUBLIC_URL||c?.storage?.provider!=="local_disk"||c?.secrets?.provider!=="local_encrypted")process.exit(1)'
 
 if "${compose[@]}" run --rm --no-deps --entrypoint node paperclip -e "$config_probe" >/dev/null 2>&1; then
   printf 'Paperclip instance configuration already exists and is valid.\n'

@@ -16,6 +16,7 @@ services:
       PAPERCLIP_DEPLOYMENT_MODE: authenticated
       PAPERCLIP_DEPLOYMENT_EXPOSURE: private
       PAPERCLIP_PUBLIC_URL: ${PAPERCLIP_PUBLIC_URL:?Set PAPERCLIP_PUBLIC_URL in the Compose environment file}
+      PAPERCLIP_ALLOWED_HOSTNAMES: paperclip
       PAPERCLIP_AUTH_DISABLE_SIGN_UP: ${PAPERCLIP_AUTH_DISABLE_SIGN_UP:-false}
       PAPERCLIP_ENABLE_COMPANY_DELETION: "false"
       PAPERCLIP_SECRETS_STRICT_MODE: "true"
@@ -63,6 +64,9 @@ services:
       - hermes_data:/opt/data
       - ./deploy/hermes/config.yaml:/opt/data/config.yaml:ro
       - ./deploy/hermes/SOUL.md:/opt/data/SOUL.md:ro
+      - ./deploy/hermes/claim-agent.py:/opt/nix/claim-agent.py:ro
+      - ./deploy/hermes/verify-paperclip-mcp.py:/opt/nix/verify-paperclip-mcp.py:ro
+      - ./deploy/hermes/validate-tool-boundary.py:/opt/nix/validate-tool-boundary.py:ro
       - ${NIX_BRAIN_HOST_PATH:?Set NIX_BRAIN_HOST_PATH to the canonical nix-brain checkout}:/workspace/nix-brain:ro
     working_dir: /workspace
     networks:

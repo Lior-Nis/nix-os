@@ -157,8 +157,8 @@ Status: **SLICE 0: ACCEPTED.** All repository and live acceptance gates passed; 
 | GitHub baseline | Reviewed amendment PR #3 completed the documented feature-branch workflow; hosted `foundation` and `recovery` jobs were green before merge. Canonical/deployed `main` is `a6205378c70048c76a8ad15c73da3c6777e6404f`. | Passed |
 | VPS prerequisites | Hostinger VPS runs Ubuntu 24.04.4 LTS, x86_64, kernel 6.8.0-134-generic, Docker Engine 29.6.1, Compose 5.3.1, Tailscale 1.102.2, rclone 1.75.1, age 1.1.1, jq 1.7, and Git 2.43.0. Preflight passed with approximately 70 GB free and 7.8 GiB RAM. | Passed |
 | Operator | User `nix` owns `/opt/nix-os`, authenticates with the existing SSH key over `ssh nix@nix-os`, and passed non-interactive sudo, Docker, and repository-operation checks. Root/public-IP SSH remains available for recovery. | Passed |
-| Tailnet identity and HTTPS | Node name is `nix-os`; MagicDNS resolves `nix-os.tailee691f.ts.net` to `100.82.50.51`. Tailnet HTTPS health passed. Certificate CN/SAN matches the FQDN, issuer is Let's Encrypt YE1, and validity is 2026-09-25 through 2026-12-24. | Passed |
-| Serve/Funnel invariant | Final raw state is exactly `TCP.443.HTTPS=true` plus `/ -> http://127.0.0.1:3100` for `nix-os.tailee691f.ts.net:443`. The repository validator passed; no `AllowFunnel`, Funnel state, extra handler, port, or target exists. | Passed |
+| Tailnet identity and HTTPS | Node name is `nix-os`; MagicDNS resolves the production `nix-os.<tailnet>.ts.net` name to its tailnet address. Tailnet HTTPS health passed. Certificate CN/SAN matches the FQDN, issuer is Let's Encrypt YE1, and validity was checked at deployment. | Passed |
+| Serve/Funnel invariant | Final raw state is exactly `TCP.443.HTTPS=true` plus `/ -> http://127.0.0.1:3100` for `nix-os.<tailnet>.ts.net:443`. The repository validator passed; no `AllowFunnel`, Funnel state, extra handler, port, or target exists. | Passed |
 | Host/public exposure | Docker publishes Paperclip only as `127.0.0.1:3100`; PostgreSQL has no host publication. External probes found 443, 3100, 5432, 8443, and 10000 closed/filtered. Port 22 is the retained recovery SSH path. Port 80 is open only for a pre-existing unrelated nginx workload and does not route to Nix. Listener inspection attributes tailnet `:443` exclusively to `tailscaled`. | Passed |
 | Paperclip bootstrap/auth | Production is healthy at pinned Paperclip `2026.916.1`, `authenticated/private`, bootstrap `ready`, with no active invite. Lior claimed CEO/admin, signed out/in, and a final authenticated production dashboard check succeeded. Signup returns `EMAIL_PASSWORD_SIGN_UP_DISABLED`; anonymous session and company API calls return 401 and 403 respectively. | Passed |
 | Recovery fixtures | Company `45726d0d-f871-4391-8af8-f4b509bc51ba` (`RECOVERY CANARY - Slice 0 - 2026-09-26`) contains related issue `f919084c-c0b8-4c18-9adb-396637b321b0` (`REC-1`). Attachment `c35e7432-5621-4391-872c-a2ae05f12ed7` has SHA-256 `cf797f279b650e40f883fcd28830670b81a584642bc0616e8c1d2ebcb3173923`. Secret `6858a93f-5660-4753-b6d7-56e7176335fc` is `local_encrypted`; its plaintext was never logged. | Passed |
@@ -206,7 +206,7 @@ In the private Chief of Staff Telegram context, Lior can say “Create a work it
 - `HERMES_ENV_FILE` and read-only `NIX_BRAIN_HOST_PATH` configuration, plus safe secret initialization.
 - Supported Paperclip `hermes_gateway` invite/approve/claim procedure and distinct credentials.
 - Extended encrypted config/data backup, isolated Hermes volume restore, pinned-image/MCP/multiplex contracts, and live E2E checklist.
-- ADR 0006 and deployment/recovery documentation.
+- ADRs 0006-0007 and deployment/recovery documentation.
 
 ### Exact acceptance criteria
 
@@ -216,23 +216,28 @@ In the private Chief of Staff Telegram context, Lior can say “Create a work it
 4. Hermes' Runs API is private to Compose and requires a unique `API_SERVER_KEY` even internally.
 5. The Chief profile receives a separate revocable Paperclip agent key and can call the official `@paperclipai/mcp-server` at the internal Paperclip URL.
 6. The MCP server/package is pinned; its exact allowlist permits identity, project/issue reads, issue create/update, and comment read/write, and excludes project/goal creation, approvals, arbitrary API escape hatch, connections, runtime control, and destructive tools.
-7. A Telegram commitment creates exactly one Paperclip issue with useful title/body, source context, and Chief ownership or routing. Chief replies with the actual issue identifier only after the API succeeds.
-8. A Telegram question or clarification exchange creates no issue unless Lior explicitly creates a commitment.
-9. A request to create a new top-level project/goal is not executed; Chief asks for/records approval through the allowed conversational path.
-10. The default profile topology remains compatible with the pinned release's future Telegram chat/thread-to-profile routing without enabling or creating later employees.
-11. Restarting Hermes preserves the Chief profile and conversation continuity.
-12. Chief can read the canonical `nix-brain` checkout through a read-only mount; it has no brain write credential.
-13. Paperclip stores Chief as a real `hermes_gateway` agent using `http://hermes:8642`, issue-scoped Paperclip sessions, and the bounded same-host HTTP exception from ADR 0006.
-14. No Todoist object is created; Todoist is not configured.
+7. Every remotely invokable Chief lane (`cli`, `telegram`, and `api_server`) resolves to the same explicit minimal toolsets: file, skills, memory, session search, and bounded Paperclip MCP. Concrete runtime introspection proves no terminal, process, code execution, browser/web, connector, delegation, cron, computer-use, or other generic authenticated-request path exists.
+8. A Telegram commitment creates exactly one Paperclip issue with useful title/body, source context, and Chief ownership or routing. Chief replies with the actual issue identifier only after the API succeeds.
+9. A Telegram question or clarification exchange creates no issue unless Lior explicitly creates a commitment.
+10. A request to create a new top-level project/goal is not executed; Chief asks for/records approval through the allowed conversational path.
+11. The default profile topology remains compatible with the pinned release's future Telegram chat/thread-to-profile routing without enabling or creating later employees.
+12. Restarting Hermes preserves the Chief profile and conversation continuity.
+13. Chief can read the canonical `nix-brain` checkout through a read-only mount; it has no brain write credential.
+14. Paperclip stores Chief as a real `hermes_gateway` agent using `http://hermes:8642`, issue-scoped Paperclip sessions, and the bounded same-host HTTP exception from ADR 0006.
+15. Agent claim persistence preflights the destination, claims and durably writes the key in one container operation, verifies `get_self`, and deletes the one-time join artifact only after success.
+16. An isolated restore actually boots Hermes with Telegram disabled, proves API `401`/authenticated access, loads the restricted Chief surface and persistent state, and performs bounded `paperclipMe` against restored Paperclip.
+17. No Todoist object is created; Todoist is not configured.
 
 ### Automated tests
 
 - Config schema/static checks: no secret literals, API server not publicly published, allowlist required, MCP package pinned, dangerous tools absent.
-- Pinned Paperclip MCP stdio discovery proves every allowlisted tool still exists; live acceptance exercises list/create/fetch/update/comment as Chief.
-- Pinned Hermes image test proves `/health`, authenticated `/v1/capabilities`, unauthenticated rejection, official `grill-me` availability, and named-volume restart continuity.
+- Pinned Paperclip MCP discovery proves the exact nine-tool allowlist. The Docker recovery fixture uses a real claimed Chief credential to identify self, list/get an existing project, create/list/get a related issue, then supplies a supported issue-scoped heartbeat run to update it and add/list a comment; live Telegram acceptance repeats the user-visible path and must respect the same pinned run-attribution rules.
+- Pinned Hermes image test proves `/health`, authenticated `/v1/capabilities`, unauthenticated rejection, official `grill-me` availability, named-volume restart continuity, and exact resolved tool surfaces for all three invocation lanes.
 - Pinned Hermes routing test proves representative Telegram chat/thread routes select future isolated profiles while production multiplexing remains disabled.
 - Compose/static checks prove no Hermes host port, exact service/network boundaries, required user allowlist and DM-only chat gate, read-only brain mount, pinned images/packages, and dangerous MCP tools absent.
-- Encrypted configuration round trip includes `hermes.env`; coordinated data recovery verifies byte-identical Hermes profile/memory/session/skill state. Real provider and Telegram recovery remain a live gate.
+- Telegram authorization fixtures run the pinned adapter/auth logic and prove Lior DM accepted while unknown DM, Lior-in-group, forum/topic, and bot-sender events are rejected.
+- Claim helper tests cover destination preflight, mode-`0600` atomic persistence, identity verification, failure-marker retention, and consumed-claim failure handling without logging keys.
+- Encrypted configuration round trip includes `hermes.env`; coordinated data recovery verifies byte-identical Hermes state, boots restored Hermes with Telegram disabled, checks API auth and the exact restricted tool surface, and resolves the restored agent identity through bounded Paperclip MCP. Real provider and Telegram recovery remain a live gate.
 
 ### Manual end-to-end verification
 
@@ -257,7 +262,7 @@ In the private Chief of Staff Telegram context, Lior can say “Create a work it
 
 Paperclip-triggered issue execution lifecycle, Product/Growth/Operations, enabled Telegram topic multiplexing, brain PR writeback, OpenCode, Todoist, n8n, Project Inception, external communication, and spending tools.
 
-### Repository implementation record — 2026-09-28
+### Repository implementation record — 2026-10-02
 
 Implemented on `slice-1-chief-of-staff` for independent review; no production changes have been made.
 
@@ -269,6 +274,11 @@ Implemented on `slice-1-chief-of-staff` for independent review; no production ch
 - Extended state backup format to version 2 and config-pack format to version 2 to include Hermes state and `hermes.env`.
 - Local automated validation covers the pinned image/API/routing/skill contract and byte-identical Hermes state recovery. Telegram, provider OAuth, real Paperclip onboarding/project IDs, VPS reboot, and downloaded Google Drive recovery necessarily remain live acceptance after independent review.
 - Pull request #5 was opened from the feature branch. Its initial Actions runs were rejected before any step started by the private-repository account spending gate. Lior then made `nix-os` public; `nix-brain` remains private. The hosted pull-request rerun at `42c5f9580b4125add70e9da70ee27e1b6d1d6055` passed `foundation` in 16 seconds and `recovery` in 5 minutes 4 seconds. Independent review and production deployment remain pending.
+- Review remediation makes `cli`, `telegram`, and `api_server` explicit and identical; the raw runtime surface is limited to file, skill, memory/session tools and nine allowlisted Paperclip MCP operations. Broad Hermes presets and generic execution/network tools are absent. ADR 0007 makes credential/tool separation durable for future workers.
+- Agent claiming now happens in one preflighted container operation with a temporary mode-`0600` file, `fsync`, atomic rename, post-write `paperclipMe`-equivalent identity verification, and retained recovery marker on failure. The internal `paperclip` service hostname is explicitly allowed through Paperclip's supported private-host configuration.
+- Recovery validation now boots restored Hermes with Telegram disabled, proves unauthenticated `401` and authenticated API access, validates the restricted runtime surface and restored profile state, then resolves the claimed identity through the bounded MCP against isolated restored Paperclip.
+- The inert Telegram `group_policy` key is removed; the pinned authorization fixtures cover direct, unknown, group, forum/topic, and bot-sender cases. The exact MCP package still requires the narrowly scoped release-age override as of 2026-10-02.
+- The recovery integration now exercises all nine approved MCP operations. Pinned Paperclip rejects existing-issue updates/comments without a valid heartbeat run ID, so the fixture creates a supported disposable run, injects that context into the official MCP, proves both mutations and their restore, then returns the agent to `hermes_gateway` before backup.
 
 ---
 
@@ -739,8 +749,8 @@ Every locked requirement is implemented or explicitly delayed to a named slice.
 | GitHub canonical provider | 0 source; 4/6 PR flows |
 | Hostinger VPS + Docker Compose | 0 |
 | Broad autonomy with durable learning | 2, 4, 5, 9 |
-| Git config vs runtime state vs secrets and recovery | 0 implements architecture contract; extended in 3/7/9 |
+| Git config vs runtime state vs secrets and recovery | 0 implements architecture contract; extended for Hermes in 1 and again in 3/7/9 |
 
 ## Exact next implementation task
 
-Obtain independent review of pull request #5. If approved, merge and execute the Slice 1 deployment/live-acceptance section in `docs/runbooks/DEPLOY.md`, followed by the downloaded-artifact recovery proof in `docs/runbooks/RESTORE.md`. Do not begin Slice 2 until every live Slice 1 gate is evidenced and this status becomes `SLICE 1: ACCEPTED`.
+Obtain the second independent review of remediated pull request #5. If approved, merge and execute the Slice 1 deployment/live-acceptance section in `docs/runbooks/DEPLOY.md`, followed by the downloaded-artifact recovery proof in `docs/runbooks/RESTORE.md`. Do not begin Slice 2 until every live Slice 1 gate is evidenced and this status becomes `SLICE 1: ACCEPTED`.

@@ -54,6 +54,7 @@ fi
 mv "$test_tmp_dir/hermes-safe.env" "$test_tmp_dir/hermes.env"
 
 age_private_pattern='AGE-SECRET-KEY-(PQ-)?1[[:alnum:]]{20,}|AGE-PLUGIN-[A-Z0-9-]+-1[[:alnum:]]{20,}'
+public_secret_pattern='[0-9]{8,}:[A-Za-z0-9_-]{30,}|pcp_(api|claim|invite|bootstrap)?[_-]?[A-Za-z0-9_-]{30,}|ya29\.[A-Za-z0-9._-]{20,}|"refresh_token"[[:space:]]*:[[:space:]]*"[A-Za-z0-9._/-]{20,}"|^API_SERVER_KEY=[A-Za-z0-9_-]{32,}'
 
 if grep -RIlE --exclude-dir=.git --exclude='*.md' --exclude='.env.example' \
   '(ghp_[[:alnum:]]{20,}|github_pat_[[:alnum:]_]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|[0-9]{8,}:[A-Za-z0-9_-]{30,})' \
@@ -66,6 +67,10 @@ if grep -RIlE --exclude-dir=.git "$age_private_pattern" "$repo_root"; then
   printf 'age private identity detected in the working tree\n' >&2
   exit 1
 fi
+if grep -RIlE --exclude-dir=.git "$public_secret_pattern" "$repo_root"; then
+  printf 'runtime/API credential pattern detected in the working tree\n' >&2
+  exit 1
+fi
 
 # Scan every locally reachable commit without printing matching secret text.
 while IFS= read -r revision; do
@@ -73,6 +78,22 @@ while IFS= read -r revision; do
     printf 'age private identity detected in reachable Git history at commit %s\n' "$revision" >&2
     exit 1
   fi
+  if git -C "$repo_root" grep -I -q -E "$public_secret_pattern" "$revision" --; then
+    printf 'runtime/API credential pattern detected in reachable Git history at commit %s\n' "$revision" >&2
+    exit 1
+  fi
+  if git -C "$repo_root" ls-tree -r --name-only "$revision" \
+    | grep -Eq '(^|/)\.env$|(^|/)auth\.json$|(^|/)rclone\.conf$|(^|/)nix-brain/'; then
+    printf 'runtime secret file or private nix-brain content detected in reachable Git history at commit %s\n' "$revision" >&2
+    exit 1
+  fi
 done < <(git -C "$repo_root" rev-list --all)
+
+if grep -RIEq 'runs-on:[[:space:]]*self-hosted|pull_request_target:|secrets\.' "$repo_root/.github/workflows"; then
+  printf 'public CI must not use self-hosted runners, pull_request_target, or repository secrets\n' >&2
+  exit 1
+fi
+grep -q '^permissions:$' "$repo_root/.github/workflows/ci.yml"
+grep -q '^  contents: read$' "$repo_root/.github/workflows/ci.yml"
 
 printf 'Foundation configuration tests passed.\n'
