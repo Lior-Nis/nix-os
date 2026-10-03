@@ -127,10 +127,8 @@ mkdir -p "$restore_brain"
   printf 'BACKUP_OUTPUT_DIR=%s\n' "$restore_tmp_dir/backups"
 } >"$restore_config"
 chmod 0600 "$restore_postgres_env" "$restore_paperclip_env" "$restore_hermes_env" "$restore_config"
-docker run --rm --volume "$restore_tmp_dir:/work" "$archive_helper_image" sh -ec '
-  printf "HERMES_TELEGRAM_MODE=disabled\n" > /work/hermes-telegram-mode.env
-  chmod 0600 /work/hermes-telegram-mode.env
-'
+printf 'HERMES_TELEGRAM_MODE=disabled\n' >"$restore_hermes_mode"
+chmod 0600 "$restore_hermes_mode"
 
 compose_restore=(docker compose -f "$repo_root/compose.yaml" --env-file "$restore_config")
 "${compose_restore[@]}" create postgres paperclip hermes >/dev/null
@@ -192,6 +190,10 @@ fi
 diff -u "$payload_dir/database-counts.txt" "$restore_tmp_dir/restored-database-counts.txt"
 
 NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-migrations" "$restore_config"
+docker run --rm --volume "$restore_tmp_dir:/work" "$archive_helper_image" sh -ec '
+  chown 0:0 /work/hermes-telegram-mode.env
+  chmod 0600 /work/hermes-telegram-mode.env
+'
 "${compose_restore[@]}" up -d --wait paperclip
 health_json=$("${compose_restore[@]}" exec -T paperclip curl -fsS http://127.0.0.1:3100/api/health)
 grep -q '"status":"ok"' <<<"$health_json" || fail "restored Paperclip health did not report ok"
