@@ -1,6 +1,6 @@
-# Slice 0 deployment runbook
+# Nix deployment runbook
 
-This runbook deploys only Paperclip and PostgreSQL with tailnet-only ingress on one Hostinger VPS. Commands run from a clean clone at a reviewed commit. Tailscale is a host prerequisite, not a Compose service.
+Slice 0 production runs Paperclip and PostgreSQL with tailnet-only ingress on one Hostinger VPS. The reviewed Slice 1 extension adds exactly one internal Hermes service. Commands run from a clean clone at a reviewed commit. Tailscale is a host prerequisite, not a Compose service.
 
 ## Supported VPS baseline
 
@@ -17,10 +17,10 @@ Run the read-only check:
 - Public Internet: emergency SSH only; no Paperclip, PostgreSQL, or Nix listeners on 80, 443, 3100, 5432, 8443, or 10000.
 - Tailnet: ordinary SSH to `nix-os` and Paperclip HTTPS through Tailscale Serve.
 - Host loopback: Paperclip at `127.0.0.1:${PAPERCLIP_HOST_PORT:-3100}`.
-- Compose internal network: PostgreSQL only.
+- Compose internal networks: PostgreSQL alone with Paperclip on `data`; Paperclip and Hermes alone on `agent`.
 - Never run `tailscale funnel`.
 
-Keep the current `root@72.61.190.172` SSH recovery path until the `nix` path is proven. Do not change sshd or firewall recovery policy during this amendment.
+Keep the current `root@<VPS_PUBLIC_IP>` SSH recovery path until the `nix` path is proven. Resolve the real address from Lior's local SSH configuration; do not publish it in repository documentation. Do not change sshd or firewall recovery policy during this amendment.
 
 ## Repository and external prerequisites
 
@@ -60,7 +60,7 @@ Keep root/public-IP recovery available. Review its tightening separately only af
 
 ## First deployment
 
-1. As `nix`, clone the private repository into an operator-owned directory, check out the reviewed merged SHA, and run `./scripts/vps-preflight`.
+1. As `nix`, clone the public `nix-os` repository into an operator-owned directory, check out the reviewed merged SHA, and run `./scripts/vps-preflight`. `nix-brain` remains a separate private clone.
 
 2. Create configuration:
 
@@ -163,6 +163,113 @@ make CONFIG_FILE=.env restart
 
 Before an upgrade, re-read release/migration notes, update tag and digest together, update `docs/UPSTREAM.md`, and get hosted CI green. Then run `scripts/ops upgrade`. The Nix migration preflight gives an earlier, clearer failure. A direct container restart may bypass it, but pinned Paperclip independently rejects a non-empty database without its expected journal before mutation.
 
-## Live evidence still required
+## Slice 0 acceptance evidence
 
-Do not claim acceptance until the amendment PR is merged with both CI jobs green; `nix` login/sudo/Docker work; MagicDNS/Serve HTTPS work; public probes prove Paperclip/PostgreSQL absent; browser claim, signup closure, and subsequent login pass; and downloaded Google Drive artifacts pass the isolated recovery gate in the restore runbook.
+Slice 0 has passed these gates. Its non-secret production evidence is recorded in `docs/IMPLEMENTATION_PLAN.md`.
+
+## Slice 1 deployment: Chief of Staff
+
+Run this section only after independent review, a green hosted PR, and merge to `main`. Record the merged SHA. It extends the running stack to exactly PostgreSQL, Paperclip, and Hermes; it does not change Tailscale Serve or expose another port.
+
+### 1. Prepare Telegram and the brain checkout
+
+In Telegram, open the verified `@BotFather`, send `/newbot`, and create one private bot for Nix. Keep the token on the VPS only; never paste it into an issue, PR, shell history, or chat with an agent. Ask the verified `@userinfobot` for Lior's numeric Telegram user ID and independently confirm the returned account identity. Slice 1 enables no group access.
+
+Create a clean read-only-use clone of the canonical brain as `nix`:
+
+```sh
+sudo install -d -o nix -g nix -m 0750 /opt/nix-brain
+git clone git@github.com:Lior-Nis/nix-brain.git /opt/nix-brain
+git -C /opt/nix-brain switch main
+git -C /opt/nix-brain pull --ff-only
+```
+
+The checkout is operator-owned so it can be refreshed deliberately; Compose mounts it read-only inside Hermes. Do not give Chief a GitHub write credential in Slice 1.
+
+Update the deployment `.env` from the reviewed example:
+
+```text
+HERMES_ENV_FILE=/etc/nix-os/hermes.env
+NIX_BRAIN_HOST_PATH=/opt/nix-brain
+```
+
+Create only the new Hermes external secret file without touching existing Slice 0 secrets:
+
+```sh
+sudo -E CONFIG_FILE="$PWD/.env" ./scripts/init-hermes-secrets "$PWD/.env"
+sudoedit /etc/nix-os/hermes.env
+```
+
+Replace both Telegram placeholders directly in the editor. Keep the generated `API_SERVER_KEY`; do not reuse it as any other credential. The completed file contains exactly the API server key, Telegram token/user allowlist, and two explicit false allow-all flags. Keep mode `0600`. The Git-controlled Hermes config uses Lior's positive user ID as its non-empty `allowed_chats` value; because Telegram group/forum IDs are negative, this is the pinned release's hard DM-only gate in addition to `guest_mode: false` and `allow_bots: none`. `group_policy` is not a supported pinned-release setting and is intentionally absent.
+
+### 2. Deploy and authorize the provider
+
+```sh
+sudo -E ./scripts/check-config "$PWD/.env"
+sudo -E ./scripts/check-migrations "$PWD/.env"
+sudo -E docker compose --env-file "$PWD/.env" pull hermes
+sudo -E docker compose --env-file "$PWD/.env" up -d --wait postgres paperclip hermes
+sudo -E ./scripts/configure-hermes auth "$PWD/.env"
+sudo -E ./scripts/configure-hermes install-skill "$PWD/.env"
+```
+
+The tracked Paperclip runtime configuration adds only the isolated Docker service name `paperclip` to the upstream private-host allowlist; Compose policy and `scripts/initialize-paperclip` validate the setting. This is required for Hermes' internal URL, works with the existing Slice 0 instance file, and does not publish another listener. The auth command starts Hermes' supported OpenAI device-code flow for `openai-codex`. Lior completes the displayed browser authorization; the OAuth credential is stored under persistent `/opt/data`, not in Git or `hermes.env`. The selected model is `gpt-5.4`; change it only through reviewed config if the subscription does not offer it.
+
+Confirm the bot answers Lior's `ping`. Do not proceed if Telegram reports a second polling consumer. From a different Telegram identity, send a message and verify it is silently ignored and causes no tool call; sanitize logs before recording evidence.
+
+### 3. Create the approved project and onboard Chief
+
+In Paperclip, find the existing `Nix Business OS V0` project and its company. If that approved initiative does not yet have a Paperclip Project, create exactly that one project—this implements already-approved scope, not new strategy. Record its non-secret project ID.
+
+Use Paperclip's board UI to generate one agent invite for the company. Do not give its token to the model or place it in Telegram. Run the supported generic join through the repository wrapper:
+
+```sh
+sudo -E ./scripts/onboard-hermes-agent submit "$PWD/.env"
+```
+
+Paste the one-time invite token only into the script's hidden prompt. The wrapper calls Paperclip's supported invite endpoint from Hermes and stores the claim secret plus gateway defaults in a mode-`0600` temporary file beside `hermes.env`. It requests:
+
+```text
+adapterType: hermes_gateway
+apiBaseUrl: http://hermes:8642
+paperclipApiUrl: http://paperclip:3100
+sessionKeyStrategy: issue
+dangerouslyAllowInsecureRemoteHttp: true
+```
+
+The last setting is allowed only on the non-published same-host `agent` network documented by ADR 0006. In Paperclip, review the pending `Chief of Staff` join and approve it. Then claim its one-time key without printing it:
+
+```sh
+sudo -E ./scripts/onboard-hermes-agent claim "$PWD/.env"
+sudo -E ./scripts/configure-hermes verify "$PWD/.env"
+```
+
+Before contacting the one-time claim endpoint, the claim command verifies the profile, ownership, writability, free space, and destination mode inside the Hermes container. It then claims, writes a prepared mode-`0600` temporary file, flushes it, atomically renames it to `/opt/data/.env`, flushes the directory, and verifies the resulting Paperclip identity. Only after those checks does it remove the pending marker and host-side claim state. It never prints the key or places it in a process argument. The command prints only company and agent IDs, restarts Hermes, and `verify` proves API auth, the exact restricted tool surface, provider auth, skill presence, and bounded Paperclip MCP identity without displaying credentials.
+
+The one-time secret cannot be replayed. If Paperclip consumed it but no valid `/opt/data/.env` can be recovered, preserve the helper's pending marker and inspect the volume first. If the credential is genuinely lost, use supported Paperclip administration to revoke the orphaned agent key (or remove the orphaned agent), issue a new agent invite, and repeat the flow. Never retry the consumed secret or edit the Paperclip database.
+
+The verified Chief surface must be identical for `cli`, `telegram`, and `api_server`: `file`, `skills`, `memory`, `session_search`, and bounded `paperclip`. The runtime validator expands these labels and fails if terminal, process management, code execution, browser/web/connectors, delegation, cron, computer-use, an unexpected MCP operation, or any other tool appears. The nine allowed Paperclip operations remain the only Paperclip write path.
+
+Inspect the agent in Paperclip and verify adapter type, URLs, issue session strategy, and responsible user. Confirm the Hermes Runs API has no host-published port:
+
+```sh
+sudo -E docker compose --env-file "$PWD/.env" ps
+sudo ss -lntup
+```
+
+Public probes from outside the VPS must still show no Nix service on 80, 443, 3100, 5432, 8443, 8642, 9119, or 10000. The existing unrelated port-80 workload and recovery SSH exception remain documented Slice 0 facts.
+
+### 4. Live Slice 1 acceptance
+
+Use the private Telegram conversation with Chief and verify each result in Paperclip:
+
+1. Send `ping`; only Lior's private direct chat receives a response. Add the bot temporarily to a test group, mention it as Lior, and verify it remains silent with no tool call; then remove it.
+2. Store the harmless memory fact `Slice 1 continuity marker is cedar-47`, restart only Hermes, then ask for the marker.
+3. Ask `What work exists in the Nix Business OS project?`; compare with current Paperclip state.
+4. Ask `Create a low-priority test task in the Nix Business OS project titled "Slice 1 integration test".` Confirm exactly one issue exists in the correct project and Chief returns its identifier/status only after creation.
+5. Ask Chief to add a harmless comment and update that issue. Verify the change in Paperclip.
+6. Change the issue directly in Paperclip, then ask Chief for its status. It must retrieve current Paperclip state, not Telegram memory.
+7. Ask a pure clarification question and verify no issue is created. Ask for a new top-level project and verify Chief does not create it.
+8. Restart the Compose runtime, then reboot the VPS. After each, verify Paperclip health, bot response, continuity marker, brain read, and current Paperclip issue access.
+
+Complete the Slice 1 downloaded-off-host recovery gate in `RESTORE.md`. Record timestamps plus non-secret company/project/agent/issue IDs in the implementation plan only after every gate passes. Do not start Slice 2.

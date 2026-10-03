@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+action=${1:-}
+config_file=${2:-${CONFIG_FILE:-$repo_root/.env}}
+compose=(docker compose --env-file "$config_file")
+
+fail() { printf 'Hermes agent onboarding error: %s\n' "$*" >&2; exit 1; }
+read_config() { grep -E "^${1}=" "$config_file" | tail -n 1 | cut -d= -f2- || true; }
+
+command -v jq >/dev/null 2>&1 || fail "jq is required"
+[[ -f "$config_file" ]] || fail "configuration file does not exist: $config_file"
+hermes_env=$(read_config HERMES_ENV_FILE)
+[[ -n "$hermes_env" && -f "$hermes_env" ]] || fail "HERMES_ENV_FILE is missing"
+state_file=${HERMES_JOIN_STATE_FILE:-$(dirname "$hermes_env")/hermes-join.json}
+
+case "$action" in
+  submit)
+    [[ ! -e "$state_file" ]] || fail "pending join state already exists: $state_file"
+    api_key=$(grep -E '^API_SERVER_KEY=' "$hermes_env" | tail -n 1 | cut -d= -f2-)
+    [[ ${#api_key} -ge 64 ]] || fail "API_SERVER_KEY is missing or too short"
+    read -r -s -p 'Paste the one-time Paperclip agent invite token: ' invite_token
+    printf '\n'
+    [[ "$invite_token" == pcp_invite_* ]] || fail "invite token has the wrong shape"
+    payload=$(jq -nc --arg api_key "$api_key" '{
+      requestType:"agent",
+      agentName:"Chief of Staff",
+      adapterType:"hermes_gateway",
+      capabilities:"Persistent Nix Chief of Staff: Telegram conversation and bounded Paperclip issue/project operations.",
+      agentDefaultsPayload:{
+        apiBaseUrl:"http://hermes:8642",
+        apiKey:$api_key,
+        paperclipApiUrl:"http://paperclip:3100",
+        sessionKeyStrategy:"issue",
+        dangerouslyAllowInsecureRemoteHttp:true
+      }
+    }')
+    response=$(printf '%s' "$payload" | "${compose[@]}" exec -T hermes curl -fsS \
+      -H 'Content-Type: application/json' -X POST \
+      "http://paperclip:3100/api/invites/${invite_token}/accept" --data-binary @-)
+    unset invite_token payload api_key
+    jq -e '.id and .companyId and .claimSecret and .status == "pending_approval"' >/dev/null <<<"$response" \
+      || fail "Paperclip did not return a pending agent join request"
+    install -d -m 0700 "$(dirname "$state_file")"
+    printf '%s\n' "$response" >"$state_file"
+    chmod 0600 "$state_file"
+    printf 'Pending Chief of Staff join request: %s\n' "$(jq -r '.id' "$state_file")"
+    printf 'Approve that request in Paperclip, then run this script with the claim action.\n'
+    ;;
+  claim)
+    [[ -f "$state_file" ]] || fail "pending join state is missing: $state_file"
+    "${compose[@]}" exec -T hermes python3 /opt/nix/claim-agent.py preflight >/dev/null
+    claim_result=$("${compose[@]}" exec -T hermes python3 /opt/nix/claim-agent.py claim <"$state_file") \
+      || fail "claim/persistence failed; keep the join state and follow the documented orphan-credential recovery procedure"
+    company_id=$(jq -er '.companyId' <<<"$claim_result")
+    agent_id=$(jq -er '.agentId' <<<"$claim_result")
+    # shellcheck disable=SC2016
+    "${compose[@]}" exec -T hermes sh -ec \
+      'test "$(stat -c %a /opt/data/.env)" = 600 && test -s /opt/data/.paperclip-claim-receipt.json'
+    rm -f -- "$state_file"
+    "${compose[@]}" restart hermes >/dev/null
+    printf 'Chief of Staff agent claimed, atomically persisted, and identity-verified without logging its key.\n'
+    printf 'Company ID: %s\nAgent ID: %s\n' "$company_id" "$agent_id"
+    ;;
+  *)
+    printf 'Usage: %s {submit|claim} [/absolute/path/to/deployment.env]\n' "$0" >&2
+    exit 2
+    ;;
+esac

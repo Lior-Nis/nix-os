@@ -44,36 +44,42 @@ payload_dir=$(find "$restore_tmp_dir" -mindepth 1 -maxdepth 1 -type d -name 'nix
 
 postgres_path=$(grep -E '^POSTGRES_ENV_FILE=' "$payload_dir/manifest.env" | cut -d= -f2-)
 paperclip_path=$(grep -E '^PAPERCLIP_ENV_FILE=' "$payload_dir/manifest.env" | cut -d= -f2-)
-[[ "$postgres_path" == /* && "$paperclip_path" == /* ]] || fail "configuration pack contains invalid secret paths"
+hermes_path=$(grep -E '^HERMES_ENV_FILE=' "$payload_dir/manifest.env" | cut -d= -f2-)
+[[ "$postgres_path" == /* && "$paperclip_path" == /* && "$hermes_path" == /* ]] || fail "configuration pack contains invalid secret paths"
 if [[ "$restore_root" == / ]]; then
   target_postgres=$postgres_path
   target_paperclip=$paperclip_path
+  target_hermes=$hermes_path
 else
   target_postgres="${restore_root%/}${postgres_path}"
   target_paperclip="${restore_root%/}${paperclip_path}"
+  target_hermes="${restore_root%/}${hermes_path}"
 fi
 
-for target in "$target_config" "$target_postgres" "$target_paperclip"; do
+for target in "$target_config" "$target_postgres" "$target_paperclip" "$target_hermes"; do
   if [[ -e "$target" && ${CONFIG_RESTORE_FORCE:-false} != true ]]; then
     fail "refusing to overwrite existing file: $target"
   fi
 done
 
-install -d -m 0700 "$(dirname "$target_config")" "$(dirname "$target_postgres")" "$(dirname "$target_paperclip")"
+install -d -m 0700 "$(dirname "$target_config")" "$(dirname "$target_postgres")" "$(dirname "$target_paperclip")" "$(dirname "$target_hermes")"
 if [[ "$restore_root" == / ]]; then
   install -m 0600 "$payload_dir/files/deployment.env" "$target_config"
 else
-  awk -v pg="$target_postgres" -v pc="$target_paperclip" '
+  awk -v pg="$target_postgres" -v pc="$target_paperclip" -v hm="$target_hermes" '
     /^POSTGRES_ENV_FILE=/ { print "POSTGRES_ENV_FILE=" pg; next }
     /^PAPERCLIP_ENV_FILE=/ { print "PAPERCLIP_ENV_FILE=" pc; next }
+    /^HERMES_ENV_FILE=/ { print "HERMES_ENV_FILE=" hm; next }
     { print }
   ' "$payload_dir/files/deployment.env" >"$target_config"
   chmod 0600 "$target_config"
 fi
 install -m 0600 "$payload_dir/files/postgres.env" "$target_postgres"
 install -m 0600 "$payload_dir/files/paperclip.env" "$target_paperclip"
+install -m 0600 "$payload_dir/files/hermes.env" "$target_hermes"
 
 printf 'Configuration pack restored with mode 0600; contents were not logged.\n'
 printf 'deployment.env sha256=%s\n' "$(hash_value "$target_config")"
 printf 'postgres.env sha256=%s\n' "$(hash_value "$target_postgres")"
 printf 'paperclip.env sha256=%s\n' "$(hash_value "$target_paperclip")"
+printf 'hermes.env sha256=%s\n' "$(hash_value "$target_hermes")"

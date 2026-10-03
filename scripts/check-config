@@ -47,7 +47,7 @@ command -v docker >/dev/null 2>&1 || fail "docker is required"
 docker compose version >/dev/null 2>&1 || fail "Docker Compose v2 is required"
 [[ -f "$config_file" ]] || fail "$config_file does not exist; copy .env.example and replace placeholders"
 
-if grep -Eq '^(POSTGRES_PASSWORD|PAPERCLIP_DB_PASSWORD|DATABASE_URL|BETTER_AUTH_SECRET|PAPERCLIP_TOOL_ACTION_SIGNING_SECRET)=' "$config_file"; then
+if grep -Eq '^(POSTGRES_PASSWORD|PAPERCLIP_DB_PASSWORD|DATABASE_URL|BETTER_AUTH_SECRET|PAPERCLIP_TOOL_ACTION_SIGNING_SECRET|API_SERVER_KEY|TELEGRAM_BOT_TOKEN|PAPERCLIP_API_KEY)=' "$config_file"; then
   fail "$config_file contains a secret key; put secrets only in the external secret files"
 fi
 
@@ -56,6 +56,8 @@ public_url=$(require_config PAPERCLIP_PUBLIC_URL)
 host_port=$(require_config PAPERCLIP_HOST_PORT)
 postgres_env=$(require_config POSTGRES_ENV_FILE)
 paperclip_env=$(require_config PAPERCLIP_ENV_FILE)
+hermes_env=$(require_config HERMES_ENV_FILE)
+nix_brain_path=$(require_config NIX_BRAIN_HOST_PATH)
 signup_disabled=$(require_config PAPERCLIP_AUTH_DISABLE_SIGN_UP)
 
 [[ "$project_name" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || fail "COMPOSE_PROJECT_NAME must match [a-z0-9][a-z0-9_-]*"
@@ -71,11 +73,14 @@ else
   (( host_port >= 0 && host_port <= 65535 )) || fail "test PAPERCLIP_HOST_PORT must be between 0 and 65535"
 fi
 
-for secret_file in "$postgres_env" "$paperclip_env"; do
+for secret_file in "$postgres_env" "$paperclip_env" "$hermes_env"; do
   [[ "$secret_file" == /* ]] || fail "secret file paths must be absolute: $secret_file"
   [[ -f "$secret_file" ]] || fail "secret file does not exist: $secret_file"
   private_mode "$secret_file"
 done
+
+[[ "$nix_brain_path" == /* ]] || fail "NIX_BRAIN_HOST_PATH must be absolute"
+[[ -d "$nix_brain_path" ]] || fail "NIX_BRAIN_HOST_PATH does not exist: $nix_brain_path"
 
 postgres_password=$(secret_value "$postgres_env" POSTGRES_PASSWORD)
 paperclip_db_password=$(secret_value "$postgres_env" PAPERCLIP_DB_PASSWORD)
@@ -89,6 +94,21 @@ tool_action_secret=$(secret_value "$paperclip_env" PAPERCLIP_TOOL_ACTION_SIGNING
 (( ${#better_auth_secret} >= 32 )) || fail "BETTER_AUTH_SECRET must be at least 32 characters"
 (( ${#tool_action_secret} >= 32 )) || fail "PAPERCLIP_TOOL_ACTION_SIGNING_SECRET must be at least 32 characters"
 [[ "$database_url" == "postgresql://paperclip:${paperclip_db_password}@postgres:5432/paperclip" ]] || fail "DATABASE_URL must use PAPERCLIP_DB_PASSWORD and target paperclip@postgres:5432/paperclip"
+
+api_server_key=$(secret_value "$hermes_env" API_SERVER_KEY)
+telegram_token=$(secret_value "$hermes_env" TELEGRAM_BOT_TOKEN)
+telegram_users=$(secret_value "$hermes_env" TELEGRAM_ALLOWED_USERS)
+telegram_allow_all=$(secret_value "$hermes_env" TELEGRAM_ALLOW_ALL_USERS)
+gateway_allow_all=$(secret_value "$hermes_env" GATEWAY_ALLOW_ALL_USERS)
+
+(( ${#api_server_key} >= 64 )) || fail "API_SERVER_KEY must be at least 64 characters"
+[[ "$telegram_allow_all" == false && "$gateway_allow_all" == false ]] || fail "Hermes allow-all access must remain false"
+[[ "$telegram_users" =~ ^[0-9]+$ ]] || fail "TELEGRAM_ALLOWED_USERS must contain exactly Lior's numeric user ID in Slice 1"
+if [[ ${NIX_ALLOW_TEST_CONFIG:-0} != 1 ]]; then
+  [[ "$telegram_token" =~ ^[0-9]{6,}:[A-Za-z0-9_-]{30,}$ ]] || fail "TELEGRAM_BOT_TOKEN does not match the BotFather token shape"
+else
+  [[ -n "$telegram_token" ]] || fail "TELEGRAM_BOT_TOKEN is required"
+fi
 
 docker compose --env-file "$config_file" config --quiet
 printf 'Configuration is valid for Compose project %s.\n' "$project_name"

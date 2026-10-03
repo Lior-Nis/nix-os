@@ -20,11 +20,19 @@ printf 'POSTGRES_PASSWORD=%s\nPAPERCLIP_DB_PASSWORD=%s\n' "$postgres_password" "
   printf 'PAPERCLIP_TOOL_ACTION_SIGNING_SECRET=%s\n' "$(openssl rand -hex 32)"
 } >"$source_dir/secrets/paperclip.env"
 {
+  printf 'API_SERVER_KEY=%s\n' "$(openssl rand -hex 32)"
+  printf 'TELEGRAM_BOT_TOKEN=test-token\nTELEGRAM_ALLOWED_USERS=123456789\n'
+  printf 'TELEGRAM_ALLOW_ALL_USERS=false\nGATEWAY_ALLOW_ALL_USERS=false\n'
+} >"$source_dir/secrets/hermes.env"
+mkdir "$source_dir/nix-brain"
+{
   printf 'COMPOSE_PROJECT_NAME=nix-os-config-pack-test\n'
   printf 'PAPERCLIP_PUBLIC_URL=https://nix-os.test-tailnet.ts.net\n'
   printf 'PAPERCLIP_HOST_PORT=3100\n'
   printf 'POSTGRES_ENV_FILE=%s\n' "$source_dir/secrets/postgres.env"
   printf 'PAPERCLIP_ENV_FILE=%s\n' "$source_dir/secrets/paperclip.env"
+  printf 'HERMES_ENV_FILE=%s\n' "$source_dir/secrets/hermes.env"
+  printf 'NIX_BRAIN_HOST_PATH=%s\n' "$source_dir/nix-brain"
   printf 'PAPERCLIP_AUTH_DISABLE_SIGN_UP=true\n'
   printf 'BACKUP_OUTPUT_DIR=%s\n' "$source_dir/backups"
 } >"$source_dir/deployment.env"
@@ -48,9 +56,11 @@ CONFIG_RESTORE_ROOT="$restore_root" AGE_IDENTITY_FILE="$test_tmp_dir/identity.tx
 
 restored_postgres="$restore_root$source_dir/secrets/postgres.env"
 restored_paperclip="$restore_root$source_dir/secrets/paperclip.env"
+restored_hermes="$restore_root$source_dir/secrets/hermes.env"
 cmp -s "$source_dir/secrets/postgres.env" "$restored_postgres"
 cmp -s "$source_dir/secrets/paperclip.env" "$restored_paperclip"
-for restored_file in "$restored_config" "$restored_postgres" "$restored_paperclip"; do
+cmp -s "$source_dir/secrets/hermes.env" "$restored_hermes"
+for restored_file in "$restored_config" "$restored_postgres" "$restored_paperclip" "$restored_hermes"; do
   mode=$(stat -c '%a' "$restored_file" 2>/dev/null || stat -f '%Lp' "$restored_file")
   [[ "$mode" == 600 ]] || { printf 'restored file has unsafe mode %s: %s\n' "$mode" "$restored_file" >&2; exit 1; }
 done

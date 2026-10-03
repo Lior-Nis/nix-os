@@ -12,6 +12,7 @@ compose=(docker compose --env-file "$config_file")
 source_cookie=/tmp/nix-os-source-cookie.txt
 source_response=/tmp/nix-os-source-response.json
 restore_config=''
+archive_helper_image='postgres:17.11-alpine3.24@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24'
 
 fail() { printf 'backup/restore smoke error: %s\n' "$*" >&2; exit 1; }
 hash_stream() { if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1; else shasum -a 256 | cut -d' ' -f1; fi; }
@@ -23,7 +24,7 @@ assert_project_absent() {
     || fail "unexpected pre-existing containers for Compose project $project"
   [[ -z $(docker network ls -q --filter "label=com.docker.compose.project=$project") ]] \
     || fail "unexpected pre-existing networks for Compose project $project"
-  for resource in postgres_data paperclip_data; do
+  for resource in postgres_data paperclip_data hermes_data; do
     if docker volume inspect "${project}_${resource}" >/dev/null 2>&1; then
       fail "unexpected pre-existing volume ${project}_${resource}"
     fi
@@ -37,6 +38,16 @@ source_post() {
     -H 'Content-Type: application/json' -H 'Origin: https://nix-os.test-tailnet.ts.net' \
     -X POST "http://127.0.0.1:3100${path}" --data-binary @-)
   [[ "$status" =~ ^2 ]] || fail "source API POST $path returned HTTP $status"
+  "${compose[@]}" exec -T paperclip cat "$source_response"
+}
+
+source_patch() {
+  local path=$1 body=$2 status
+  status=$(printf '%s' "$body" | "${compose[@]}" exec -T paperclip curl -sS \
+    -o "$source_response" -w '%{http_code}' -c "$source_cookie" -b "$source_cookie" \
+    -H 'Content-Type: application/json' -H 'Origin: https://nix-os.test-tailnet.ts.net' \
+    -X PATCH "http://127.0.0.1:3100${path}" --data-binary @-)
+  [[ "$status" =~ ^2 ]] || fail "source API PATCH $path returned HTTP $status"
   "${compose[@]}" exec -T paperclip cat "$source_response"
 }
 
@@ -74,14 +85,30 @@ printf 'POSTGRES_PASSWORD=%s\nPAPERCLIP_DB_PASSWORD=%s\n' "$postgres_password" "
   printf 'PAPERCLIP_TOOL_ACTION_SIGNING_SECRET=%s\n' "$(openssl rand -hex 32)"
 } >"$smoke_tmp_dir/paperclip.env"
 {
+  printf 'API_SERVER_KEY=%s\n' "$(openssl rand -hex 32)"
+  printf 'TELEGRAM_BOT_TOKEN=test-token\nTELEGRAM_ALLOWED_USERS=123456789\n'
+  printf 'TELEGRAM_ALLOW_ALL_USERS=false\nGATEWAY_ALLOW_ALL_USERS=false\n'
+} >"$smoke_tmp_dir/hermes.env"
+mkdir "$smoke_tmp_dir/nix-brain"
+{
   printf 'COMPOSE_PROJECT_NAME=%s\n' "$smoke_project"
   printf 'PAPERCLIP_PUBLIC_URL=https://nix-os.test-tailnet.ts.net\nPAPERCLIP_HOST_PORT=0\n'
   printf 'POSTGRES_ENV_FILE=%s\nPAPERCLIP_ENV_FILE=%s\n' "$smoke_tmp_dir/postgres.env" "$smoke_tmp_dir/paperclip.env"
+  printf 'HERMES_ENV_FILE=%s\nNIX_BRAIN_HOST_PATH=%s\n' "$smoke_tmp_dir/hermes.env" "$smoke_tmp_dir/nix-brain"
   printf 'PAPERCLIP_AUTH_DISABLE_SIGN_UP=false\nBACKUP_OUTPUT_DIR=%s\n' "$smoke_tmp_dir/backups"
 } >"$config_file"
 chmod 0600 "$smoke_tmp_dir"/*.env
 
 NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$config_file"
+docker volume create "${smoke_project}_hermes_data" >/dev/null
+docker run --rm --volume "${smoke_project}_hermes_data:/state" "$archive_helper_image" sh -ec '
+  install -d /state/memories /state/sessions /state/skills/grill-me
+  printf "chief-of-staff-continuity-v1\n" >/state/memories/slice-1-continuity.txt
+  printf "telegram-session-fixture-v1\n" >/state/sessions/slice-1-session.json
+  printf "%s\n" "---" "name: grill-me" "---" >/state/skills/grill-me/SKILL.md
+  printf "%s\n" "{\"provider\":\"openai-codex\",\"fixture\":true}" >/state/auth.json
+  printf "%s\n" "{\"desired_state\":\"running\",\"fixture\":true}" >/state/gateway_state.json
+'
 "${compose[@]}" up -d --wait postgres
 NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-migrations" "$config_file"
 "${compose[@]}" exec -T postgres psql -U paperclip -d paperclip -c 'CREATE TABLE migration_preflight_canary (id integer);' >/dev/null
@@ -127,9 +154,96 @@ source_get '/api/auth/get-session' | jq -e '.user.id != null or .session.userId 
 
 company_json=$(source_post '/api/companies' '{"name":"Slice 0 Recovery Company","description":"supported API recovery fixture","budgetMonthlyCents":100}')
 company_id=$(jq -er '.id' <<<"$company_json")
-issue_json=$(source_post "/api/companies/${company_id}/issues" '{"title":"Slice 0 recovery issue","description":"real Paperclip state must survive restore"}')
-issue_id=$(jq -er '.id' <<<"$issue_json")
-[[ $(jq -r '.companyId' <<<"$issue_json") == "$company_id" ]] || fail "created issue relationship is wrong"
+project_json=$(source_post "/api/companies/${company_id}/projects" \
+  '{"name":"Nix MCP Boundary Fixture","description":"Existing approved project for bounded Chief operations."}')
+project_id=$(jq -er '.id' <<<"$project_json")
+source_post "/api/companies/${company_id}/agents" \
+  '{"name":"Recovery Fixture CEO","role":"ceo","capabilities":"Approves the disposable Hermes recovery join.","adapterType":"process","adapterConfig":{"command":"true","args":[]}}' \
+  >/dev/null
+
+# Exercise the supported invite -> approval -> one-time claim flow and persist
+# the resulting key inside the same Hermes volume that the backup will capture.
+invite_json=$(source_post "/api/companies/${company_id}/invites" '{"allowedJoinTypes":"agent"}')
+invite_token=$(jq -er '.token' <<<"$invite_json")
+hermes_api_key=$(grep -E '^API_SERVER_KEY=' "$smoke_tmp_dir/hermes.env" | cut -d= -f2-)
+accept_body=$(jq -nc --arg api_key "$hermes_api_key" '{
+  requestType:"agent",
+  agentName:"Chief of Staff Recovery Fixture",
+  adapterType:"hermes_gateway",
+  capabilities:"Bounded Paperclip recovery fixture",
+  agentDefaultsPayload:{
+    apiBaseUrl:"http://hermes:8642",
+    apiKey:$api_key,
+    paperclipApiUrl:"http://paperclip:3100",
+    sessionKeyStrategy:"issue",
+    dangerouslyAllowInsecureRemoteHttp:true
+  }
+}')
+join_json=$(source_post "/api/invites/${invite_token}/accept" "$accept_body")
+join_id=$(jq -er '.id' <<<"$join_json")
+source_post "/api/companies/${company_id}/join-requests/${join_id}/approve" '{}' >/dev/null
+join_state="$smoke_tmp_dir/hermes-join.json"
+printf '%s\n' "$join_json" >"$join_state"
+chmod 0600 "$join_state"
+claim_result=$("${compose[@]}" run --rm --no-deps -T --entrypoint python3 hermes \
+  /opt/nix/claim-agent.py claim <"$join_state")
+hermes_agent_id=$(jq -er '.agentId' <<<"$claim_result")
+[[ $(jq -er '.companyId' <<<"$claim_result") == "$company_id" ]] || fail "claimed Hermes company identity is wrong"
+rm -f "$join_state"
+
+# Keep the disposable run alive without invoking a model. This is test-only;
+# the agent is restored to hermes_gateway before its state is backed up.
+source_patch "/api/agents/${hermes_agent_id}" \
+  '{"adapterType":"process","adapterConfig":{"command":"sleep","args":["120"]},"replaceAdapterConfig":true}' \
+  >/dev/null
+
+mcp_result=$("${compose[@]}" run --rm --no-deps -T --entrypoint python3 hermes \
+  /opt/nix/verify-paperclip-mcp.py --exercise-project "$project_id")
+issue_id=$(jq -er '.issueId' <<<"$mcp_result")
+issue_json=$(source_get "/api/issues/${issue_id}")
+[[ $(jq -r '.companyId' <<<"$issue_json") == "$company_id" ]] || fail "bounded MCP issue/company relationship is wrong"
+[[ $(jq -r '.projectId' <<<"$issue_json") == "$project_id" ]] || fail "bounded MCP issue/project relationship is wrong"
+
+# Existing-issue updates and agent comments require an attributable Paperclip
+# heartbeat run. Create that run through the supported wakeup endpoint, then
+# exercise both tools with the runtime context Paperclip injects into an agent
+# execution.
+wake_body=$(jq -nc --arg issue_id "$issue_id" '{
+  source:"on_demand",
+  reason:"slice_1_bounded_mcp_smoke",
+  payload:{issueId:$issue_id}
+}')
+wake_status=$(printf '%s' "$wake_body" | "${compose[@]}" exec -T paperclip curl -sS \
+  -o "$source_response" -w '%{http_code}' -c "$source_cookie" -b "$source_cookie" \
+  -H 'Content-Type: application/json' -H 'Origin: https://nix-os.test-tailnet.ts.net' \
+  -X POST "http://127.0.0.1:3100/api/agents/${hermes_agent_id}/wakeup" --data-binary @-)
+wake_json=$("${compose[@]}" exec -T paperclip cat "$source_response")
+if [[ ! "$wake_status" =~ ^2 ]]; then
+  fail "source agent wakeup returned HTTP $wake_status: $(jq -r '.error // "unreported error"' <<<"$wake_json")"
+fi
+mcp_run_id=$(jq -er '.id // .runId // .executionRunId // empty' <<<"$wake_json") \
+  || fail "source agent wakeup did not create a run: $(jq -c '{status,reason,message}' <<<"$wake_json")"
+mcp_run_result=$("${compose[@]}" run --rm --no-deps -T --entrypoint python3 \
+  -e PAPERCLIP_RUN_ID="$mcp_run_id" hermes \
+  /opt/nix/verify-paperclip-mcp.py --exercise-run "$issue_id")
+mcp_comment_id=$(jq -er '.commentId' <<<"$mcp_run_result")
+issue_json=$(source_get "/api/issues/${issue_id}")
+[[ $(jq -r '.description' <<<"$issue_json") == 'Updated through the approved Chief tool boundary.' ]] \
+  || fail "bounded MCP issue update did not persist"
+source_post "/api/heartbeat-runs/${mcp_run_id}/cancel" '{}' >/dev/null
+hermes_adapter_patch=$(jq -nc --arg api_key "$hermes_api_key" '{
+  adapterType:"hermes_gateway",
+  adapterConfig:{
+    apiBaseUrl:"http://hermes:8642",
+    apiKey:$api_key,
+    paperclipApiUrl:"http://paperclip:3100",
+    sessionKeyStrategy:"issue",
+    dangerouslyAllowInsecureRemoteHttp:true
+  },
+  replaceAdapterConfig:true
+}')
+source_patch "/api/agents/${hermes_agent_id}" "$hermes_adapter_patch" >/dev/null
+unset hermes_adapter_patch
 
 attachment_bytes='slice-0-known-attachment-bytes-v1'
 attachment_sha=$(printf '%s' "$attachment_bytes" | hash_stream)
@@ -173,6 +287,7 @@ restore_config="$restore_work_dir/restore.env"
 RESTORE_PROJECT_NAME="$restore_project" RESTORE_KEEP=true RESTORE_WORK_DIR="$restore_work_dir" \
   AGE_IDENTITY_FILE="$smoke_tmp_dir/backup-identity.txt" \
   RESTORE_POSTGRES_ENV_FILE="$smoke_tmp_dir/postgres.env" RESTORE_PAPERCLIP_ENV_FILE="$smoke_tmp_dir/paperclip.env" \
+  RESTORE_HERMES_ENV_FILE="$smoke_tmp_dir/hermes.env" \
   "$repo_root/scripts/restore-smoke" "$artifact"
 
 [[ -f "$restore_config" ]] || fail "could not locate retained restore configuration"
@@ -198,8 +313,12 @@ restore_get '/api/auth/get-session' | jq -e '.user.id != null or .session.userId
 restored_company=$(restore_get "/api/companies/${company_id}")
 [[ $(jq -r '.name' <<<"$restored_company") == 'Slice 0 Recovery Company' ]] || fail "company did not survive restore"
 restored_issue=$(restore_get "/api/issues/${issue_id}")
-[[ $(jq -r '.title' <<<"$restored_issue") == 'Slice 0 recovery issue' ]] || fail "issue did not survive restore"
+[[ $(jq -r '.title' <<<"$restored_issue") == 'Slice 1 bounded MCP recovery issue' ]] || fail "issue did not survive restore"
 [[ $(jq -r '.companyId' <<<"$restored_issue") == "$company_id" ]] || fail "issue/company relationship did not survive restore"
+[[ $(jq -r '.projectId' <<<"$restored_issue") == "$project_id" ]] || fail "issue/project relationship did not survive restore"
+restore_get "/api/issues/${issue_id}/comments" \
+  | jq -e --arg id "$mcp_comment_id" '.[] | select(.id == $id and .body == "Slice 1 bounded MCP comment fixture.")' >/dev/null \
+  || fail "bounded MCP comment did not survive restore"
 restored_attachments=$(restore_get "/api/issues/${issue_id}/attachments")
 jq -e --arg id "$attachment_id" --arg sha "$attachment_sha" '.[] | select(.id == $id and .sha256 == $sha)' >/dev/null <<<"$restored_attachments" || fail "attachment metadata did not survive restore"
 restored_attachment_sha=$("${restore_compose[@]}" exec -T paperclip curl -fsS -b "$restore_cookie" "http://127.0.0.1:3100/api/attachments/${attachment_id}/content" | hash_stream)
@@ -216,6 +335,20 @@ jq -e --arg environment_id "$environment_id" '.[0] | select(.outcome == "success
   >/dev/null <<<"$restored_access_events" || fail "restored canary could not be decrypted with the recovered master key"
 restored_health=$("${restore_compose[@]}" exec -T paperclip curl -fsS http://127.0.0.1:3100/api/health)
 grep -q '"status":"ok"' <<<"$restored_health" || fail "restored Paperclip health did not report ok"
+docker run --rm --volume "${restore_project}_hermes_data:/state:ro" "$archive_helper_image" sh -ec '
+  grep -qx chief-of-staff-continuity-v1 /state/memories/slice-1-continuity.txt
+  grep -qx telegram-session-fixture-v1 /state/sessions/slice-1-session.json
+  grep -q "name: grill-me" /state/skills/grill-me/SKILL.md
+  grep -q "openai-codex" /state/auth.json
+  grep -q "desired_state" /state/gateway_state.json
+  test "$(stat -c %a /state/.env)" = 600
+  test -s /state/.paperclip-claim-receipt.json
+' || fail "restored Hermes identity/session/skill fixtures are incomplete"
+# shellcheck disable=SC2016
+"${restore_compose[@]}" exec -T -e EXPECTED_AGENT_ID="$hermes_agent_id" hermes sh -ec \
+  'test "$(grep -E "^PAPERCLIP_AGENT_ID=" /opt/data/.env | cut -d= -f2-)" = "$EXPECTED_AGENT_ID"' \
+  2>/dev/null \
+  || fail "restored Hermes agent identifier differs from the claimed source identity"
 
 "${restore_compose[@]}" down --volumes --remove-orphans
 printf 'Fresh bootstrap and realistic Paperclip backup/restore smoke passed.\n'

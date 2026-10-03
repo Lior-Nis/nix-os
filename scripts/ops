@@ -19,9 +19,10 @@ case "$action" in
     "$repo_root/scripts/check-migrations" "$config_file"
     "$repo_root/scripts/initialize-paperclip" "$config_file"
     "$repo_root/scripts/check-migrations" "$config_file"
-    "${compose[@]}" up -d --wait paperclip
+    "${compose[@]}" up -d --wait paperclip hermes
     "${compose[@]}" exec -T paperclip curl -fsS http://127.0.0.1:3100/api/health
-    printf '\nPaperclip is healthy on host loopback. Configure Tailscale Serve before checking tailnet health.\n'
+    "${compose[@]}" exec -T hermes curl -fsS http://127.0.0.1:8642/health >/dev/null
+    printf '\nPaperclip and Hermes are healthy. Configure Tailscale Serve before checking tailnet health.\n'
     ;;
   upgrade)
     "$repo_root/scripts/check-config" "$config_file"
@@ -44,10 +45,11 @@ case "$action" in
     printf '\n%s\n' 'Tailnet health through Tailscale Serve:'
     public_url=$(grep -E '^PAPERCLIP_PUBLIC_URL=' "$config_file" | tail -n 1 | cut -d= -f2-)
     curl --fail --silent --show-error "${public_url}/api/health"
-    printf '\n'
+    printf '\n%s\n' 'Internal Hermes health and authenticated API boundary:'
+    "$repo_root/scripts/configure-hermes" verify "$config_file"
     ;;
   logs)
-    "${compose[@]}" logs --follow --tail 200 paperclip postgres
+    "${compose[@]}" logs --follow --tail 200 hermes paperclip postgres
     ;;
   restart)
     "$repo_root/scripts/check-config" "$config_file"

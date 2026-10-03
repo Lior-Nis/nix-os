@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ ${1:-} == compose ]]; then
+  shift
+  if [[ ${1:-} == version ]]; then
+    exit 0
+  fi
+  operation=''
+  for argument in "$@"; do
+    case "$argument" in
+      config|exec|ps|stop|up) operation=$argument; break ;;
+    esac
+  done
+  case "$operation" in
+    config)
+      if [[ " $* " == *' --images '* ]]; then
+        printf 'fixture-image@sha256:fixture\n'
+      fi
+      ;;
+    exec)
+      if [[ " $* " == *' pg_dump '* ]]; then
+        printf 'fixture-postgres-dump\n'
+      elif [[ " $* " == *' psql '* ]]; then
+        printf '%s\n' 'public_tables=1' 'companies=1' 'issues=1' 'documents=1'
+      fi
+      ;;
+    ps|stop|up) ;;
+    *) exit 2 ;;
+  esac
+  exit 0
+fi
+
+if [[ ${1:-} == volume && ${2:-} == inspect ]]; then
+  exit 0
+fi
+
+if [[ ${1:-} == run ]]; then
+  backup_dir=''
+  source_volume=''
+  while (( $# > 0 )); do
+    if [[ $1 == --volume ]]; then
+      shift
+      case "$1" in
+        *:/backup) backup_dir=${1%:/backup} ;;
+        *:/source:ro) source_volume=${1%:/source:ro} ;;
+      esac
+    fi
+    shift
+  done
+  [[ -n "$backup_dir" && -n "$source_volume" ]] || exit 2
+  if [[ $source_volume == *_paperclip_data ]]; then
+    printf 'fixture paperclip archive\n' >"$backup_dir/paperclip-data.tar.gz"
+    printf 'fixture  ./fixture-paperclip\n' >"$backup_dir/paperclip-files.sha256"
+  elif [[ $source_volume == *_hermes_data ]]; then
+    printf 'fixture hermes credential archive\n' >"$backup_dir/hermes-data.tar.gz"
+    printf 'fixture  ./fixture-hermes\n' >"$backup_dir/hermes-files.sha256"
+  else
+    exit 2
+  fi
+  exit 0
+fi
+
+exit 2
