@@ -88,7 +88,14 @@ require("tailscale set --operator=nix" in tailscale_script, "Tailscale operator 
 require("tailscale serve reset" not in tailscale_script, "Nix must not reset unrelated Tailscale routes")
 require("tailscale serve status --json" in tailscale_script, "Tailscale state is not inspected")
 require("tailscale serve --bg --yes --https=443 --set-path=/" in tailscale_script, "Nix-owned HTTPS root route is not explicit")
+require("--expect preflight" in tailscale_script, "Tailscale collision preflight is not enforced")
+require(
+    tailscale_script.index("--expect preflight")
+    < tailscale_script.index("tailscale serve --bg --yes --https=443 --set-path=/"),
+    "Tailscale collision preflight must run before mutation",
+)
 require("--expect preserved" in tailscale_script, "unrelated Tailscale route preservation is not verified")
+require("/var/lib/nix-os/tailscale-failures" in tailscale_script, "private Tailscale failure evidence is not retained")
 require("check-tailscale-serve-state" in tailscale_script, "final Tailscale state policy is not enforced")
 
 paperclip_environment = services["paperclip"].get("environment", {})

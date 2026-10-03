@@ -9,6 +9,33 @@ target='http://127.0.0.1:3100'
 
 "$validator" --expect empty "$fixtures/empty.json" >/dev/null
 "$validator" --expect inspect "$fixtures/allow-funnel.json" >/dev/null
+for preflight_fixture in \
+  empty \
+  valid \
+  allow-funnel \
+  allow-funnel-false \
+  coexistence-before \
+  foreground-funnel \
+  unexpected-handler \
+  unexpected-service; do
+  "$validator" --expect preflight --fqdn "$fqdn" \
+    "$fixtures/${preflight_fixture}.json" >/dev/null
+done
+
+for invalid_preflight_fixture in \
+  preflight-conflicting-tcp443 \
+  preflight-conflicting-tcp443-extra \
+  preflight-foreground-tcp443 \
+  preflight-foreground-malformed \
+  preflight-foreground-web443; do
+  if "$validator" --expect preflight --fqdn "$fqdn" \
+    "$fixtures/${invalid_preflight_fixture}.json" >/dev/null 2>&1; then
+    printf 'conflicting Tailscale preflight fixture unexpectedly passed: %s\n' \
+      "$invalid_preflight_fixture" >&2
+    exit 1
+  fi
+done
+
 for valid_fixture in valid unexpected-handler foreground-funnel unexpected-service coexistence-after; do
   "$validator" --expect paperclip --fqdn "$fqdn" --target "$target" \
     "$fixtures/${valid_fixture}.json" >/dev/null

@@ -4,9 +4,35 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 config_file=${1:-${CONFIG_FILE:-$repo_root/.env}}
 state_tmp_dir=''
+configuration_succeeded=false
 
 cleanup() {
+  exit_status=$?
+  if [[ -n "$state_tmp_dir" && "$configuration_succeeded" != true ]]; then
+    snapshot_root=/var/lib/nix-os/tailscale-failures
+    snapshot_dir="$snapshot_root/$(date -u +%Y%m%dT%H%M%SZ)-$$"
+    if sudo install -d -o root -g root -m 0700 "$snapshot_dir"; then
+      snapshot_count=0
+      for snapshot_name in before final; do
+        snapshot_source="$state_tmp_dir/${snapshot_name}.json"
+        if [[ -f "$snapshot_source" ]] && sudo install -o root -g root -m 0600 \
+          "$snapshot_source" "$snapshot_dir/${snapshot_name}.json"; then
+          ((snapshot_count += 1))
+        fi
+      done
+      if (( snapshot_count > 0 )); then
+        printf 'Tailscale failure evidence retained root-only at %s; inspect with sudo.\n' \
+          "$snapshot_dir" >&2
+      else
+        sudo rmdir "$snapshot_dir" 2>/dev/null || true
+      fi
+    else
+      printf '%s\n' 'Warning: could not retain root-only Tailscale failure evidence.' >&2
+    fi
+  fi
   [[ -z "$state_tmp_dir" ]] || rm -rf "$state_tmp_dir"
+  trap - EXIT
+  exit "$exit_status"
 }
 trap cleanup EXIT
 
@@ -53,14 +79,16 @@ fi
 curl --fail --silent --show-error "http://127.0.0.1:${host_port}/api/health" >/dev/null \
   || fail "Paperclip is not healthy on the configured loopback port"
 
+umask 077
 state_tmp_dir=$(mktemp -d /tmp/nix-os-tailscale-state.XXXXXX)
 target="http://127.0.0.1:${host_port}"
 
-# Nix owns only the node's HTTPS 443 root handler. Configure that exact path
-# through the supported CLI; do not reset the node because unrelated services
-# may own other ports, paths, foreground sessions, Services, or Funnel routes.
+# Nix owns the TCP 443 HTTPS listener, the node's HTTPS 443 root handler, and
+# the absence of Funnel permission for that endpoint. Do not reset the node:
+# sibling paths and other ports, sessions, Services, or Funnel routes are not ours.
 tailscale serve status --json >"$state_tmp_dir/before.json"
-"$repo_root/scripts/check-tailscale-serve-state" --expect inspect "$state_tmp_dir/before.json"
+"$repo_root/scripts/check-tailscale-serve-state" \
+  --expect preflight --fqdn "$fqdn" "$state_tmp_dir/before.json"
 
 # --bg persists across daemon and host restarts. Explicit port 443 and root
 # path make the Nix-owned endpoint unambiguous while preserving other state.
@@ -75,4 +103,5 @@ tailscale serve status --json >"$state_tmp_dir/final.json"
 curl --fail --silent --show-error "https://${fqdn}/api/health" >/dev/null \
   || fail "Paperclip is not healthy through Tailscale Serve"
 
+configuration_succeeded=true
 printf 'Nix-owned Tailscale Serve route is https://%s:443/ -> %s; unrelated routes were preserved.\n' "$fqdn" "$target"

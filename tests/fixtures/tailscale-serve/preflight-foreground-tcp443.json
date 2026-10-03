@@ -1,0 +1,16 @@
+{
+  "TCP": {
+    "8443": {
+      "HTTPS": true
+    }
+  },
+  "Foreground": {
+    "session": {
+      "TCP": {
+        "443": {
+          "HTTPS": true
+        }
+      }
+    }
+  }
+}

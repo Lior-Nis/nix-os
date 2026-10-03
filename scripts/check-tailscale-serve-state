@@ -14,7 +14,11 @@ def fail(message: str) -> None:
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--expect", choices=("inspect", "empty", "paperclip", "preserved"), required=True)
+parser.add_argument(
+    "--expect",
+    choices=("inspect", "empty", "preflight", "paperclip", "preserved"),
+    required=True,
+)
 parser.add_argument("--fqdn")
 parser.add_argument("--target")
 parser.add_argument("--before", type=Path)
@@ -45,8 +49,72 @@ if not args.fqdn:
 expected_host_port = f"{args.fqdn}:443"
 
 
+def has_nix_funnel_entry(value: object) -> bool:
+    if isinstance(value, dict):
+        candidate = value.get("AllowFunnel")
+        if isinstance(candidate, dict) and expected_host_port in candidate:
+            return True
+        return any(has_nix_funnel_entry(child) for child in value.values())
+    if isinstance(value, list):
+        return any(has_nix_funnel_entry(child) for child in value)
+    return False
+
+
+def foreground_claim(value: object) -> str | None:
+    """Find a foreground session that competes for Nix's listener or web host."""
+    if isinstance(value, dict):
+        tcp = value.get("TCP")
+        if isinstance(tcp, dict) and "443" in tcp:
+            return "TCP port 443"
+        web = value.get("Web")
+        if isinstance(web, dict) and expected_host_port in web:
+            return f"Web host {expected_host_port}"
+        for child in value.values():
+            claim = foreground_claim(child)
+            if claim:
+                return claim
+    elif isinstance(value, list):
+        for child in value:
+            claim = foreground_claim(child)
+            if claim:
+                return claim
+    return None
+
+
+if args.expect == "preflight":
+    tcp = state.get("TCP")
+    if tcp is not None and not isinstance(tcp, dict):
+        fail("TCP must be a mapping when present")
+    if isinstance(tcp, dict) and "443" in tcp and tcp["443"] != {"HTTPS": True}:
+        fail("TCP port 443 is already claimed by a conflicting listener")
+
+    web = state.get("Web")
+    if web is not None and not isinstance(web, dict):
+        fail("Web must be a mapping when present")
+    host = web.get(expected_host_port) if isinstance(web, dict) else None
+    if host is not None and not isinstance(host, dict):
+        fail(f"Web host {expected_host_port} must be a mapping when present")
+    handlers = host.get("Handlers") if isinstance(host, dict) else None
+    if handlers is not None and not isinstance(handlers, dict):
+        fail(f"Web host {expected_host_port} Handlers must be a mapping when present")
+
+    allow_funnel = state.get("AllowFunnel")
+    if allow_funnel is not None and not isinstance(allow_funnel, dict):
+        fail("AllowFunnel must be a mapping when present")
+    foreground = state.get("Foreground")
+    if foreground is not None and not isinstance(foreground, (dict, list)):
+        fail("Foreground must be a mapping or list when present")
+
+    claim = foreground_claim(foreground)
+    if claim:
+        fail(f"a foreground Serve session already claims Nix-owned {claim}")
+    listener = "existing HTTPS listener" if isinstance(tcp, dict) and "443" in tcp else "free TCP port"
+    print(f"Tailscale preflight passed for {expected_host_port}: {listener}; no competing foreground state.")
+    raise SystemExit(0)
+
+
 def without_nix_endpoint(value: dict) -> dict:
-    """Return node state with only Nix's top-level HTTPS 443 root removed."""
+    """Remove exactly Nix's TCP listener, root handler, and endpoint Funnel key."""
     result = copy.deepcopy(value)
 
     tcp = result.get("TCP")
@@ -88,7 +156,7 @@ if args.expect == "preserved":
     if not isinstance(before, dict):
         fail("before status must be a JSON object")
     if without_nix_endpoint(before) != without_nix_endpoint(state):
-        fail("configuration outside the Nix-owned HTTPS 443 root handler changed")
+        fail("configuration outside Nix's TCP 443 listener, HTTPS root handler, and Funnel key changed")
     print("Verified unrelated Tailscale Serve/Funnel configuration was preserved.")
     raise SystemExit(0)
 
@@ -105,20 +173,9 @@ handlers = host.get("Handlers") if isinstance(host, dict) else None
 if not isinstance(handlers, dict) or handlers.get("/") != {"Proxy": args.target}:
     fail("the Nix-owned root handler does not proxy to the expected Paperclip target")
 
-allow_funnel = state.get("AllowFunnel", {})
-if not isinstance(allow_funnel, dict):
+allow_funnel = state.get("AllowFunnel")
+if allow_funnel is not None and not isinstance(allow_funnel, dict):
     fail("AllowFunnel must be a mapping when present")
-
-
-def has_nix_funnel_entry(value: object) -> bool:
-    if isinstance(value, dict):
-        candidate = value.get("AllowFunnel")
-        if isinstance(candidate, dict) and expected_host_port in candidate:
-            return True
-        return any(has_nix_funnel_entry(child) for child in value.values())
-    if isinstance(value, list):
-        return any(has_nix_funnel_entry(child) for child in value)
-    return False
 
 
 if has_nix_funnel_entry(state):
