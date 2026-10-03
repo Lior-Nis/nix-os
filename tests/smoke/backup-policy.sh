@@ -13,6 +13,12 @@ fail() {
 
 fake_bin="$repo_root/tests/fixtures/backup-policy"
 
+# shellcheck disable=SC2016
+grep -Fq 'test "$(find /state -maxdepth 1 -name ".paperclip-claim-*.pending" | wc -l | tr -d " ")" = 0' \
+  "$repo_root/scripts/backup" || fail 'backup does not reject pending claim markers'
+grep -Fq 'test ! -e /state/mcp-tokens/nix-os-paperclip-claim-stage.json' "$repo_root/scripts/backup" \
+  || fail 'backup does not reject a staged claim secret'
+
 postgres_password='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 paperclip_db_password='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
 printf 'POSTGRES_PASSWORD=%s\nPAPERCLIP_DB_PASSWORD=%s\n' \
@@ -31,7 +37,7 @@ printf 'HERMES_TELEGRAM_MODE=disabled\n' >"$test_tmp_dir/hermes-telegram-mode.en
 mkdir "$test_tmp_dir/nix-brain"
 {
   printf 'COMPOSE_PROJECT_NAME=nix-os-backup-policy-test\n'
-  printf 'PAPERCLIP_PUBLIC_URL=https://nix-os.test-tailnet.ts.net\nPAPERCLIP_HOST_PORT=0\n'
+  printf 'PAPERCLIP_PUBLIC_URL=https://nix-os.test-tailnet.ts.net\nPAPERCLIP_LIOR_USER_ID=lior-test-user\nPAPERCLIP_HOST_PORT=0\n'
   printf 'POSTGRES_ENV_FILE=%s\nPAPERCLIP_ENV_FILE=%s\n' "$test_tmp_dir/postgres.env" "$test_tmp_dir/paperclip.env"
   printf 'HERMES_ENV_FILE=%s\nNIX_BRAIN_HOST_PATH=%s\n' "$test_tmp_dir/hermes.env" "$test_tmp_dir/nix-brain"
   printf 'HERMES_TELEGRAM_MODE_FILE=%s\n' "$test_tmp_dir/hermes-telegram-mode.env"

@@ -203,8 +203,8 @@ In the private Chief of Staff Telegram context, Lior can say “Create a work it
 
 - Hermes service, internal `agent` network, persistent `/opt/data` volume, resource limits, and health check in Compose.
 - `deploy/hermes/config.yaml` and `SOUL.md`: the default profile is Chief of Staff; multiplexing remains off.
-- `HERMES_ENV_FILE` and read-only `NIX_BRAIN_HOST_PATH` configuration, plus safe secret initialization.
-- Supported Paperclip `hermes_gateway` invite/approve/claim procedure and distinct credentials.
+- `HERMES_ENV_FILE`, pinned non-secret `PAPERCLIP_LIOR_USER_ID`, and read-only `NIX_BRAIN_HOST_PATH` configuration, plus safe secret initialization.
+- Supported Paperclip `hermes_gateway` invite/approve/claim procedure, distinct credentials, and the operator-only zero-agent bootstrap workaround required by the pinned release.
 - Extended encrypted config/data backup, isolated Hermes volume restore, pinned-image/MCP/multiplex contracts, and live E2E checklist.
 - ADRs 0006-0007 and deployment/recovery documentation.
 
@@ -237,12 +237,13 @@ In the private Chief of Staff Telegram context, Lior can say “Create a work it
 - Compose/static checks prove no Hermes host port, exact service/network boundaries, required user allowlist and DM-only chat gate, read-only brain mount, pinned images/packages, and dangerous MCP tools absent.
 - Telegram authorization fixtures run the pinned adapter/auth logic and prove Lior DM accepted while unknown DM, Lior-in-group, forum/topic, and bot-sender events are rejected.
 - Claim helper tests cover destination preflight, mode-`0600` atomic persistence, identity verification, failure-marker retention, and consumed-claim failure handling without logging keys.
+- First-Chief bootstrap tests cover one browser-approved CLI challenge per run, pinned Lior identity, verified self-revocation on success/failure, secret redaction, paginated marker-bound invite/join correlation plus fresh accept-response shape validation, no invite/claim secret in output or process arguments, exact approved Goal/Project convergence, an inert credentialless temporary manager, protected staged claim and bounded replacement-key recovery across every marker/credential/receipt/revocation crash point, finalization interruption recovery, and completed reruns without duplicate invite/join/agent state. The pinned runtime contract also creates a mode-`0600` canary under `/opt/data/mcp-tokens` and proves direct reads, symlink reads, broad filename search, and broad content search cannot expose it.
 - Encrypted configuration round trip includes `hermes.env`; coordinated data recovery verifies byte-identical Hermes state, boots restored Hermes with Telegram disabled, checks API auth and the exact restricted tool surface, and resolves the restored agent identity through bounded Paperclip MCP. Real provider and Telegram recovery remain a live gate.
 
 ### Manual end-to-end verification
 
 1. Create the one private Telegram bot, discover Lior's numeric ID, authorize only that ID, and complete `openai-codex` device authorization without exposing tokens.
-2. Create or identify the already-approved `Nix Business OS V0` Paperclip project, onboard Chief through the supported `hermes_gateway` invite/approve/claim flow, and record the non-secret company/project/agent IDs.
+2. Run the reviewed first-Chief helper to converge the already-approved company Goal/Project and an inert temporary manager, onboard Chief through the supported `hermes_gateway` invite/approve/claim flow, finalize Chief as the sole root CEO, and record the non-secret company/goal/project/agent IDs.
 3. Message Chief from Lior's account with `ping`; confirm a reply. Attempt from a non-allowlisted identity and verify silent denial without tool access.
 4. Store a harmless continuity fact with supported Hermes memory, restart Hermes, and verify recall.
 5. Ask what work exists; verify the response is retrieved from live Paperclip. Create `Slice 1 integration test` at low priority, verify its real project/identifier/status, add a harmless comment/update, then directly change it in Paperclip and prove Chief reads the current state rather than stale chat memory.

@@ -226,15 +226,29 @@ Do not test the bot yet. The existing gateway remains its sole poller throughout
 
 ### 3. Create the approved project and onboard Chief
 
-In Paperclip, find the existing `Nix Business OS V0` project and its company. If that approved initiative does not yet have a Paperclip Project, create exactly that one project—this implements already-approved scope, not new strategy. Record its non-secret project ID.
-
-Use Paperclip's board UI to generate one agent invite for the company. Do not give its token to the model or place it in Telegram. Run the supported generic join through the repository wrapper:
+In Paperclip, identify the production company and record its non-secret company ID. Before the first privileged run, bind the deployment to Lior's non-secret Paperclip user ID:
 
 ```sh
-sudo -E ./scripts/onboard-hermes-agent submit "$PWD/.env"
+sudo -E ./scripts/bootstrap-paperclip-chief identify <company-id> --config "$PWD/.env"
 ```
 
-Paste the one-time invite token only into the script's hidden prompt. The wrapper calls Paperclip's supported invite endpoint from Hermes and stores the claim secret plus gateway defaults in a mode-`0600` temporary file beside `hermes.env`. It requests:
+Approve the ephemeral browser challenge while signed in as Lior, then copy the printed non-secret ID into `PAPERCLIP_LIOR_USER_ID` in `.env` and rerun `scripts/check-config`. `identify` is safe to repeat and self-revokes its board credential. Every prepare/converge/finalize run thereafter rejects and revokes a credential approved by any other Paperclip user; a name, email, or Telegram ID is not a substitute for this immutable ID.
+
+The reviewed helper below converges the already-approved `Nix Business OS V0` Goal and Project through supported APIs.
+
+The production company currently has no agent. Pinned Paperclip cannot approve its first external-agent join without an existing CEO manager. Run the one-shot reviewed operator flow:
+
+```sh
+sudo -E ./scripts/bootstrap-paperclip-chief converge <company-id> --config "$PWD/.env"
+```
+
+The helper prints one ephemeral Paperclip CLI-approval URL. Open it while signed in as Lior, inspect the requested company-scoped board action, and approve it. No separate invite creation, token relay, join approval, claim, or finalization click is required. The helper polls only with the challenge secret, keeps the resulting board credential in memory, verifies the approving identity has an active `owner` or `admin` membership in the exact company, self-revokes the credential on success or failure, and proves the revoked credential gets `401`. If revocation fails, stop and revoke the reported non-secret key ID in Paperclip.
+
+Within that already-approved scope, the helper also converges the exact company-level Goal `Complete Nix Business OS V0` and Project `Nix Business OS V0`. It lists exact titles first (including archived projects), stops on duplicates, creates the goal only when absent as active/company-level/unowned, and creates the project only when absent with idempotency key `nix-business-os-v0-approved-v1`, status `in_progress`, and the goal link. It unarchives the one exact project if necessary and prints only their non-secret IDs.
+
+For the agent bootstrap, the helper requires the company to be empty (or in an exact recoverable state created by a prior run), creates the temporary CEO through Paperclip's supported `agent-hires` API, performs the board approval as this explicit Lior-run action, strips create/assign permissions, and verifies that it has no API keys. The temporary record stays `idle` until the join is approved because it is the current manager, but it cannot perform useful work: its only command is `/bin/false`, heartbeat is disabled, budget is zero, and it has no credential.
+
+Using the same in-memory board credential, `converge` creates an agent-only invite and immediately accepts it. The response must identify that exact invite and the expected agent request/name/adapter before anything is staged or approved. The invite token is never printed or persisted. Before approving the resulting Chief join, it sends the claim response over stdin to the in-container helper, which atomically stages the claim secret as a mode-`0600`, fsynced `/opt/data/mcp-tokens/nix-os-paperclip-claim-stage.json` file in a private operator-owned directory. Pinned Hermes hard-denies file-tool reads and searches beneath `mcp-tokens`; the runtime boundary check proves direct reads, symlink reads, filename searches, and content searches cannot expose its random canary fixture. The staged secret is never returned by status, placed in an argument/environment variable, logged, or exposed to the model.
 
 ```text
 adapterType: hermes_gateway
@@ -244,16 +258,13 @@ sessionKeyStrategy: issue
 dangerouslyAllowInsecureRemoteHttp: true
 ```
 
-The last setting is allowed only on the non-published same-host `agent` network documented by ADR 0006. In Paperclip, review the pending `Chief of Staff` join and approve it. Then claim its one-time key without printing it:
+The last setting is allowed only on the non-published same-host `agent` network documented by ADR 0006. Before creating the invite, the helper verifies the claim destination. The in-container claim then writes a prepared mode-`0600` file, flushes it, atomically renames it to `/opt/data/.env`, flushes the directory, and verifies the resulting Paperclip identity. After claim it restarts Hermes and runs the full restricted-runtime verification. Finalization first promotes Chief to the sole root CEO, then demotes the bootstrap record to `general` reporting to Chief, reapplies its zero-permission policy, and pauses it. The helper prints only non-secret company Goal/Project/agent identifiers.
 
-```sh
-sudo -E ./scripts/onboard-hermes-agent claim "$PWD/.env"
-sudo -E ./scripts/configure-hermes verify "$PWD/.env"
-```
+A rerun is convergent. It pages through accepted/active invites and acts only on a join uniquely correlated by both IDs to its accepted `nix-os:first-chief:v1` marker. A staged pending join is approved and resumed; a staged approved join resumes without returning its secret to the host. A verified credential/receipt completes finalization. If an approved join has no usable persisted credential, the helper revokes only recognized active `initial-join-key`/`nix-chief-recovery` standard keys owned by the pinned Lior user, creates one replacement standard key through Paperclip's supported board API, and sends it over stdin to atomic persistence/identity verification. Before replacing `.env`, the in-container helper fsyncs a non-secret recovery marker. An ambiguous host response is resolved from the verified credential, exact marker, and receipt; a persisted key is never revoked. If no credential was persisted, the exact marker is removed durably before key revocation so either side of a crash is safely retryable. Unexpected keys, marker fields, or topology fail closed. Successful claim/recovery removes the protected stage and matching recovery marker.
 
-Before contacting the one-time claim endpoint, the claim command verifies the profile, ownership, writability, free space, and destination mode inside the Hermes container. It then claims, writes a prepared mode-`0600` temporary file, flushes it, atomically renames it to `/opt/data/.env`, flushes the directory, and verifies the resulting Paperclip identity. Only after those checks does it remove the pending marker and host-side claim state. It never prints the key or places it in a process argument. The command prints only company and agent IDs, restarts Hermes, and `verify` proves API auth, the exact restricted tool/file surface, provider auth, pinned read-only grilling guidance, and bounded Paperclip MCP identity without displaying credentials.
+The granular `bootstrap-paperclip-chief prepare`, `onboard-hermes-agent submit`, `onboard-hermes-agent claim`, and `bootstrap-paperclip-chief finalize` commands remain emergency recovery tools only. They add human steps and must not replace `converge` in the normal production path.
 
-The one-time secret cannot be replayed. If Paperclip consumed it but no valid `/opt/data/.env` can be recovered, preserve the helper's pending marker and inspect the volume first. If the credential is genuinely lost, use supported Paperclip administration to revoke the orphaned agent key (or remove the orphaned agent), issue a new agent invite, and repeat the flow. Never retry the consumed secret or edit the Paperclip database.
+The one-time claim secret is never blindly replayed. If the claim endpoint consumed it across a crash, `converge` uses the bounded replacement-key recovery above. Never delete the retained bootstrap record or edit the Paperclip database. State backup refuses to run while a staged claim or pending claim marker exists; run `converge` to a verified receipt first, then back up the full Hermes volume.
 
 The verified Chief surface must be identical for `cli`, `telegram`, and `api_server`: `file`, `memory`, `session_search`, and bounded `paperclip`. The runtime validator expands these labels and fails if mutable skill management, terminal, process management, code execution, browser/web/connectors, delegation, cron, computer-use, an unexpected MCP operation, or any other tool appears. A second pinned-runtime check proves `.env`/`auth.json` cannot be read or found by broad search, file writes/patches stay under `/opt/data/memories` even across symlinks, and the built-in `grill-me` guidance is readable but not writable. The nine allowed Paperclip operations remain the only Paperclip write path.
 

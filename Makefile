@@ -1,7 +1,7 @@
 CONFIG_FILE ?= .env
 export CONFIG_FILE
 
-.PHONY: vps-preflight validate init-secrets init-hermes-secrets initialize-paperclip transition-paperclip configure-hermes hermes-auth hermes-agent-submit hermes-agent-claim deploy configure-tailscale upgrade bootstrap-ceo status health logs restart backup backup-config restore-config restore-smoke ci
+.PHONY: vps-preflight validate init-secrets init-hermes-secrets initialize-paperclip transition-paperclip paperclip-chief-identify paperclip-chief-converge paperclip-chief-prepare paperclip-chief-finalize configure-hermes hermes-auth hermes-agent-submit hermes-agent-claim deploy configure-tailscale upgrade bootstrap-ceo status health logs restart backup backup-config restore-config restore-smoke ci
 
 vps-preflight:
 	./scripts/vps-preflight
@@ -20,6 +20,24 @@ initialize-paperclip:
 
 transition-paperclip:
 	./scripts/transition-paperclip "$(CONFIG_FILE)"
+
+paperclip-chief-identify:
+	@test -n "$(PAPERCLIP_COMPANY_ID)" || { echo "Set PAPERCLIP_COMPANY_ID" >&2; exit 1; }
+	./scripts/bootstrap-paperclip-chief identify "$(PAPERCLIP_COMPANY_ID)" --config "$(CONFIG_FILE)"
+
+paperclip-chief-converge:
+	@test -n "$(PAPERCLIP_COMPANY_ID)" || { echo "Set PAPERCLIP_COMPANY_ID" >&2; exit 1; }
+	./scripts/bootstrap-paperclip-chief converge "$(PAPERCLIP_COMPANY_ID)" --config "$(CONFIG_FILE)"
+
+# Emergency recovery phases; use paperclip-chief-converge for the normal path.
+paperclip-chief-prepare:
+	@test -n "$(PAPERCLIP_COMPANY_ID)" || { echo "Set PAPERCLIP_COMPANY_ID" >&2; exit 1; }
+	./scripts/bootstrap-paperclip-chief prepare "$(PAPERCLIP_COMPANY_ID)" --config "$(CONFIG_FILE)"
+
+paperclip-chief-finalize:
+	@test -n "$(PAPERCLIP_COMPANY_ID)" || { echo "Set PAPERCLIP_COMPANY_ID" >&2; exit 1; }
+	@test -n "$(PAPERCLIP_CHIEF_AGENT_ID)" || { echo "Set PAPERCLIP_CHIEF_AGENT_ID" >&2; exit 1; }
+	./scripts/bootstrap-paperclip-chief finalize "$(PAPERCLIP_COMPANY_ID)" "$(PAPERCLIP_CHIEF_AGENT_ID)" --config "$(CONFIG_FILE)"
 
 configure-hermes:
 	./scripts/configure-hermes verify "$(CONFIG_FILE)"

@@ -51,6 +51,7 @@ tests/smoke/backup-policy.sh
 tests/smoke/config-backup.sh
 tests/smoke/paperclip-transition.sh
 PYTHONDONTWRITEBYTECODE=1 python3 tests/smoke/claim-agent.py
+PYTHONDONTWRITEBYTECODE=1 python3 tests/smoke/paperclip-chief-bootstrap.py
 
 if [[ ${RUN_DOCKER_SMOKE:-0} == 1 ]]; then
   tests/smoke/hermes-contract.sh

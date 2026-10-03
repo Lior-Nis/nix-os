@@ -1,0 +1,1195 @@
+#!/usr/bin/env python3
+"""Onboard and converge Paperclip's first Chief without exposing one-time secrets.
+
+This is an operator-only helper.  It uses Paperclip's browser-approved CLI
+challenge, keeps the resulting board token only in memory, and revokes that
+token before exiting.  It never prints or persists the bearer token.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import pathlib
+import re
+import stat
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from typing import Any
+
+
+TEMP_NAME = "Nix Bootstrap CEO"
+TEMP_MARKER = {"kind": "temporary-chief-manager", "version": 1}
+TEMP_CAPABILITIES = "Temporary inert manager required only for first external-agent approval."
+GOAL_TITLE = "Complete Nix Business OS V0"
+PROJECT_NAME = "Nix Business OS V0"
+PROJECT_IDEMPOTENCY_KEY = "nix-business-os-v0-approved-v1"
+INVITE_MARKER = "nix-os:first-chief:v1"
+RECOVERABLE_KEY_NAMES = {"initial-join-key", "nix-chief-recovery"}
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+
+class BootstrapError(RuntimeError):
+    pass
+
+
+def redact_request_path(path: str) -> str:
+    path = path.partition("?")[0]
+    path = re.sub(r"(/api/invites/)[^/]+", r"\1<redacted>", path)
+    return re.sub(r"pcp_(?:invite|claim|board|cli_auth)_[A-Za-z0-9_-]+", "<redacted>", path)
+
+
+def read_config(path: pathlib.Path, key: str) -> str:
+    if not path.is_file():
+        raise BootstrapError(f"configuration file does not exist: {path}")
+    value = ""
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith(f"{key}="):
+            value = line.split("=", 1)[1].strip()
+    if len(value) >= 2 and value[:1] == value[-1:] and value[0] in "\"'":
+        value = value[1:-1]
+    if not value:
+        raise BootstrapError(f"{key} is missing from {path}")
+    return value
+
+
+class Api:
+    def __init__(self, base: str, token: str = ""):
+        self.base = base.rstrip("/")
+        self.token = token
+
+    def request(self, method: str, path: str, payload: dict[str, Any] | None = None) -> Any:
+        body = None if payload is None else json.dumps(payload, separators=(",", ":")).encode()
+        headers = {"Accept": "application/json"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+        request = urllib.request.Request(
+            f"{self.base}{path}",
+            data=body,
+            method=method,
+            headers=headers,
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                data = response.read()
+        except urllib.error.HTTPError as exc:
+            raise BootstrapError(
+                f"Paperclip {method} {redact_request_path(path)} returned HTTP {exc.code}"
+            ) from None
+        except urllib.error.URLError:
+            raise BootstrapError(f"Paperclip {method} {redact_request_path(path)} could not be reached") from None
+        if not data:
+            return None
+        try:
+            return json.loads(data)
+        except json.JSONDecodeError:
+            raise BootstrapError(
+                f"Paperclip {method} {redact_request_path(path)} returned invalid JSON"
+            ) from None
+
+    def get(self, path: str) -> Any:
+        return self.request("GET", path)
+
+    def post(self, path: str, payload: dict[str, Any] | None = None) -> Any:
+        return self.request("POST", path, payload or {})
+
+    def patch(self, path: str, payload: dict[str, Any]) -> Any:
+        return self.request("PATCH", path, payload)
+
+    def delete(self, path: str) -> Any:
+        return self.request("DELETE", path)
+
+    def is_unauthorized(self, path: str) -> bool:
+        request = urllib.request.Request(
+            f"{self.base}{path}",
+            method="GET",
+            headers={"Authorization": f"Bearer {self.token}", "Accept": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=20):
+                return False
+        except urllib.error.HTTPError as exc:
+            return exc.code == 401
+        except urllib.error.URLError:
+            return False
+
+
+def run_operator_command(command: list[str], *, input_text: str | None = None, label: str) -> str:
+    try:
+        result = subprocess.run(
+            command,
+            input=input_text,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        raise BootstrapError(f"{label} could not be started") from None
+    if result.returncode != 0:
+        raise BootstrapError(f"{label} failed (exit {result.returncode}); inspect the service logs")
+    return result.stdout
+
+
+def compose_command(config_path: pathlib.Path, *args: str) -> list[str]:
+    return ["docker", "compose", "--env-file", str(config_path), *args]
+
+
+def claim_helper(config_path: pathlib.Path, action: str, state: dict[str, Any] | None = None) -> dict[str, Any]:
+    output = run_operator_command(
+        compose_command(
+            config_path,
+            "exec",
+            "-T",
+            "--user",
+            "10000:10000",
+            "hermes",
+            "python3",
+            "/opt/nix/claim-agent.py",
+            action,
+        ),
+        input_text=None if state is None else json.dumps(state, separators=(",", ":")),
+        label=f"Hermes claim {action}",
+    )
+    if action == "preflight":
+        return {}
+    try:
+        parsed = json.loads(output)
+    except json.JSONDecodeError:
+        raise BootstrapError(f"Hermes claim {action} returned invalid JSON") from None
+    return require_dict(parsed, f"Hermes claim {action} result")
+
+
+def restart_and_verify_hermes(config_path: pathlib.Path) -> None:
+    run_operator_command(
+        compose_command(config_path, "restart", "hermes"),
+        label="Hermes restart",
+    )
+    verify = [str(REPO_ROOT / "scripts/configure-hermes"), "verify", str(config_path)]
+    last_error: BootstrapError | None = None
+    for attempt in range(12):
+        try:
+            run_operator_command(verify, label="Hermes verification")
+            return
+        except BootstrapError as exc:
+            last_error = exc
+            if attempt < 11:
+                time.sleep(5)
+    raise last_error or BootstrapError("Hermes verification failed")
+
+
+def q(value: str) -> str:
+    return urllib.parse.quote(value, safe="")
+
+
+def revoke_board_token(api: Api, key_id: str) -> None:
+    if not api.is_unauthorized("/api/cli-auth/me"):
+        api.post("/api/cli-auth/revoke-current")
+    if not api.is_unauthorized("/api/cli-auth/me"):
+        label = key_id or "unknown key ID"
+        raise BootstrapError(f"board key {label} still authenticates after revocation")
+
+
+def authenticate(api: Api, company_id: str, expected_user_id: str | None = None) -> dict[str, Any]:
+    challenge = require_dict(
+        api.post(
+            "/api/cli-auth/challenges",
+            {
+                "command": "nix-os first-Chief bootstrap",
+                "clientName": "nix-os operator helper",
+                "requestedAccess": "board",
+                "requestedCompanyId": company_id,
+            },
+        ),
+        "CLI authentication challenge",
+    )
+    challenge_id = str(challenge.get("id") or "")
+    challenge_secret = str(challenge.get("token") or "")
+    board_token = str(challenge.get("boardApiToken") or "")
+    approval_path = str(challenge.get("approvalPath") or "")
+    approval_url = str(challenge.get("approvalUrl") or "") or f"{api.base}{approval_path}"
+    poll_path = str(challenge.get("pollPath") or "")
+    if not challenge_id or not challenge_secret or not board_token or not approval_path or not poll_path:
+        cleanup_errors: list[str] = []
+        if challenge_id and challenge_secret:
+            try:
+                Api(api.base).post(
+                    f"/api/cli-auth/challenges/{q(challenge_id)}/cancel",
+                    {"token": challenge_secret},
+                )
+            except BaseException as exc:
+                cleanup_errors.append(f"challenge cancellation failed: {exc}")
+        if board_token:
+            try:
+                api.token = board_token
+                revoke_board_token(api, "")
+            except BaseException as exc:
+                cleanup_errors.append(f"board credential revocation/proof failed: {exc}")
+        api.token = ""
+        if cleanup_errors:
+            raise BootstrapError(
+                "Paperclip returned an incomplete CLI authentication challenge; "
+                + "; ".join(cleanup_errors)
+            ) from None
+        raise BootstrapError("Paperclip returned an incomplete CLI authentication challenge")
+    approved = False
+    key_id = ""
+    try:
+        print("Open this ephemeral Paperclip URL as Lior and approve the bounded board action:", file=sys.stderr)
+        print(approval_url, file=sys.stderr)
+        interval = max(0.05, min(5.0, float(challenge.get("suggestedPollIntervalMs") or 1000) / 1000))
+        expires_at = str(challenge.get("expiresAt") or "")
+        deadline = time.monotonic() + 600
+        while time.monotonic() < deadline:
+            status = require_dict(
+                api.get(f"/api{poll_path}?token={urllib.parse.quote(challenge_secret, safe='') }"),
+                "CLI authentication status",
+            )
+            state = status.get("status")
+            if state == "approved":
+                approved = True
+                api.token = board_token
+                identity = require_dict(api.get("/api/cli-auth/me"), "board identity")
+                key_id = str(identity.get("keyId") or "")
+                company_ids = identity.get("companyIds")
+                memberships = identity.get("memberships")
+                approved_by = status.get("approvedByUser")
+                approved_user_id = (
+                    str(approved_by.get("id") or "") if isinstance(approved_by, dict) else ""
+                )
+                authorized_membership = isinstance(memberships, list) and any(
+                    isinstance(row, dict)
+                    and row.get("companyId") == company_id
+                    and row.get("status") == "active"
+                    and row.get("membershipRole") in ("owner", "admin")
+                    for row in memberships
+                )
+                if (
+                    identity.get("source") != "board_key"
+                    or not key_id
+                    or not identity.get("userId")
+                    or approved_user_id != identity.get("userId")
+                    or (expected_user_id is not None and identity.get("userId") != expected_user_id)
+                    or not isinstance(company_ids, list)
+                    or company_id not in company_ids
+                    or not authorized_membership
+                ):
+                    raise BootstrapError(
+                        "approved CLI credential is not the pinned Lior owner/admin identity for this company"
+                    )
+                return identity
+            if state == "cancelled":
+                raise BootstrapError("Paperclip CLI authentication was cancelled")
+            if state == "expired":
+                raise BootstrapError("Paperclip CLI authentication expired")
+            time.sleep(interval)
+        raise BootstrapError(
+            f"Paperclip CLI authentication did not complete before its deadline ({expires_at or 'unknown expiry'})"
+        )
+    except BaseException as original:
+        cleanup_errors: list[str] = []
+        if not approved:
+            try:
+                Api(api.base).post(
+                    f"/api/cli-auth/challenges/{q(challenge_id)}/cancel",
+                    {"token": challenge_secret},
+                )
+            except BaseException as exc:
+                cleanup_errors.append(f"challenge cancellation failed: {exc}")
+        try:
+            api.token = board_token
+            revoke_board_token(api, key_id)
+        except BaseException as exc:
+            cleanup_errors.append(f"board credential revocation/proof failed: {exc}")
+        api.token = ""
+        if cleanup_errors:
+            key_label = key_id or f"unknown key for challenge {challenge_id}"
+            raise BootstrapError(
+                f"{original}; board credential cleanup failed for {key_label}: "
+                + "; ".join(cleanup_errors)
+            ) from None
+        raise original
+
+
+def require_dict(value: Any, label: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise BootstrapError(f"Paperclip returned an invalid {label}")
+    return value
+
+
+def list_agents(api: Api, company_id: str) -> list[dict[str, Any]]:
+    value = api.get(f"/api/companies/{q(company_id)}/agents")
+    if not isinstance(value, list) or not all(isinstance(row, dict) for row in value):
+        raise BootstrapError("Paperclip returned an invalid company agent list")
+    return value
+
+
+def ensure_approved_work_graph(api: Api, company_id: str) -> tuple[str, str]:
+    goals = api.get(f"/api/companies/{q(company_id)}/goals")
+    if not isinstance(goals, list) or not all(isinstance(row, dict) for row in goals):
+        raise BootstrapError("Paperclip returned an invalid company goal list")
+    matches = [goal for goal in goals if goal.get("title") == GOAL_TITLE]
+    if len(matches) > 1:
+        raise BootstrapError(f"Paperclip contains duplicate exact goals named {GOAL_TITLE!r}")
+    if matches:
+        goal = matches[0]
+        if (
+            goal.get("level") != "company"
+            or goal.get("status") != "active"
+            or goal.get("ownerAgentId") is not None
+            or goal.get("parentId") is not None
+        ):
+            raise BootstrapError("existing approved Nix V0 goal has unexpected scope, status, owner, or parent")
+    else:
+        goal = require_dict(
+            api.post(
+                f"/api/companies/{q(company_id)}/goals",
+                {
+                    "title": GOAL_TITLE,
+                    "level": "company",
+                    "status": "active",
+                    "parentId": None,
+                    "ownerAgentId": None,
+                },
+            ),
+            "goal creation response",
+        )
+    goal_id = str(goal.get("id") or "")
+    if not goal_id:
+        raise BootstrapError("approved Nix V0 goal has no identifier")
+
+    projects = api.get(f"/api/companies/{q(company_id)}/projects?includeArchived=true")
+    if not isinstance(projects, list) or not all(isinstance(row, dict) for row in projects):
+        raise BootstrapError("Paperclip returned an invalid company project list")
+    project_matches = [project for project in projects if project.get("name") == PROJECT_NAME]
+    if len(project_matches) > 1:
+        raise BootstrapError(f"Paperclip contains duplicate exact projects named {PROJECT_NAME!r}")
+    if project_matches:
+        project = project_matches[0]
+        goal_ids = project.get("goalIds")
+        legacy_goal_id = project.get("goalId")
+        linked = goal_id in goal_ids if isinstance(goal_ids, list) else legacy_goal_id == goal_id
+        if not linked:
+            raise BootstrapError("existing Nix V0 project is linked to an unexpected goal")
+        patch: dict[str, Any] = {}
+        if project.get("status") != "in_progress":
+            patch["status"] = "in_progress"
+        if project.get("archivedAt") is not None:
+            patch["archivedAt"] = None
+        if patch:
+            project = require_dict(
+                api.patch(f"/api/projects/{q(str(project.get('id') or ''))}", patch),
+                "project update response",
+            )
+    else:
+        project = require_dict(
+            api.post(
+                f"/api/companies/{q(company_id)}/projects",
+                {
+                    "name": PROJECT_NAME,
+                    "status": "in_progress",
+                    "goalIds": [goal_id],
+                    "idempotencyKey": PROJECT_IDEMPOTENCY_KEY,
+                },
+            ),
+            "project creation response",
+        )
+    project_id = str(project.get("id") or "")
+    if not project_id:
+        raise BootstrapError("approved Nix V0 project has no identifier")
+    return goal_id, project_id
+
+
+def agent_keys(api: Api, agent_id: str) -> list[dict[str, Any]]:
+    value = api.get(f"/api/agents/{q(agent_id)}/keys")
+    if not isinstance(value, list) or not all(isinstance(row, dict) for row in value):
+        raise BootstrapError("Paperclip returned an invalid agent key list")
+    return value
+
+
+def recover_approved_chief_key(
+    api: Api,
+    config_path: pathlib.Path,
+    company_id: str,
+    request_id: str,
+    chief_id: str,
+    board_user_id: str,
+) -> dict[str, Any]:
+    active = [row for row in agent_keys(api, chief_id) if not row.get("revokedAt")]
+    for key in active:
+        scope = key.get("scope")
+        if (
+            key.get("name") not in RECOVERABLE_KEY_NAMES
+            or not isinstance(scope, dict)
+            or scope.get("kind") != "standard"
+            or key.get("responsibleUserId") != board_user_id
+            or not key.get("id")
+        ):
+            raise BootstrapError("approved Chief has an unexpected active key; refusing recovery")
+    for key in active:
+        api.delete(f"/api/agents/{q(chief_id)}/keys/{q(str(key['id']))}")
+
+    created = require_dict(
+        api.post(
+            f"/api/agents/{q(chief_id)}/keys",
+            {"name": "nix-chief-recovery", "scope": {"kind": "standard"}},
+        ),
+        "Chief recovery-key response",
+    )
+    key_id = str(created.get("id") or "")
+    token = str(created.get("token") or "")
+    scope = created.get("scope")
+    valid_created = (
+        bool(key_id)
+        and token.startswith("pcp_")
+        and created.get("name") == "nix-chief-recovery"
+        and isinstance(scope, dict)
+        and scope.get("kind") == "standard"
+        and created.get("responsibleUserId") == board_user_id
+    )
+    if not valid_created:
+        if key_id:
+            try:
+                api.delete(f"/api/agents/{q(chief_id)}/keys/{q(key_id)}")
+            except BaseException as cleanup:
+                raise BootstrapError(
+                    f"Paperclip returned an invalid Chief recovery key and key {key_id} could not be revoked: {cleanup}"
+                ) from None
+        raise BootstrapError("Paperclip returned an invalid Chief recovery key")
+    def verified_install(status: dict[str, Any]) -> dict[str, Any] | None:
+        if status.get("credentialPresent") is not True:
+            return None
+        if status.get("companyId") != company_id or status.get("agentId") != chief_id:
+            raise BootstrapError(
+                f"Chief recovery key {key_id} may be persisted for an unexpected identity; refusing revocation"
+            )
+        marker = status.get("marker")
+        receipt = status.get("receipt")
+        if marker is not None and not isinstance(marker, dict):
+            raise BootstrapError("Hermes returned invalid replacement-key recovery metadata")
+        if receipt is not None and not isinstance(receipt, dict):
+            raise BootstrapError("Hermes returned an invalid replacement-key receipt")
+        expected = {
+            "requestId": request_id,
+            "companyId": company_id,
+            "agentId": chief_id,
+            "keyId": key_id,
+        }
+        if isinstance(marker, dict):
+            if marker.get("kind") != "replacement-key-install" or any(
+                marker.get(field) != value for field, value in expected.items()
+            ):
+                raise BootstrapError(
+                    f"Chief recovery key {key_id} has ambiguous persisted recovery metadata; refusing revocation"
+                )
+            if isinstance(receipt, dict) and any(receipt.get(field) != value for field, value in expected.items()):
+                raise BootstrapError("Hermes replacement-key receipt does not match its recovery marker")
+            recovered = claim_helper(
+                config_path,
+                "recover",
+                {"id": request_id, "companyId": company_id},
+            )
+            if recovered.get("companyId") != company_id or recovered.get("agentId") != chief_id:
+                raise BootstrapError("Hermes replacement-key recovery returned an unexpected identity")
+            status = claim_helper(config_path, "status")
+            receipt = status.get("receipt")
+        if not isinstance(receipt, dict) or any(receipt.get(field) != value for field, value in expected.items()):
+            raise BootstrapError(
+                f"Chief recovery key {key_id} is persisted without its exact receipt; refusing revocation"
+            )
+        if status.get("marker") is not None or status.get("stage") is not None:
+            raise BootstrapError("Hermes did not clean replacement-key recovery state")
+        return {"companyId": company_id, "agentId": chief_id, "recovered": True}
+
+    try:
+        claim_helper(
+            config_path,
+            "install",
+            {
+                "requestId": request_id,
+                "companyId": company_id,
+                "agentId": chief_id,
+                "keyId": key_id,
+                "token": token,
+            },
+        )
+        token = ""
+        installed = verified_install(claim_helper(config_path, "status"))
+        if installed is None:
+            raise BootstrapError("Hermes did not persist the Chief recovery credential")
+    except BaseException as original:
+        token = ""
+        try:
+            after_install = claim_helper(config_path, "status")
+        except BaseException:
+            raise BootstrapError(
+                f"Chief recovery-key install outcome is ambiguous for key {key_id}; the key was not revoked"
+            ) from None
+        try:
+            recovered = verified_install(after_install)
+        except BaseException as ambiguous:
+            raise BootstrapError(
+                f"Chief recovery-key install outcome is ambiguous for key {key_id}; the key was not revoked: {ambiguous}"
+            ) from None
+        if recovered is not None:
+            return recovered
+        marker = after_install.get("marker")
+        expected_marker = {
+            "kind": "replacement-key-install",
+            "requestId": request_id,
+            "companyId": company_id,
+            "agentId": chief_id,
+            "keyId": key_id,
+        }
+        if marker is not None and marker != expected_marker:
+            raise BootstrapError(
+                f"Chief recovery-key install left ambiguous metadata for key {key_id}; the key was not revoked"
+            )
+        if marker is not None:
+            discarded = claim_helper(config_path, "discard-install", expected_marker)
+            if discarded.get("discarded") is not True or discarded.get("keyId") != key_id:
+                raise BootstrapError("Hermes did not confirm exact replacement-marker cleanup")
+        try:
+            api.delete(f"/api/agents/{q(chief_id)}/keys/{q(key_id)}")
+        except BaseException as cleanup:
+            raise BootstrapError(
+                f"Chief recovery-key install failed and key {key_id} could not be revoked: {cleanup}"
+            ) from None
+        raise original
+    return installed
+
+
+def is_marked_temp(agent: dict[str, Any]) -> bool:
+    metadata = agent.get("metadata")
+    return isinstance(metadata, dict) and metadata.get("nixBootstrap") == TEMP_MARKER
+
+
+def require_temp_shape(api: Api, agent: dict[str, Any], *, final: bool, chief_id: str | None = None) -> None:
+    adapter = agent.get("adapterConfig")
+    runtime = agent.get("runtimeConfig")
+    permissions = agent.get("permissions")
+    if agent.get("name") != TEMP_NAME or not is_marked_temp(agent):
+        raise BootstrapError("temporary bootstrap CEO identity/marker drifted")
+    if agent.get("adapterType") != "process" or not isinstance(adapter, dict):
+        raise BootstrapError("temporary bootstrap CEO adapter drifted")
+    if adapter.get("command") != "/bin/false" or adapter.get("args", []) != [] or adapter.get("env") not in (None, {}):
+        raise BootstrapError("temporary bootstrap CEO is not inert")
+    heartbeat = runtime.get("heartbeat") if isinstance(runtime, dict) else None
+    if not isinstance(heartbeat, dict) or heartbeat.get("enabled") is not False:
+        raise BootstrapError("temporary bootstrap CEO heartbeat is not disabled")
+    if agent.get("budgetMonthlyCents") != 0:
+        raise BootstrapError("temporary bootstrap CEO budget is not zero")
+    if (
+        not isinstance(permissions, dict)
+        or permissions.get("canCreateAgents") is not False
+        or permissions.get("canCreateSkills") is not False
+        or permissions.get("canAssignTasks") is not False
+    ):
+        raise BootstrapError("temporary bootstrap CEO permissions are not stripped")
+    if agent_keys(api, str(agent.get("id") or "")):
+        raise BootstrapError("temporary bootstrap CEO unexpectedly has an API key")
+    if final:
+        if agent.get("role") != "general" or agent.get("reportsTo") != chief_id or agent.get("status") != "paused":
+            raise BootstrapError("temporary bootstrap CEO final role/status is unsafe")
+    elif agent.get("role") != "ceo" or agent.get("reportsTo") is not None or agent.get("status") != "idle":
+        raise BootstrapError("temporary bootstrap CEO is not the idle root manager required for join approval")
+
+
+def temp_permissions(api: Api, agent_id: str) -> None:
+    api.patch(
+        f"/api/agents/{q(agent_id)}/permissions",
+        {"canCreateAgents": False, "canCreateSkills": False, "canAssignTasks": False},
+    )
+
+
+def prepare(api: Api, company_id: str) -> tuple[str, str, str]:
+    agents = list_agents(api, company_id)
+    marked = [agent for agent in agents if is_marked_temp(agent)]
+    if agents and len(marked) != 1:
+        raise BootstrapError("company is not empty and has no unique Nix bootstrap marker; refusing to invent topology")
+    if len(agents) > 1:
+        raise BootstrapError("Chief or another agent already exists; use finalize or inspect Paperclip")
+    goal_id, project_id = ensure_approved_work_graph(api, company_id)
+
+    if not marked:
+        response = require_dict(
+            api.post(
+                f"/api/companies/{q(company_id)}/agent-hires",
+                {
+                    "name": TEMP_NAME,
+                    "role": "ceo",
+                    "reportsTo": None,
+                    "capabilities": TEMP_CAPABILITIES,
+                    "adapterType": "process",
+                    "adapterConfig": {"command": "/bin/false", "args": [], "timeoutSec": 1},
+                    "runtimeConfig": {"heartbeat": {"enabled": False}},
+                    "budgetMonthlyCents": 0,
+                    "permissions": {"canCreateAgents": False, "canCreateSkills": False},
+                    "metadata": {"nixBootstrap": TEMP_MARKER},
+                },
+            ),
+            "agent-hire response",
+        )
+        agent = response.get("agent") if isinstance(response.get("agent"), dict) else response
+    else:
+        agent = marked[0]
+
+    agent_id = str(agent.get("id") or "")
+    if not agent_id:
+        raise BootstrapError("temporary bootstrap CEO has no identifier")
+    status = agent.get("status")
+    if status == "pending_approval":
+        api.post(f"/api/agents/{q(agent_id)}/approve")
+    elif status != "idle":
+        raise BootstrapError(f"temporary bootstrap CEO has unexpected status: {status}")
+    temp_permissions(api, agent_id)
+
+    agents = list_agents(api, company_id)
+    if len(agents) != 1 or str(agents[0].get("id") or "") != agent_id:
+        raise BootstrapError("company topology changed while preparing the bootstrap CEO")
+    require_temp_shape(api, agents[0], final=False)
+    return agent_id, goal_id, project_id
+
+
+def require_chief_shape(
+    api: Api,
+    chief: dict[str, Any],
+    temp_id: str,
+    board_user_id: str,
+    *,
+    require_key: bool = True,
+) -> None:
+    adapter = chief.get("adapterConfig")
+    if chief.get("name") != "Chief of Staff" or chief.get("adapterType") != "hermes_gateway" or not isinstance(adapter, dict):
+        raise BootstrapError("claimed Chief identity or adapter is unexpected")
+    expected = {
+        "apiBaseUrl": "http://hermes:8642",
+        "paperclipApiUrl": "http://paperclip:3100",
+        "sessionKeyStrategy": "issue",
+        "dangerouslyAllowInsecureRemoteHttp": True,
+    }
+    if any(adapter.get(key) != value for key, value in expected.items()) or not adapter.get("apiKey"):
+        raise BootstrapError("claimed Chief gateway configuration drifted")
+    if chief.get("status") in ("pending_approval", "terminated"):
+        raise BootstrapError("claimed Chief is not active")
+    if not (
+        (chief.get("role") == "general" and chief.get("reportsTo") == temp_id)
+        or (chief.get("role") == "ceo" and chief.get("reportsTo") is None)
+    ):
+        raise BootstrapError("claimed Chief has an unexpected reporting position")
+    if not require_key:
+        return
+    active_keys = [row for row in agent_keys(api, str(chief.get("id") or "")) if not row.get("revokedAt")]
+    if len(active_keys) != 1:
+        raise BootstrapError("claimed Chief must have exactly one active API key")
+    key = active_keys[0]
+    scope = key.get("scope")
+    if key.get("responsibleUserId") != board_user_id or not isinstance(scope, dict) or scope.get("kind") != "standard":
+        raise BootstrapError("claimed Chief API key ownership/scope is unexpected")
+
+
+def finalize(api: Api, company_id: str, chief_id: str, board_user_id: str) -> str:
+    agents = list_agents(api, company_id)
+    if len(agents) != 2:
+        raise BootstrapError("finalization requires exactly the temporary manager and claimed Chief")
+    marked = [agent for agent in agents if is_marked_temp(agent)]
+    chiefs = [agent for agent in agents if str(agent.get("id") or "") == chief_id]
+    if len(marked) != 1 or len(chiefs) != 1 or marked[0].get("id") == chief_id:
+        raise BootstrapError("finalization topology does not identify one temporary manager and one Chief")
+    temp = marked[0]
+    chief = chiefs[0]
+    temp_id = str(temp.get("id") or "")
+    require_chief_shape(api, chief, temp_id, board_user_id)
+    if agent_keys(api, temp_id):
+        raise BootstrapError("temporary bootstrap CEO unexpectedly has an API key")
+
+    if chief.get("role") != "ceo" or chief.get("reportsTo") is not None:
+        api.patch(f"/api/agents/{q(chief_id)}", {"role": "ceo", "reportsTo": None})
+    chief = require_dict(api.get(f"/api/agents/{q(chief_id)}"), "Chief agent")
+    if chief.get("role") != "ceo" or chief.get("reportsTo") is not None:
+        raise BootstrapError("Chief promotion did not persist")
+
+    temp = require_dict(api.get(f"/api/agents/{q(temp_id)}"), "temporary bootstrap CEO")
+    if temp.get("role") != "general" or temp.get("reportsTo") != chief_id:
+        api.patch(f"/api/agents/{q(temp_id)}", {"role": "general", "reportsTo": chief_id})
+    temp_permissions(api, temp_id)
+    temp = require_dict(api.get(f"/api/agents/{q(temp_id)}"), "temporary bootstrap CEO")
+    if temp.get("status") != "paused":
+        api.post(f"/api/agents/{q(temp_id)}/pause")
+
+    agents = list_agents(api, company_id)
+    roots = [agent for agent in agents if agent.get("role") == "ceo" and agent.get("reportsTo") is None]
+    if len(agents) != 2 or len(roots) != 1 or str(roots[0].get("id") or "") != chief_id:
+        raise BootstrapError("final Paperclip org does not have Chief as its sole root CEO")
+    temp = next((agent for agent in agents if str(agent.get("id") or "") == temp_id), None)
+    chief = next((agent for agent in agents if str(agent.get("id") or "") == chief_id), None)
+    if not isinstance(temp, dict) or not isinstance(chief, dict):
+        raise BootstrapError("final Paperclip org is incomplete")
+    require_temp_shape(api, temp, final=True, chief_id=chief_id)
+    require_chief_shape(api, chief, temp_id, board_user_id)
+    return temp_id
+
+
+def list_join_requests(api: Api, company_id: str) -> list[dict[str, Any]]:
+    value = api.get(f"/api/companies/{q(company_id)}/join-requests?requestType=agent")
+    if not isinstance(value, list) or not all(isinstance(row, dict) for row in value):
+        raise BootstrapError("Paperclip returned an invalid agent join-request list")
+    return value
+
+
+def list_invites(api: Api, company_id: str, state: str) -> list[dict[str, Any]]:
+    if state not in ("accepted", "active"):
+        raise BootstrapError("invalid invite-list state")
+    rows: list[dict[str, Any]] = []
+    seen_offsets: set[int] = set()
+    seen_ids: set[str] = set()
+    offset = 0
+    for _page in range(100):
+        if offset in seen_offsets:
+            raise BootstrapError("Paperclip invite pagination looped")
+        seen_offsets.add(offset)
+        value = api.get(
+            f"/api/companies/{q(company_id)}/invites?state={state}&limit=100&offset={offset}"
+        )
+        if not isinstance(value, dict) or not isinstance(value.get("invites"), list):
+            raise BootstrapError("Paperclip returned an invalid invite list")
+        page = value["invites"]
+        if not all(isinstance(row, dict) for row in page):
+            raise BootstrapError("Paperclip returned an invalid invite list")
+        for invite in page:
+            invite_id = str(invite.get("id") or "")
+            if not invite_id or invite_id in seen_ids:
+                raise BootstrapError("Paperclip invite pagination returned a missing/duplicate ID")
+            seen_ids.add(invite_id)
+            rows.append(invite)
+        next_offset = value.get("nextOffset")
+        if next_offset is None:
+            return rows
+        if not isinstance(next_offset, int) or next_offset < 0:
+            raise BootstrapError("Paperclip returned an invalid invite pagination offset")
+        offset = next_offset
+    raise BootstrapError("Paperclip invite pagination exceeded its safety limit")
+
+
+def require_marked_join_invite(
+    join: dict[str, Any], invites: list[dict[str, Any]]
+) -> dict[str, Any]:
+    request_id = str(join.get("id") or "")
+    invite_id = str(join.get("inviteId") or "")
+    matches = [
+        invite
+        for invite in invites
+        if str(invite.get("relatedJoinRequestId") or "") == request_id
+        and str(invite.get("id") or "") == invite_id
+    ]
+    if (
+        len(matches) != 1
+        or matches[0].get("state") != "accepted"
+        or matches[0].get("inviteMessage") != INVITE_MARKER
+        or matches[0].get("allowedJoinTypes") not in ("agent", "both")
+    ):
+        raise BootstrapError(
+            "live Chief join is not uniquely correlated to Nix's accepted marked invite"
+        )
+    return matches[0]
+
+
+def relevant_chief_joins(api: Api, company_id: str) -> list[dict[str, Any]]:
+    return [
+        row
+        for row in list_join_requests(api, company_id)
+        if row.get("requestType") == "agent"
+        and row.get("agentName") == "Chief of Staff"
+        and row.get("adapterType") == "hermes_gateway"
+    ]
+
+
+def read_hermes_api_key(config_path: pathlib.Path) -> str:
+    hermes_env = pathlib.Path(read_config(config_path, "HERMES_ENV_FILE"))
+    if not hermes_env.is_absolute() or not hermes_env.is_file() or hermes_env.is_symlink():
+        raise BootstrapError("HERMES_ENV_FILE is missing or unsafe")
+    metadata = hermes_env.stat()
+    if metadata.st_uid != os.geteuid() or stat.S_IMODE(metadata.st_mode) != 0o600:
+        raise BootstrapError("HERMES_ENV_FILE must be owned by the operator and mode 0600")
+    key = read_config(hermes_env, "API_SERVER_KEY")
+    if len(key) < 64:
+        raise BootstrapError("API_SERVER_KEY is missing or too short")
+    return key
+
+
+def recover_runtime_claim(
+    config_path: pathlib.Path,
+    status: dict[str, Any],
+    company_id: str,
+) -> tuple[str, str] | None:
+    credential_present = status.get("credentialPresent") is True
+    marker = status.get("marker")
+    receipt = status.get("receipt")
+    if marker is not None and not isinstance(marker, dict):
+        raise BootstrapError("Hermes returned an invalid claim recovery marker")
+    if receipt is not None and not isinstance(receipt, dict):
+        raise BootstrapError("Hermes returned an invalid claim receipt")
+    if not credential_present:
+        if marker is not None:
+            raise BootstrapError(
+                "a claim may have been consumed before its credential was persisted; preserve Hermes state and follow orphan-credential recovery"
+            )
+        return None
+    if status.get("companyId") != company_id or not status.get("agentId"):
+        raise BootstrapError("Hermes already contains a Paperclip credential for an unexpected identity")
+    if marker is not None:
+        if (
+            marker.get("companyId") != company_id
+            or not marker.get("requestId")
+            or (receipt is not None and receipt.get("requestId") != marker.get("requestId"))
+        ):
+            raise BootstrapError("Hermes claim marker does not match its credential/receipt")
+        recovered = claim_helper(
+            config_path,
+            "recover",
+            {"id": marker.get("requestId"), "companyId": company_id},
+        )
+        if recovered.get("agentId") != status.get("agentId") or recovered.get("companyId") != company_id:
+            raise BootstrapError("Hermes claim recovery returned an unexpected identity")
+        receipt = {
+            "requestId": marker.get("requestId"),
+            "companyId": company_id,
+            "agentId": status.get("agentId"),
+        }
+    elif receipt is None:
+        raise BootstrapError("Hermes has a Paperclip credential without a claim receipt or recovery marker")
+    if receipt.get("companyId") != company_id or receipt.get("agentId") != status.get("agentId"):
+        raise BootstrapError("Hermes claim receipt does not match its verified identity")
+    return str(status["agentId"]), str(receipt.get("requestId") or "")
+
+
+def converge(
+    api: Api,
+    company_id: str,
+    board_user_id: str,
+    config_path: pathlib.Path,
+) -> tuple[str, str, str, str]:
+    hermes_api_key = read_hermes_api_key(config_path)
+    claim_helper(config_path, "preflight")
+    runtime_status = claim_helper(config_path, "status")
+    agents = list_agents(api, company_id)
+    marked = [agent for agent in agents if is_marked_temp(agent)]
+    accepted_invites = list_invites(api, company_id, "accepted")
+    active_invites = list_invites(api, company_id, "active")
+    joins = relevant_chief_joins(api, company_id)
+    live_joins = [row for row in joins if row.get("status") in ("pending_approval", "approved")]
+    if len(live_joins) > 1:
+        raise BootstrapError("multiple live Chief join requests exist; refusing to choose one")
+    prior = live_joins[0] if live_joins else None
+    if prior is not None:
+        require_marked_join_invite(prior, accepted_invites)
+
+    stage = runtime_status.get("stage")
+    if stage is not None and not isinstance(stage, dict):
+        raise BootstrapError("Hermes returned invalid staged-claim metadata")
+    if isinstance(stage, dict):
+        if (
+            prior is None
+            or stage.get("requestId") != prior.get("id")
+            or stage.get("companyId") != company_id
+        ):
+            raise BootstrapError("staged Hermes claim does not match the marked live Chief join")
+        if len(marked) != 1:
+            raise BootstrapError("staged Chief claim has no unique temporary bootstrap manager")
+        if prior.get("status") == "pending_approval":
+            prior = require_dict(
+                api.post(
+                    f"/api/companies/{q(company_id)}/join-requests/{q(str(prior.get('id') or ''))}/approve"
+                ),
+                "Chief join approval response",
+            )
+        if prior.get("status") != "approved" or not prior.get("createdAgentId"):
+            raise BootstrapError("staged Chief join could not be converged to approved state")
+        try:
+            resumed = claim_helper(config_path, "resume")
+        except BootstrapError:
+            after_resume = claim_helper(config_path, "status")
+            if after_resume.get("credentialPresent") is True:
+                verified = recover_runtime_claim(config_path, after_resume, company_id)
+                if verified is None or verified[0] != prior.get("createdAgentId"):
+                    raise BootstrapError("lost claim response did not leave the expected verified Chief identity")
+                resumed = {"companyId": company_id, "agentId": verified[0], "recovered": True}
+            else:
+                resumed = recover_approved_chief_key(
+                    api,
+                    config_path,
+                    company_id,
+                    str(prior.get("id") or ""),
+                    str(prior.get("createdAgentId") or ""),
+                    board_user_id,
+                )
+        if (
+            resumed.get("companyId") != company_id
+            or resumed.get("agentId") != prior.get("createdAgentId")
+        ):
+            raise BootstrapError("Hermes resumed an unexpected claimed identity")
+        runtime_status = claim_helper(config_path, "status")
+        agents = list_agents(api, company_id)
+        marked = [agent for agent in agents if is_marked_temp(agent)]
+
+    install_marker = runtime_status.get("marker")
+    if runtime_status.get("credentialPresent") is not True and isinstance(install_marker, dict):
+        if install_marker.get("kind") == "replacement-key-install":
+            marker_key_id = str(install_marker.get("keyId") or "")
+            chief_id = str(prior.get("createdAgentId") or "") if isinstance(prior, dict) else ""
+            expected_marker = {
+                "kind": "replacement-key-install",
+                "requestId": str(prior.get("id") or "") if isinstance(prior, dict) else "",
+                "companyId": company_id,
+                "agentId": chief_id,
+                "keyId": marker_key_id,
+            }
+            chiefs = [agent for agent in agents if str(agent.get("id") or "") == chief_id]
+            if (
+                prior is None
+                or prior.get("status") != "approved"
+                or not chief_id
+                or install_marker != expected_marker
+                or len(agents) != 2
+                or len(marked) != 1
+                or len(chiefs) != 1
+            ):
+                raise BootstrapError("replacement-key marker does not match the exact approved Chief topology")
+            active = [row for row in agent_keys(api, chief_id) if not row.get("revokedAt")]
+            matching_keys = [
+                row
+                for row in active
+                if row.get("id") == marker_key_id
+                and row.get("name") == "nix-chief-recovery"
+                and isinstance(row.get("scope"), dict)
+                and row["scope"].get("kind") == "standard"
+                and row.get("responsibleUserId") == board_user_id
+            ]
+            if len(active) != 1 or len(matching_keys) != 1:
+                raise BootstrapError("replacement-key marker does not match one recognized active Chief key")
+            discarded = claim_helper(config_path, "discard-install", expected_marker)
+            if discarded.get("discarded") is not True or discarded.get("keyId") != marker_key_id:
+                raise BootstrapError("Hermes did not confirm crashed replacement-marker cleanup")
+            runtime_status = claim_helper(config_path, "status")
+
+    recovered = recover_runtime_claim(config_path, runtime_status, company_id)
+    if recovered is not None:
+        chief_id, request_id = recovered
+        if len(marked) != 1 or not any(str(agent.get("id") or "") == chief_id for agent in agents):
+            raise BootstrapError("verified Hermes identity does not match the recoverable Paperclip topology")
+        matching_joins = [
+            row
+            for row in relevant_chief_joins(api, company_id)
+            if str(row.get("id") or "") == request_id
+            and row.get("status") == "approved"
+            and str(row.get("createdAgentId") or "") == chief_id
+        ]
+        if len(matching_joins) != 1:
+            raise BootstrapError("Hermes claim receipt does not match one approved Chief join")
+        require_marked_join_invite(matching_joins[0], accepted_invites)
+        goal_id, project_id = ensure_approved_work_graph(api, company_id)
+        restart_and_verify_hermes(config_path)
+        temp_id = finalize(api, company_id, chief_id, board_user_id)
+        return temp_id, chief_id, goal_id, project_id
+
+    if prior is not None and prior.get("status") == "approved":
+        chief_id = str(prior.get("createdAgentId") or "")
+        chiefs = [agent for agent in agents if str(agent.get("id") or "") == chief_id]
+        if len(agents) != 2 or len(marked) != 1 or len(chiefs) != 1:
+            raise BootstrapError("approved Chief recovery requires the exact temporary-manager/Chief topology")
+        require_temp_shape(api, marked[0], final=False)
+        require_chief_shape(api, chiefs[0], str(marked[0].get("id") or ""), board_user_id, require_key=False)
+        goal_id, project_id = ensure_approved_work_graph(api, company_id)
+        recover_approved_chief_key(
+            api,
+            config_path,
+            company_id,
+            str(prior.get("id") or ""),
+            chief_id,
+            board_user_id,
+        )
+        restart_and_verify_hermes(config_path)
+        temp_id = finalize(api, company_id, chief_id, board_user_id)
+        return temp_id, chief_id, goal_id, project_id
+
+    temp_id, goal_id, project_id = prepare(api, company_id)
+    if prior is not None:
+        request_id = str(prior.get("id") or "")
+        api.post(f"/api/companies/{q(company_id)}/join-requests/{q(request_id)}/reject")
+
+    for invite in active_invites:
+        if invite.get("inviteMessage") == INVITE_MARKER:
+            invite_id = str(invite.get("id") or "")
+            if not invite_id:
+                raise BootstrapError("marked bootstrap invite has no identifier")
+            api.post(f"/api/invites/{q(invite_id)}/revoke")
+
+    invite = require_dict(
+        api.post(
+            f"/api/companies/{q(company_id)}/invites",
+            {"allowedJoinTypes": "agent", "agentMessage": INVITE_MARKER},
+        ),
+        "agent invite creation response",
+    )
+    invite_token = str(invite.get("token") or "")
+    created_invite_id = str(invite.get("id") or "")
+    if not created_invite_id or not invite_token.startswith("pcp_invite_"):
+        raise BootstrapError("Paperclip returned an invalid one-time agent invite")
+    join_api = Api(api.base)
+    join = require_dict(
+        join_api.post(
+            f"/api/invites/{q(invite_token)}/accept",
+            {
+                "requestType": "agent",
+                "agentName": "Chief of Staff",
+                "adapterType": "hermes_gateway",
+                "capabilities": (
+                    "Persistent Nix Chief of Staff: Telegram conversation and bounded Paperclip issue/project operations."
+                ),
+                "agentDefaultsPayload": {
+                    "apiBaseUrl": "http://hermes:8642",
+                    "apiKey": hermes_api_key,
+                    "paperclipApiUrl": "http://paperclip:3100",
+                    "sessionKeyStrategy": "issue",
+                    "dangerouslyAllowInsecureRemoteHttp": True,
+                },
+            },
+        ),
+        "Chief join response",
+    )
+    invite_token = ""
+    request_id = str(join.get("id") or "")
+    claim_secret = str(join.get("claimSecret") or "")
+    if (
+        not request_id
+        or join.get("companyId") != company_id
+        or join.get("inviteId") != created_invite_id
+        or join.get("requestType") != "agent"
+        or join.get("agentName") != "Chief of Staff"
+        or join.get("adapterType") != "hermes_gateway"
+        or join.get("status") != "pending_approval"
+    ):
+        raise BootstrapError("Paperclip returned an invalid pending Chief join")
+    if len(claim_secret) < 16:
+        raise BootstrapError("Paperclip returned an invalid one-time claim secret")
+
+    staged = claim_helper(config_path, "stage", join)
+    if staged.get("requestId") != request_id or staged.get("companyId") != company_id:
+        raise BootstrapError("Hermes staged unexpected claim metadata")
+    claim_secret = ""
+    join = {"id": request_id, "companyId": company_id}
+
+    approved = require_dict(
+        api.post(f"/api/companies/{q(company_id)}/join-requests/{q(request_id)}/approve"),
+        "Chief join approval response",
+    )
+    chief_id = str(approved.get("createdAgentId") or "")
+    if approved.get("status") != "approved" or not chief_id:
+        raise BootstrapError("Paperclip did not create the approved Chief agent")
+
+    try:
+        claimed = claim_helper(config_path, "resume")
+    except BootstrapError:
+        after_resume = claim_helper(config_path, "status")
+        if after_resume.get("credentialPresent") is True:
+            verified = recover_runtime_claim(config_path, after_resume, company_id)
+            if verified is None or verified[0] != chief_id:
+                raise BootstrapError("lost claim response did not leave the expected verified Chief identity")
+            claimed = {"companyId": company_id, "agentId": verified[0], "recovered": True}
+        else:
+            claimed = recover_approved_chief_key(
+                api,
+                config_path,
+                company_id,
+                request_id,
+                chief_id,
+                board_user_id,
+            )
+    join = {}
+    if claimed.get("companyId") != company_id or claimed.get("agentId") != chief_id:
+        raise BootstrapError("Hermes persisted an unexpected claimed identity")
+    restart_and_verify_hermes(config_path)
+    temp_id = finalize(api, company_id, chief_id, board_user_id)
+    return temp_id, chief_id, goal_id, project_id
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("action", choices=("identify", "converge", "prepare", "finalize"))
+    parser.add_argument("company_id")
+    parser.add_argument("chief_id", nargs="?")
+    parser.add_argument("--config", default=os.environ.get("CONFIG_FILE", ".env"))
+    args = parser.parse_args(argv)
+    if args.action == "finalize" and not args.chief_id:
+        parser.error("finalize requires chief_id")
+    if args.action in ("identify", "prepare", "converge") and args.chief_id:
+        parser.error(f"{args.action} does not accept chief_id")
+
+    config_path = pathlib.Path(args.config).resolve()
+    base = read_config(config_path, "PAPERCLIP_PUBLIC_URL")
+    api = Api(base)
+    key_id = ""
+    action_error: BaseException | None = None
+    result: Any = ""
+    try:
+        expected_user_id = (
+            None if args.action == "identify" else read_config(config_path, "PAPERCLIP_LIOR_USER_ID")
+        )
+        identity = authenticate(api, args.company_id, expected_user_id)
+        key_id = str(identity["keyId"])
+        board_user_id = str(identity["userId"])
+        if args.action == "identify":
+            result = board_user_id
+        elif args.action == "converge":
+            result = converge(api, args.company_id, board_user_id, config_path)
+        elif args.action == "prepare":
+            result = prepare(api, args.company_id)
+        else:
+            result = finalize(api, args.company_id, str(args.chief_id), board_user_id)
+    except BaseException as exc:
+        action_error = exc
+    finally:
+        if api.token and key_id:
+            try:
+                revoke_board_token(api, key_id)
+            except BaseException as exc:
+                if action_error is None:
+                    action_error = BootstrapError(
+                        f"bootstrap work succeeded but board key {key_id} could not be revoked; revoke it in Paperclip"
+                    )
+                else:
+                    print(f"Warning: board key {key_id} could not be revoked; revoke it in Paperclip.", file=sys.stderr)
+    api.token = ""
+    if action_error is not None:
+        if isinstance(action_error, KeyboardInterrupt):
+            print("Paperclip Chief bootstrap interrupted.", file=sys.stderr)
+        else:
+            print(f"Paperclip Chief bootstrap error: {action_error}", file=sys.stderr)
+        return 1
+    if args.action == "identify":
+        print(f"Lior Paperclip user ID: {result}")
+    elif args.action == "converge":
+        temp_id, chief_id, goal_id, project_id = result
+        print(f"Approved goal: {goal_id}")
+        print(f"Approved project: {project_id}")
+        print(f"Chief of Staff agent: {chief_id}")
+        print(f"Chief is the sole root CEO; temporary manager is stripped and paused: {temp_id}")
+    elif args.action == "prepare":
+        temp_id, goal_id, project_id = result
+        print(f"Approved goal: {goal_id}")
+        print(f"Approved project: {project_id}")
+        print(f"Temporary inert Paperclip CEO prepared: {temp_id}")
+        print("Create the agent invite, submit/approve the Chief join, and claim it before finalizing.")
+    else:
+        print(f"Chief is the sole root CEO; temporary manager is stripped and paused: {result}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import stat
 import sys
 import uuid
 
@@ -52,6 +53,7 @@ TOOL_SEARCH_BRIDGE = {"tool_search", "tool_describe", "tool_call"}
 SAFE_WRITE_ROOT = Path("/opt/data/memories")
 HERMES_ENV = Path("/opt/data/.env")
 HERMES_AUTH = Path("/opt/data/auth.json")
+HERMES_PROTECTED_TOKENS = Path("/opt/data/mcp-tokens")
 PREFLIGHT_CREDENTIAL_ENV = {
     "API_SERVER_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS",
     "PAPERCLIP_API_KEY", "PAPERCLIP_AGENT_ID", "PAPERCLIP_COMPANY_ID", "PAPERCLIP_API_URL",
@@ -184,6 +186,30 @@ def files_check(*, preflight: bool = False) -> None:
     created_credentials: list[Path] = []
     canaries: list[str] = []
     try:
+        fixture_id = uuid.uuid4().hex
+        protected_filename = f"nix-os-paperclip-stage-boundary-{fixture_id}.json"
+        protected_canary = f"nix-paperclip-stage-canary-{fixture_id}"
+        HERMES_PROTECTED_TOKENS.mkdir(mode=0o700, parents=False, exist_ok=True)
+        protected_dir_stat = HERMES_PROTECTED_TOKENS.stat()
+        if (
+            HERMES_PROTECTED_TOKENS.is_symlink()
+            or not HERMES_PROTECTED_TOKENS.is_dir()
+            or protected_dir_stat.st_uid != os.geteuid()
+            or protected_dir_stat.st_gid != os.getegid()
+            or stat.S_IMODE(protected_dir_stat.st_mode) & 0o077
+        ):
+            fail("protected mcp-tokens staging directory is unsafe")
+        protected_stage = HERMES_PROTECTED_TOKENS / protected_filename
+        _write_preflight_fixture(protected_stage, json.dumps({"claimSecret": protected_canary}) + "\n")
+        protected_stat = protected_stage.stat()
+        if (
+            protected_stat.st_uid != os.geteuid()
+            or protected_stat.st_gid != os.getegid()
+            or stat.S_IMODE(protected_stat.st_mode) != 0o600
+        ):
+            fail("protected staged-claim fixture ownership or mode is unsafe")
+        created_credentials.append(protected_stage)
+        canaries.append(protected_canary)
         if preflight:
             populated = sorted(name for name in PREFLIGHT_CREDENTIAL_ENV if os.environ.get(name))
             if populated:
@@ -197,8 +223,7 @@ def files_check(*, preflight: bool = False) -> None:
         if preflight:
             if any(os.path.lexists(path) for path in (HERMES_ENV, HERMES_AUTH)):
                 fail("preflight refuses to replace an existing .env or auth.json")
-            fixture_id = uuid.uuid4().hex
-            canaries = [f"nix-env-canary-{fixture_id}", f"nix-auth-canary-{fixture_id}"]
+            canaries.extend([f"nix-env-canary-{fixture_id}", f"nix-auth-canary-{fixture_id}"])
             _write_preflight_fixture(HERMES_ENV, f"NIX_PREFLIGHT_CANARY={canaries[0]}\n")
             created_credentials.append(HERMES_ENV)
             _write_preflight_fixture(HERMES_AUTH, json.dumps({"fixture": canaries[1]}) + "\n")
@@ -207,11 +232,21 @@ def files_check(*, preflight: bool = False) -> None:
             if not protected.is_file():
                 fail(f"required protected credential fixture is missing: {protected}")
             require_denied(read_file_tool(str(protected), task_id="nix-boundary"), f"read {protected.name}")
+        require_denied(
+            read_file_tool(str(protected_stage), task_id="nix-boundary-stage-read"),
+            "read protected staged claim secret",
+        )
 
         credential_link = SAFE_WRITE_ROOT / f".nix-boundary-credential-link-{uuid.uuid4().hex}"
         credential_link.symlink_to(HERMES_ENV)
         linked_read = read_file_tool(str(credential_link), task_id="nix-boundary-linked-read")
         require_denied(linked_read, "read credential through symlink")
+        protected_link = SAFE_WRITE_ROOT / f".nix-boundary-stage-link-{uuid.uuid4().hex}"
+        protected_link.symlink_to(protected_stage)
+        require_denied(
+            read_file_tool(str(protected_link), task_id="nix-boundary-stage-linked-read"),
+            "read protected staged claim through symlink",
+        )
 
         proc_canary = os.getenv("NIX_HERMES_PROC_CANARY", "")
         proc_read = read_file_tool("/proc/self/environ", task_id="nix-boundary-proc-read")
@@ -297,6 +332,8 @@ def files_check(*, preflight: bool = False) -> None:
         for protected_name in (".env", "auth.json"):
             if protected_name in visible_file_matches:
                 fail("broad file search returned a protected credential file")
+        if protected_filename in visible_file_matches:
+            fail("broad file search returned the protected staged-claim filename")
         for index, canary in enumerate(canaries):
             search_payload = parse_tool_result(search_tool(
                 pattern=canary, target="content", path="/opt/data", limit=1000,
@@ -307,7 +344,8 @@ def files_check(*, preflight: bool = False) -> None:
                 fail("broad content search leaked a credential canary")
     finally:
         for path in (
-            locals().get("credential_link"), locals().get("escape_link"), locals().get("safe_file"),
+            locals().get("credential_link"), locals().get("protected_link"),
+            locals().get("escape_link"), locals().get("safe_file"),
             locals().get("outside_file"), locals().get("outside_target"),
         ):
             if path is None:

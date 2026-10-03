@@ -61,6 +61,7 @@ fi
 
 project_name=$(require_config COMPOSE_PROJECT_NAME)
 public_url=$(require_config PAPERCLIP_PUBLIC_URL)
+lior_paperclip_user_id=$(require_config PAPERCLIP_LIOR_USER_ID)
 host_port=$(require_config PAPERCLIP_HOST_PORT)
 postgres_env=$(require_config POSTGRES_ENV_FILE)
 paperclip_env=$(require_config PAPERCLIP_ENV_FILE)
@@ -72,6 +73,8 @@ signup_disabled=$(require_config PAPERCLIP_AUTH_DISABLE_SIGN_UP)
 [[ "$project_name" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || fail "COMPOSE_PROJECT_NAME must match [a-z0-9][a-z0-9_-]*"
 [[ "$signup_disabled" == "true" || "$signup_disabled" == "false" ]] || fail "PAPERCLIP_AUTH_DISABLE_SIGN_UP must be true or false"
 [[ "$host_port" =~ ^[0-9]+$ ]] || fail "PAPERCLIP_HOST_PORT must be an integer"
+[[ "$lior_paperclip_user_id" =~ ^[A-Za-z0-9._:-]{3,200}$ ]] \
+  || fail "PAPERCLIP_LIOR_USER_ID has an invalid shape"
 
 if [[ ${NIX_ALLOW_TEST_CONFIG:-0} != 1 ]]; then
   [[ "$public_url" =~ ^https://nix-os\.[a-z0-9-]+\.ts\.net$ ]] \

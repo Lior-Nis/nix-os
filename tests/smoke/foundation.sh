@@ -25,6 +25,7 @@ mkdir "$test_tmp_dir/nix-brain"
 {
   printf 'COMPOSE_PROJECT_NAME=nix-os-test\n'
   printf 'PAPERCLIP_PUBLIC_URL=https://nix-os.test-tailnet.ts.net\n'
+  printf 'PAPERCLIP_LIOR_USER_ID=lior-test-user\n'
   printf 'PAPERCLIP_HOST_PORT=0\n'
   printf 'POSTGRES_ENV_FILE=%s\n' "$test_tmp_dir/postgres.env"
   printf 'PAPERCLIP_ENV_FILE=%s\n' "$test_tmp_dir/paperclip.env"

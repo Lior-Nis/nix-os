@@ -29,6 +29,7 @@ mkdir "$source_dir/nix-brain"
 {
   printf 'COMPOSE_PROJECT_NAME=nix-os-config-pack-test\n'
   printf 'PAPERCLIP_PUBLIC_URL=https://nix-os.test-tailnet.ts.net\n'
+  printf 'PAPERCLIP_LIOR_USER_ID=lior-test-user\n'
   printf 'PAPERCLIP_HOST_PORT=3100\n'
   printf 'POSTGRES_ENV_FILE=%s\n' "$source_dir/secrets/postgres.env"
   printf 'PAPERCLIP_ENV_FILE=%s\n' "$source_dir/secrets/paperclip.env"
