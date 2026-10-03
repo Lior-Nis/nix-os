@@ -38,11 +38,12 @@ require(any(mount.get("target") == "/var/lib/postgresql/data" for mount in postg
 hermes_mounts = services["hermes"].get("volumes", [])
 require(any(mount.get("target") == "/opt/data" for mount in hermes_mounts), "Hermes state is not persistent")
 require(any(mount.get("target") == "/workspace/nix-brain" and mount.get("read_only") for mount in hermes_mounts), "nix-brain must be mounted read-only")
-for helper in ("claim-agent.py", "verify-paperclip-mcp.py", "validate-tool-boundary.py"):
+for helper in ("entrypoint.sh", "claim-agent.py", "verify-paperclip-mcp.py", "validate-tool-boundary.py"):
     require(
         any(mount.get("target") == f"/opt/nix/{helper}" and mount.get("read_only") for mount in hermes_mounts),
         f"Hermes operator helper must be mounted read-only: {helper}",
     )
+require(any(mount.get("target") == "/run/nix/hermes-telegram-mode.env" and mount.get("read_only") for mount in hermes_mounts), "Hermes Telegram mode marker must be mounted read-only")
 require(
     any(mount.get("target") == "/docker-entrypoint-initdb.d/10-paperclip.sh" for mount in postgres_mounts),
     "non-superuser Paperclip role initialization is missing",
@@ -69,6 +70,7 @@ for script in (
     "backup-config",
     "bootstrap-ceo",
     "check-migrations",
+    "transition-paperclip",
     "check-tailscale-serve-state",
     "configure-tailscale",
     "initialize-paperclip",
@@ -105,6 +107,8 @@ hermes_environment = services["hermes"].get("environment", {})
 require(hermes_environment.get("API_SERVER_ENABLED") == "true", "Hermes Runs API must be enabled")
 require(hermes_environment.get("API_SERVER_HOST") == "0.0.0.0", "Hermes must listen on the private Docker bridge")
 require(hermes_environment.get("HERMES_GATEWAY_BOOTSTRAP_STATE") == "running", "Hermes gateway restart persistence is missing")
+require(hermes_environment.get("HERMES_WRITE_SAFE_ROOT") == "/opt/data/memories", "Hermes file writes must be confined to memories")
+require(services["hermes"].get("entrypoint") == ["/bin/sh", "/opt/nix/entrypoint.sh"], "Hermes must enforce its Telegram mode before upstream startup")
 require("@sha256:99641e57" in services["hermes"].get("image", ""), "Hermes image digest is not the reviewed pin")
 
 hermes_config = (repo_root / "deploy/hermes/config.yaml").read_text()
@@ -114,14 +118,24 @@ require("group_policy:" not in hermes_config, "unsupported Telegram group_policy
 require("allow_bots: none" in hermes_config, "Telegram bot senders must not receive a bypass")
 require('allowed_chats: ["${TELEGRAM_ALLOWED_USERS}"]' in hermes_config, "Slice 1 must hard-gate Telegram to Lior's direct chat")
 require("@paperclipai/mcp-server@2026.916.1" in hermes_config, "Paperclip MCP package is not pinned")
-expected_lane = "[file, skills, memory, session_search, paperclip]"
+expected_lane = "[file, memory, session_search, paperclip]"
 for lane in ("cli", "telegram", "api_server"):
     require(f"{lane}: {expected_lane}" in hermes_config, f"Chief {lane} lane is not explicitly restricted")
-for forbidden_toolset in ("terminal", "code_execution", "browser", "web", "connections", "delegation", "cronjob", "computer_use"):
+for forbidden_toolset in ("skills", "terminal", "code_execution", "browser", "web", "connections", "delegation", "cronjob", "computer_use"):
     require(f"    - {forbidden_toolset}" in hermes_config, f"global defense-in-depth suppression is missing: {forbidden_toolset}")
 for forbidden_tool in ("paperclipCreateApproval", "paperclipApprovalDecision", "paperclipApiRequest", "paperclipControlIssueWorkspaceServices"):
     require(forbidden_tool not in hermes_config, f"forbidden Paperclip tool is enabled: {forbidden_tool}")
 require((repo_root / "deploy/hermes/SOUL.md").is_file(), "Chief of Staff SOUL is missing")
+
+for operator_script in ("configure-hermes", "onboard-hermes-agent", "ops", "restore-smoke"):
+    operator_text = (repo_root / "scripts" / operator_script).read_text()
+    require("exec -T hermes" not in operator_text, f"{operator_script} has a root-default Hermes exec")
+    require("exec hermes" not in operator_text, f"{operator_script} has a root-default interactive Hermes exec")
+    if " hermes " in operator_text and "exec" in operator_text:
+        require(
+            "--user 10000:10000 hermes" in operator_text,
+            f"{operator_script} must execute Hermes-side operator commands as uid/gid 10000",
+        )
 
 onboarding = (repo_root / "scripts/onboard-hermes-agent").read_text()
 claim_helper = (repo_root / "deploy/hermes/claim-agent.py").read_text()
@@ -146,6 +160,7 @@ for key in (
     "POSTGRES_ENV_FILE",
     "PAPERCLIP_ENV_FILE",
     "HERMES_ENV_FILE",
+    "HERMES_TELEGRAM_MODE_FILE",
     "NIX_BRAIN_HOST_PATH",
     "PAPERCLIP_AUTH_DISABLE_SIGN_UP",
     "BACKUP_OUTPUT_DIR",

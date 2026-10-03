@@ -8,14 +8,49 @@ suffix=$(openssl rand -hex 8)
 container="nix-hermes-contract-$suffix"
 volume="nix-hermes-contract-$suffix"
 api_key=$(openssl rand -hex 32)
+mode_dir="/tmp/${container}-telegram-mode"
+mode_file="$mode_dir/mode.env"
+mkdir -m 0700 "$mode_dir"
+docker run --rm --volume "$mode_dir:/out" --entrypoint sh "$image" -ec '
+  printf "HERMES_TELEGRAM_MODE=disabled\n" > /out/mode.env
+  chmod 0600 /out/mode.env
+'
 
 cleanup() {
   docker rm -f "$container" >/dev/null 2>&1 || true
   docker volume rm "$volume" >/dev/null 2>&1 || true
+  rm -rf "$mode_dir"
 }
 trap cleanup EXIT
 
 docker volume create "$volume" >/dev/null
+
+startup_boundary=(docker run --rm --entrypoint python3
+  --volume "$volume:/opt/data"
+  --volume "$mode_file:/run/nix/hermes-telegram-mode.env:ro"
+  --volume "$repo_root/deploy/hermes/startup-boundary.py:/opt/nix/startup-boundary.py:ro"
+  "$image" /opt/nix/startup-boundary.py)
+[[ $("${startup_boundary[@]}") == disabled ]] || { printf 'valid Telegram mode marker was rejected\n' >&2; exit 1; }
+docker run --rm --volume "$mode_dir:/out" --entrypoint sh "$image" -ec '
+  printf "HERMES_TELEGRAM_MODE=disabled\nEXTRA=true\n" > /out/mode.env
+  chmod 0600 /out/mode.env
+'
+if "${startup_boundary[@]}" >/dev/null 2>&1; then
+  printf 'Telegram mode marker with extra content unexpectedly passed\n' >&2
+  exit 1
+fi
+docker run --rm --volume "$mode_dir:/out" --entrypoint sh "$image" -ec '
+  printf "HERMES_TELEGRAM_MODE=disabled\n" > /out/mode.env
+  chmod 0644 /out/mode.env
+'
+if "${startup_boundary[@]}" >/dev/null 2>&1; then
+  printf 'world-readable Telegram mode marker unexpectedly passed\n' >&2
+  exit 1
+fi
+docker run --rm --volume "$mode_dir:/out" --entrypoint sh "$image" -ec '
+  chmod 0600 /out/mode.env
+'
+[[ $("${startup_boundary[@]}") == disabled ]] || { printf 'restored Telegram mode marker was rejected\n' >&2; exit 1; }
 
 docker run --rm --entrypoint python3 \
   --volume "$repo_root/deploy/hermes/config.yaml:/nix/config.yaml:ro" \
@@ -32,7 +67,7 @@ from plugins.platforms.telegram.adapter import TelegramAdapter
 cfg = yaml.safe_load(pathlib.Path("/nix/config.yaml").read_text())
 assert cfg["model"] == {"provider": "openai-codex", "default": "gpt-5.4"}
 assert cfg["gateway"]["multiplex_profiles"] is False
-expected_toolsets = ["file", "skills", "memory", "session_search", "paperclip"]
+expected_toolsets = ["file", "memory", "session_search", "paperclip"]
 assert cfg["platform_toolsets"] == {
   "cli": expected_toolsets,
   "telegram": expected_toolsets,
@@ -137,39 +172,82 @@ docker run --rm --entrypoint python3 \
   --volume "$repo_root/tests/smoke/probe-paperclip-mcp.py:/nix/probe-paperclip-mcp.py:ro" \
   "$image" /nix/probe-paperclip-mcp.py
 
-docker run --rm --entrypoint sh --volume "$volume:/opt/data" "$image" -ec '
-  mkdir -p /opt/data/memories /opt/data/sessions
-  printf "%s\n" "restart-continuity-v1" > /opt/data/memories/contract.txt
+docker run --rm --user 10000:10000 --entrypoint python3 \
+  --volume "$volume:/opt/data" \
+  --volume "$repo_root/deploy/hermes/config.yaml:/opt/data/config.yaml:ro" \
+  --volume "$repo_root/deploy/hermes/validate-tool-boundary.py:/opt/nix/validate-tool-boundary.py:ro" \
+  --env HERMES_WRITE_SAFE_ROOT=/opt/data/memories \
+  --env NIX_HERMES_PROC_CANARY=nix-proc-canary-4a6b \
+  --env API_SERVER_KEY= --env TELEGRAM_BOT_TOKEN= --env TELEGRAM_ALLOWED_USERS= \
+  --env PAPERCLIP_API_KEY= --env PAPERCLIP_AGENT_ID= --env PAPERCLIP_COMPANY_ID= --env PAPERCLIP_API_URL= \
+  --env OPENAI_API_KEY= --env ANTHROPIC_API_KEY= --env OPENROUTER_API_KEY= --env GOOGLE_API_KEY= \
+  --env GEMINI_API_KEY= --env XAI_API_KEY= --env DEEPSEEK_API_KEY= --env GROQ_API_KEY= \
+  --env TOGETHER_API_KEY= --env HF_TOKEN= --env HUGGINGFACE_TOKEN= \
+  "$image" /opt/nix/validate-tool-boundary.py files-preflight
+docker run --rm --user 10000:10000 --entrypoint sh --volume "$volume:/opt/data" "$image" -ec '
+  test ! -e /opt/data/.env
+  test ! -e /opt/data/auth.json
+  umask 077
+  printf "\357\273\277%s\n" "TELEGRAM_BOT_TOKEN=profile-token-must-not-poll" > /opt/data/.env
+  printf "%s\n" \
+    "PAPERCLIP_API_KEY=pcp_contract_fixture" \
+    "'TELEGRAM_ALLOWED_USERS'=999999999" \
+    "TELEGRAM_ALLOW_ALL_USERS=true" \
+    "GATEWAY_ALLOW_ALL_USERS=true" >> /opt/data/.env
 '
-docker run -d --name "$container" --volume "$volume:/opt/data" \
+
+docker run -d --name "$container" --entrypoint /bin/sh --volume "$volume:/opt/data" \
+  --volume "$repo_root/deploy/hermes/entrypoint.sh:/opt/nix/entrypoint.sh:ro" \
+  --volume "$repo_root/deploy/hermes/startup-boundary.py:/opt/nix/startup-boundary.py:ro" \
+  --volume "$mode_file:/run/nix/hermes-telegram-mode.env:ro" \
   --volume "$repo_root/deploy/hermes/config.yaml:/opt/data/config.yaml:ro" \
   --volume "$repo_root/deploy/hermes/SOUL.md:/opt/data/SOUL.md:ro" \
   --volume "$repo_root/deploy/hermes/validate-tool-boundary.py:/opt/nix/validate-tool-boundary.py:ro" \
   --volume "$repo_root:/workspace/nix-brain:ro" \
   --env API_SERVER_ENABLED=true --env API_SERVER_HOST=0.0.0.0 --env API_SERVER_PORT=8642 \
   --env API_SERVER_KEY="$api_key" --env HERMES_GATEWAY_BOOTSTRAP_STATE=running \
+  --env TELEGRAM_BOT_TOKEN=nix-disabled-token-canary \
+  --env HERMES_WRITE_SAFE_ROOT=/opt/data/memories \
+  --env NIX_HERMES_PROC_CANARY=nix-proc-canary-4a6b \
   --env PAPERCLIP_API_KEY=pcp_contract_fixture --env PAPERCLIP_COMPANY_ID=contract-company \
   --env PAPERCLIP_AGENT_ID=contract-agent \
-  "$image" gateway run >/dev/null
+  "$image" /opt/nix/entrypoint.sh gateway run >/dev/null
 
 for _ in $(seq 1 120); do
-  if docker exec "$container" curl -fsS http://127.0.0.1:8642/health >/dev/null 2>&1; then break; fi
+  if docker exec --user 10000:10000 "$container" curl -fsS http://127.0.0.1:8642/health >/dev/null 2>&1; then break; fi
   sleep 1
 done
-docker exec "$container" curl -fsS http://127.0.0.1:8642/health >/dev/null
-unauthorized=$(docker exec "$container" curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8642/v1/capabilities)
+docker exec --user 10000:10000 "$container" curl -fsS http://127.0.0.1:8642/health >/dev/null
+docker exec --user 10000:10000 "$container" sh -ec '
+  test "$(id -u):$(id -g)" = 10000:10000
+  mkdir -p /opt/data/memories /opt/data/sessions
+  printf "%s\n" "restart-continuity-v1" > /opt/data/memories/contract.txt
+  test ! -e /opt/data/auth.json
+  umask 077
+  printf "%s\n" "{}" > /opt/data/auth.json
+  test "$(stat -c %a /opt/data/.env)" = 600
+  test "$(stat -c %u:%g /opt/data/.env)" = 10000:10000
+  test "$(stat -c %u:%g /opt/data/auth.json)" = 10000:10000
+  grep -qx "PAPERCLIP_API_KEY=pcp_contract_fixture" /opt/data/.env
+  ! grep -Eq "^[[:space:]]*(export[[:space:]]+)?(TELEGRAM_BOT_TOKEN|TELEGRAM_ALLOWED_USERS|TELEGRAM_ALLOW_ALL_USERS|GATEWAY_ALLOW_ALL_USERS)[[:space:]]*=" /opt/data/.env
+'
+docker exec --user 10000:10000 "$container" python3 /opt/nix/validate-tool-boundary.py files
+unauthorized=$(docker exec --user 10000:10000 "$container" curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8642/v1/capabilities)
 [[ "$unauthorized" == 401 ]] || { printf 'Hermes Runs API accepted unauthenticated request: HTTP %s\n' "$unauthorized" >&2; exit 1; }
-docker exec "$container" curl -fsS -H "Authorization: Bearer $api_key" http://127.0.0.1:8642/v1/capabilities >/dev/null
+docker exec --user 10000:10000 "$container" curl -fsS -H "Authorization: Bearer $api_key" http://127.0.0.1:8642/v1/capabilities >/dev/null
 for _ in $(seq 1 120); do
-  if toolsets_json=$(docker exec "$container" curl -fsS -H "Authorization: Bearer $api_key" http://127.0.0.1:8642/v1/toolsets 2>/dev/null); then break; fi
+  if toolsets_json=$(docker exec --user 10000:10000 "$container" curl -fsS -H "Authorization: Bearer $api_key" http://127.0.0.1:8642/v1/toolsets 2>/dev/null); then break; fi
   sleep 1
 done
-printf '%s' "$toolsets_json" | docker exec -i "$container" python3 /opt/nix/validate-tool-boundary.py api
-docker exec "$container" python3 /opt/nix/validate-tool-boundary.py runtime >"/tmp/${container}-tool-boundary.json"
+printf '%s' "$toolsets_json" | docker exec -i --user 10000:10000 "$container" python3 /opt/nix/validate-tool-boundary.py api
+docker exec --user 10000:10000 "$container" python3 /opt/nix/validate-tool-boundary.py runtime >"/tmp/${container}-tool-boundary.json"
+docker exec --user 10000:10000 "$container" python3 /opt/nix/validate-tool-boundary.py files >/dev/null
+docker exec --user 10000:10000 -e NIX_EXPECT_TELEGRAM_MODE=disabled "$container" \
+  python3 /opt/nix/validate-tool-boundary.py processes >/dev/null
 python3 - "$container" <<'PY'
 import json, pathlib, sys
 summary = json.loads(pathlib.Path(f"/tmp/{sys.argv[1]}-tool-boundary.json").read_text())
-expected = ["file", "memory", "paperclip", "session_search", "skills"]
+expected = ["file", "memory", "paperclip", "session_search"]
 for lane in ("cli", "telegram", "api_server"):
     assert summary[lane]["toolsets"] == expected
     assert "terminal" not in summary[lane]["tools"]
@@ -179,13 +257,16 @@ PY
 rm -f "/tmp/${container}-tool-boundary.json"
 docker restart "$container" >/dev/null
 for _ in $(seq 1 120); do
-  if docker exec "$container" curl -fsS http://127.0.0.1:8642/health >/dev/null 2>&1; then break; fi
+  if docker exec --user 10000:10000 "$container" curl -fsS http://127.0.0.1:8642/health >/dev/null 2>&1; then break; fi
   sleep 1
 done
-docker exec "$container" grep -qx restart-continuity-v1 /opt/data/memories/contract.txt
-docker exec "$container" test ! -w /opt/data/config.yaml
-docker exec "$container" test ! -w /opt/data/SOUL.md
-docker exec "$container" test ! -w /workspace/nix-brain/AGENTS.md
-docker exec "$container" curl -fsS -H "Authorization: Bearer $api_key" http://127.0.0.1:8642/v1/capabilities >/dev/null
+docker exec --user 10000:10000 "$container" curl -fsS http://127.0.0.1:8642/health >/dev/null
+docker exec --user 10000:10000 "$container" grep -qx restart-continuity-v1 /opt/data/memories/contract.txt
+docker exec --user 10000:10000 "$container" test ! -w /opt/data/config.yaml
+docker exec --user 10000:10000 "$container" test ! -w /opt/data/SOUL.md
+docker exec --user 10000:10000 "$container" test ! -w /workspace/nix-brain/AGENTS.md
+docker exec --user 10000:10000 "$container" sh -ec 'test "$(stat -c %a /opt/data/.env)" = 600'
+docker exec --user 10000:10000 "$container" python3 -c 'import json; json.load(open("/opt/data/auth.json"))'
+docker exec --user 10000:10000 "$container" curl -fsS -H "Authorization: Bearer $api_key" http://127.0.0.1:8642/v1/capabilities >/dev/null
 
 printf 'Pinned Hermes restricted toolsets, Telegram authorization, authenticated API, and restart continuity passed.\n'

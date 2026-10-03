@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+config_file=${1:-${CONFIG_FILE:-$repo_root/.env}}
+compose=(docker compose --env-file "$config_file")
+
+fail() {
+  printf 'Paperclip transition error: %s\n' "$*" >&2
+  exit 1
+}
+
+container_id() {
+  local ids
+  ids=$("${compose[@]}" ps --all --quiet paperclip)
+  if [[ -z "$ids" ]]; then
+    return 0
+  fi
+  if [[ $(printf '%s\n' "$ids" | wc -l | tr -d ' ') != 1 ]]; then
+    fail "expected exactly one existing Paperclip container"
+  fi
+  printf '%s' "$ids"
+}
+
+has_allowed_hostname() {
+  local id=$1
+  [[ $(docker inspect --format '{{range .Config.Env}}{{if eq . "PAPERCLIP_ALLOWED_HOSTNAMES=paperclip"}}match{{end}}{{end}}' "$id") == match ]]
+}
+
+has_agent_network() {
+  local id=$1
+  local network_name=$2
+  local networks
+  networks=$(docker inspect --format '{{json .NetworkSettings.Networks}}' "$id")
+  python3 - "$network_name" "$networks" <<'PY'
+import json
+import sys
+
+network_name, raw = sys.argv[1:]
+networks = json.loads(raw)
+raise SystemExit(0 if network_name in networks else 1)
+PY
+}
+
+volume_signature() {
+  local id=$1
+  local mounts
+  mounts=$(docker inspect --format '{{json .Mounts}}' "$id")
+  python3 - "$mounts" <<'PY'
+import json
+import sys
+
+mounts = json.loads(sys.argv[1])
+signature = sorted(
+    (mount.get("Name", ""), mount.get("Destination", ""), bool(mount.get("RW")))
+    for mount in mounts
+    if mount.get("Type") == "volume"
+)
+for item in signature:
+    print("\t".join((item[0], item[1], "rw" if item[2] else "ro")))
+PY
+}
+
+"$repo_root/scripts/check-config" "$config_file" >/dev/null
+
+desired_agent_network=$("${compose[@]}" config --format json | python3 -c '
+import json
+import sys
+
+config = json.load(sys.stdin)
+paperclip = config.get("services", {}).get("paperclip", {})
+environment = paperclip.get("environment", {})
+if environment.get("PAPERCLIP_ALLOWED_HOSTNAMES") != "paperclip":
+    raise SystemExit("rendered Paperclip service must set PAPERCLIP_ALLOWED_HOSTNAMES=paperclip")
+if "agent" not in paperclip.get("networks", {}):
+    raise SystemExit("rendered Paperclip service must join the agent network")
+agent = config.get("networks", {}).get("agent", {})
+if agent.get("internal") is not True:
+    raise SystemExit("rendered agent network must be internal")
+name = agent.get("name")
+if not name:
+    raise SystemExit("rendered agent network has no concrete name")
+print(name)
+') || fail "rendered Compose topology is not transition-safe"
+
+old_id=$(container_id)
+if [[ -z "$old_id" ]]; then
+  printf 'No existing Paperclip container; normal Compose startup will create the required topology.\n'
+  exit 0
+fi
+
+network_ok=0
+hostname_ok=0
+has_agent_network "$old_id" "$desired_agent_network" && network_ok=1
+has_allowed_hostname "$old_id" && hostname_ok=1
+
+if [[ $network_ok == 1 && $hostname_ok == 1 ]]; then
+  printf 'Paperclip container is already transition-compliant; no recreation required.\n'
+  exit 0
+fi
+
+reasons=()
+[[ $network_ok == 1 ]] || reasons+=("missing network $desired_agent_network")
+[[ $hostname_ok == 1 ]] || reasons+=("missing PAPERCLIP_ALLOWED_HOSTNAMES=paperclip")
+printf 'Paperclip transition required: %s.\n' "$(IFS=', '; printf '%s' "${reasons[*]}")"
+
+before_volumes=$(volume_signature "$old_id")
+[[ -n "$before_volumes" ]] || fail "existing Paperclip container has no named volume to preserve"
+
+"$repo_root/scripts/check-migrations" "$config_file"
+
+[[ $(container_id) == "$old_id" ]] \
+  || fail "Paperclip container changed during migration preflight; refusing to recreate it"
+
+"${compose[@]}" up -d --no-deps --force-recreate --wait paperclip
+
+new_id=$(container_id)
+[[ -n "$new_id" && "$new_id" != "$old_id" ]] || fail "Compose did not recreate Paperclip"
+has_agent_network "$new_id" "$desired_agent_network" \
+  || fail "recreated Paperclip is not attached to $desired_agent_network"
+has_allowed_hostname "$new_id" \
+  || fail "recreated Paperclip does not have PAPERCLIP_ALLOWED_HOSTNAMES=paperclip"
+
+after_volumes=$(volume_signature "$new_id")
+[[ "$after_volumes" == "$before_volumes" ]] \
+  || fail "Paperclip named-volume attachments changed during recreation"
+
+printf 'Paperclip alone was recreated with the required agent network and hostname allowlist; named volumes were preserved.\n'

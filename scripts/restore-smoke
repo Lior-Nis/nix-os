@@ -81,9 +81,9 @@ done
 restore_postgres_env="$restore_tmp_dir/postgres.env"
 restore_paperclip_env="$restore_tmp_dir/paperclip.env"
 restore_hermes_env="$restore_tmp_dir/hermes.env"
+restore_hermes_mode="$restore_tmp_dir/hermes-telegram-mode.env"
 restore_brain="$restore_tmp_dir/nix-brain"
 restore_config="$restore_tmp_dir/restore.env"
-restore_override="$restore_tmp_dir/restore-compose.yaml"
 if [[ -n ${RESTORE_POSTGRES_ENV_FILE:-} || -n ${RESTORE_PAPERCLIP_ENV_FILE:-} || -n ${RESTORE_HERMES_ENV_FILE:-} ]]; then
   [[ -n ${RESTORE_POSTGRES_ENV_FILE:-} && -f "$RESTORE_POSTGRES_ENV_FILE" ]] \
     || fail "RESTORE_POSTGRES_ENV_FILE must name the restored PostgreSQL secret file"
@@ -121,21 +121,18 @@ mkdir -p "$restore_brain"
   printf 'POSTGRES_ENV_FILE=%s\n' "$restore_postgres_env"
   printf 'PAPERCLIP_ENV_FILE=%s\n' "$restore_paperclip_env"
   printf 'HERMES_ENV_FILE=%s\n' "$restore_hermes_env"
+  printf 'HERMES_TELEGRAM_MODE_FILE=%s\n' "$restore_hermes_mode"
   printf 'NIX_BRAIN_HOST_PATH=%s\n' "$restore_brain"
   printf 'PAPERCLIP_AUTH_DISABLE_SIGN_UP=true\n'
   printf 'BACKUP_OUTPUT_DIR=%s\n' "$restore_tmp_dir/backups"
 } >"$restore_config"
 chmod 0600 "$restore_postgres_env" "$restore_paperclip_env" "$restore_hermes_env" "$restore_config"
+docker run --rm --volume "$restore_tmp_dir:/work" "$archive_helper_image" sh -ec '
+  printf "HERMES_TELEGRAM_MODE=disabled\n" > /work/hermes-telegram-mode.env
+  chmod 0600 /work/hermes-telegram-mode.env
+'
 
-# Never let an isolated restore compete with the production Telegram long poll.
-printf '%s\n' \
-  'services:' \
-  '  hermes:' \
-  '    environment:' \
-  '      TELEGRAM_BOT_TOKEN: ""' >"$restore_override"
-chmod 0600 "$restore_override"
-
-compose_restore=(docker compose -f "$repo_root/compose.yaml" -f "$restore_override" --env-file "$restore_config")
+compose_restore=(docker compose -f "$repo_root/compose.yaml" --env-file "$restore_config")
 "${compose_restore[@]}" create postgres paperclip hermes >/dev/null
 restore_started=1
 docker run --rm \
@@ -153,11 +150,32 @@ docker run --rm \
   --volume "$restore_hermes_volume:/target" \
   --volume "$payload_dir:/backup:ro" \
   "$archive_helper_image" sh -ec 'find /target -mindepth 1 -delete && cd /target && tar -xzf /backup/hermes-data.tar.gz'
+docker run --rm --volume "$restore_hermes_volume:/state:ro" "$archive_helper_image" sh -ec '
+  for path in .env auth.json .paperclip-claim-receipt.json; do
+    test -f "/state/$path"
+    test "$(stat -c %u:%g "/state/$path")" = 10000:10000
+    test "$(stat -c %a "/state/$path")" = 600
+  done
+' || fail "restored Hermes credentials/auth/claim receipt metadata is unsafe"
 docker run --rm \
   --volume "$restore_hermes_volume:/source:ro" \
   --volume "$restore_tmp_dir:/verify" \
   "$archive_helper_image" sh -ec 'cd /source && find . -type f -exec sha256sum {} \; | sort > /verify/restored-hermes-files.sha256'
 diff -u "$payload_dir/hermes-files.sha256" "$restore_tmp_dir/restored-hermes-files.sha256"
+
+if [[ ${NIX_RESTORE_INJECT_PROFILE_TELEGRAM_CANARY:-0} == 1 ]]; then
+  docker run --rm --user 10000:10000 --volume "$restore_hermes_volume:/state" "$archive_helper_image" sh -ec '
+    existing=$(mktemp)
+    cp /state/.env "$existing"
+    printf "\357\273\277%s\n" "TELEGRAM_BOT_TOKEN=restored-profile-token-must-not-poll" > /state/.env
+    printf "%s\n" \
+      "'TELEGRAM_ALLOWED_USERS'=999999999" \
+      "TELEGRAM_ALLOW_ALL_USERS=true" \
+      "GATEWAY_ALLOW_ALL_USERS=true" >> /state/.env
+    cat "$existing" >> /state/.env
+    rm -f "$existing"
+  '
+fi
 
 "${compose_restore[@]}" up -d --wait postgres
 "${compose_restore[@]}" exec -T postgres pg_restore \
@@ -179,9 +197,6 @@ health_json=$("${compose_restore[@]}" exec -T paperclip curl -fsS http://127.0.0
 grep -q '"status":"ok"' <<<"$health_json" || fail "restored Paperclip health did not report ok"
 
 "${compose_restore[@]}" up -d --wait hermes
-# shellcheck disable=SC2016
-"${compose_restore[@]}" exec -T hermes sh -ec 'test -z "${TELEGRAM_BOT_TOKEN:-}"' \
-  || fail "restored Hermes did not start with Telegram disabled"
 api_key=$(grep -E '^API_SERVER_KEY=' "$restore_hermes_env" | tail -n 1 | cut -d= -f2-)
 [[ ${#api_key} -ge 64 ]] || fail "restored Hermes API key is missing or too short"
 unauthorized=$("${compose_restore[@]}" exec -T paperclip curl -sS -o /dev/null -w '%{http_code}' \
@@ -192,17 +207,26 @@ printf 'header = "Authorization: Bearer %s"\n' "$api_key" \
 toolsets_json=$(printf 'header = "Authorization: Bearer %s"\n' "$api_key" \
   | "${compose_restore[@]}" exec -T paperclip curl -fsS -K - http://hermes:8642/v1/toolsets)
 printf '%s' "$toolsets_json" \
-  | "${compose_restore[@]}" exec -T hermes python3 /opt/nix/validate-tool-boundary.py api >/dev/null
-"${compose_restore[@]}" exec -T hermes python3 /opt/nix/validate-tool-boundary.py runtime >/dev/null
+  | "${compose_restore[@]}" exec -T --user 10000:10000 hermes python3 /opt/nix/validate-tool-boundary.py api >/dev/null
+"${compose_restore[@]}" exec -T --user 10000:10000 hermes python3 /opt/nix/validate-tool-boundary.py runtime >/dev/null
+"${compose_restore[@]}" exec -T --user 10000:10000 hermes python3 /opt/nix/validate-tool-boundary.py files >/dev/null
+"${compose_restore[@]}" exec -T --user 10000:10000 -e NIX_EXPECT_TELEGRAM_MODE=disabled hermes \
+  python3 /opt/nix/validate-tool-boundary.py processes >/dev/null \
+  || fail "restored Hermes process ownership or Telegram-disable boundary is unsafe"
 # shellcheck disable=SC2016
-"${compose_restore[@]}" exec -T hermes sh -ec '
+"${compose_restore[@]}" exec -T --user 10000:10000 hermes sh -ec '
   test -f /opt/data/config.yaml
   test -f /opt/data/SOUL.md
   test -r /opt/data/.env
   test "$(stat -c %a /opt/data/.env)" = 600
+  test "$(stat -c %u:%g /opt/data/.env)" = 10000:10000
+  test "$(stat -c %a /opt/data/auth.json)" = 600
+  test "$(stat -c %u:%g /opt/data/auth.json)" = 10000:10000
   test -s /opt/data/.paperclip-claim-receipt.json
+  test "$(stat -c %a /opt/data/.paperclip-claim-receipt.json)" = 600
+  test "$(stat -c %u:%g /opt/data/.paperclip-claim-receipt.json)" = 10000:10000
 ' || fail "restored Chief profile or credential receipt is incomplete"
-"${compose_restore[@]}" exec -T hermes python3 /opt/nix/verify-paperclip-mcp.py >/dev/null \
+"${compose_restore[@]}" exec -T --user 10000:10000 hermes python3 /opt/nix/verify-paperclip-mcp.py >/dev/null \
   || fail "restored Hermes could not resolve its identity through the bounded Paperclip MCP"
 
 printf 'Restore smoke passed for isolated project %s, including a booted restricted Hermes profile.\n' "$restore_project"

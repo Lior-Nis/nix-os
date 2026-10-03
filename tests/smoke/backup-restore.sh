@@ -89,12 +89,14 @@ printf 'POSTGRES_PASSWORD=%s\nPAPERCLIP_DB_PASSWORD=%s\n' "$postgres_password" "
   printf 'TELEGRAM_BOT_TOKEN=test-token\nTELEGRAM_ALLOWED_USERS=123456789\n'
   printf 'TELEGRAM_ALLOW_ALL_USERS=false\nGATEWAY_ALLOW_ALL_USERS=false\n'
 } >"$smoke_tmp_dir/hermes.env"
+printf 'HERMES_TELEGRAM_MODE=disabled\n' >"$smoke_tmp_dir/hermes-telegram-mode.env"
 mkdir "$smoke_tmp_dir/nix-brain"
 {
   printf 'COMPOSE_PROJECT_NAME=%s\n' "$smoke_project"
   printf 'PAPERCLIP_PUBLIC_URL=https://nix-os.test-tailnet.ts.net\nPAPERCLIP_HOST_PORT=0\n'
   printf 'POSTGRES_ENV_FILE=%s\nPAPERCLIP_ENV_FILE=%s\n' "$smoke_tmp_dir/postgres.env" "$smoke_tmp_dir/paperclip.env"
   printf 'HERMES_ENV_FILE=%s\nNIX_BRAIN_HOST_PATH=%s\n' "$smoke_tmp_dir/hermes.env" "$smoke_tmp_dir/nix-brain"
+  printf 'HERMES_TELEGRAM_MODE_FILE=%s\n' "$smoke_tmp_dir/hermes-telegram-mode.env"
   printf 'PAPERCLIP_AUTH_DISABLE_SIGN_UP=false\nBACKUP_OUTPUT_DIR=%s\n' "$smoke_tmp_dir/backups"
 } >"$config_file"
 chmod 0600 "$smoke_tmp_dir"/*.env
@@ -102,12 +104,13 @@ chmod 0600 "$smoke_tmp_dir"/*.env
 NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$config_file"
 docker volume create "${smoke_project}_hermes_data" >/dev/null
 docker run --rm --volume "${smoke_project}_hermes_data:/state" "$archive_helper_image" sh -ec '
-  install -d /state/memories /state/sessions /state/skills/grill-me
+  install -d /state/memories /state/sessions
   printf "chief-of-staff-continuity-v1\n" >/state/memories/slice-1-continuity.txt
   printf "telegram-session-fixture-v1\n" >/state/sessions/slice-1-session.json
-  printf "%s\n" "---" "name: grill-me" "---" >/state/skills/grill-me/SKILL.md
   printf "%s\n" "{\"provider\":\"openai-codex\",\"fixture\":true}" >/state/auth.json
   printf "%s\n" "{\"desired_state\":\"running\",\"fixture\":true}" >/state/gateway_state.json
+  chmod 0600 /state/auth.json
+  chown -R 10000:10000 /state
 '
 "${compose[@]}" up -d --wait postgres
 NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-migrations" "$config_file"
@@ -185,7 +188,7 @@ source_post "/api/companies/${company_id}/join-requests/${join_id}/approve" '{}'
 join_state="$smoke_tmp_dir/hermes-join.json"
 printf '%s\n' "$join_json" >"$join_state"
 chmod 0600 "$join_state"
-claim_result=$("${compose[@]}" run --rm --no-deps -T --entrypoint python3 hermes \
+claim_result=$("${compose[@]}" run --rm --no-deps -T --user 10000:10000 --entrypoint python3 hermes \
   /opt/nix/claim-agent.py claim <"$join_state")
 hermes_agent_id=$(jq -er '.agentId' <<<"$claim_result")
 [[ $(jq -er '.companyId' <<<"$claim_result") == "$company_id" ]] || fail "claimed Hermes company identity is wrong"
@@ -245,6 +248,13 @@ hermes_adapter_patch=$(jq -nc --arg api_key "$hermes_api_key" '{
 source_patch "/api/agents/${hermes_agent_id}" "$hermes_adapter_patch" >/dev/null
 unset hermes_adapter_patch
 
+docker run --rm --volume "${smoke_project}_hermes_data:/state:ro" "$archive_helper_image" sh -ec '
+  for path in .env auth.json .paperclip-claim-receipt.json; do
+    test "$(stat -c %u:%g "/state/$path")" = 10000:10000
+    test "$(stat -c %a "/state/$path")" = 600
+  done
+' || fail "source Hermes credentials/auth/claim receipt metadata is unsafe"
+
 attachment_bytes='slice-0-known-attachment-bytes-v1'
 attachment_sha=$(printf '%s' "$attachment_bytes" | hash_stream)
 printf '%s' "$attachment_bytes" | "${compose[@]}" exec -T paperclip sh -c 'cat > /tmp/nix-os-attachment.txt'
@@ -285,6 +295,7 @@ artifact="$download_dir/$(basename "$artifact")"
 restore_work_dir="$smoke_tmp_dir/restore"
 restore_config="$restore_work_dir/restore.env"
 RESTORE_PROJECT_NAME="$restore_project" RESTORE_KEEP=true RESTORE_WORK_DIR="$restore_work_dir" \
+  NIX_RESTORE_INJECT_PROFILE_TELEGRAM_CANARY=1 \
   AGE_IDENTITY_FILE="$smoke_tmp_dir/backup-identity.txt" \
   RESTORE_POSTGRES_ENV_FILE="$smoke_tmp_dir/postgres.env" RESTORE_PAPERCLIP_ENV_FILE="$smoke_tmp_dir/paperclip.env" \
   RESTORE_HERMES_ENV_FILE="$smoke_tmp_dir/hermes.env" \
@@ -338,11 +349,16 @@ grep -q '"status":"ok"' <<<"$restored_health" || fail "restored Paperclip health
 docker run --rm --volume "${restore_project}_hermes_data:/state:ro" "$archive_helper_image" sh -ec '
   grep -qx chief-of-staff-continuity-v1 /state/memories/slice-1-continuity.txt
   grep -qx telegram-session-fixture-v1 /state/sessions/slice-1-session.json
-  grep -q "name: grill-me" /state/skills/grill-me/SKILL.md
   grep -q "openai-codex" /state/auth.json
   grep -q "desired_state" /state/gateway_state.json
   test "$(stat -c %a /state/.env)" = 600
+  test "$(stat -c %u:%g /state/.env)" = 10000:10000
+  test "$(stat -c %a /state/auth.json)" = 600
+  test "$(stat -c %u:%g /state/auth.json)" = 10000:10000
   test -s /state/.paperclip-claim-receipt.json
+  test "$(stat -c %a /state/.paperclip-claim-receipt.json)" = 600
+  test "$(stat -c %u:%g /state/.paperclip-claim-receipt.json)" = 10000:10000
+  ! grep -Eq "^[[:space:]]*(export[[:space:]]+)?(TELEGRAM_BOT_TOKEN|TELEGRAM_ALLOWED_USERS|TELEGRAM_ALLOW_ALL_USERS|GATEWAY_ALLOW_ALL_USERS)[[:space:]]*=" /state/.env
 ' || fail "restored Hermes identity/session/skill fixtures are incomplete"
 # shellcheck disable=SC2016
 "${restore_compose[@]}" exec -T -e EXPECTED_AGENT_ID="$hermes_agent_id" hermes sh -ec \

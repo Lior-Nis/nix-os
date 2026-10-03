@@ -72,9 +72,72 @@ with tempfile.TemporaryDirectory(prefix="nix-claim-test.") as temporary:
     result = claim_agent.claim(good, state)
     assert result["agentId"] == "33333333-3333-4333-8333-333333333333"
     assert stat.S_IMODE((good / ".env").stat().st_mode) == 0o600
+    assert (good / ".env").stat().st_uid == os.geteuid()
+    assert (good / ".env").stat().st_gid == os.getegid()
     assert "PAPERCLIP_API_KEY=pcp_fixture_never_logged" in (good / ".env").read_text()
     assert not list(good.glob(".paperclip-claim-*.pending"))
     assert (good / ".paperclip-claim-receipt.json").is_file()
+    assert stat.S_IMODE((good / ".paperclip-claim-receipt.json").stat().st_mode) == 0o600
+
+    stale = profile(base / "stale-telegram")
+    stale_env = stale / ".env"
+    stale_env.write_text(
+        "KEEP=value\n"
+        "'TELEGRAM_BOT_TOKEN'=must-not-survive\n"
+        "TELEGRAM_ALLOWED_USERS=999\n"
+        "TELEGRAM_ALLOW_ALL_USERS=true\n"
+        "GATEWAY_ALLOW_ALL_USERS=true\n",
+        encoding="utf-8-sig",
+    )
+    stale_env.chmod(0o600)
+    rendered = claim_agent.render_env(
+        stale_env,
+        "http://paperclip:3100",
+        "pcp_render_fixture",
+        state["companyId"],
+        "55555555-5555-4555-8555-555555555555",
+    ).decode()
+    assert "KEEP=value" in rendered
+    assert not any(key in rendered for key in claim_agent.EXTERNAL_ONLY_KEYS)
+
+    recovered = profile(base / "recovered")
+    recovered_env = recovered / ".env"
+    recovered_env.write_bytes(claim_agent.render_env(
+        recovered_env,
+        "http://paperclip:3100",
+        "pcp_recovered_fixture_key",
+        state["companyId"],
+        "44444444-4444-4444-8444-444444444444",
+    ))
+    recovered_env.chmod(0o600)
+    marker = recovered / f'.paperclip-claim-{state["id"]}.pending'
+    marker.write_text('{"fixture":true}\n')
+    marker.chmod(0o600)
+    recovery_request_count = 0
+
+    def recovery_must_not_claim(*_args, **_kwargs):
+        global recovery_request_count
+        recovery_request_count += 1
+        return {}
+
+    claim_agent.request_json = recovery_must_not_claim
+    claim_agent.get_self = lambda *_args, **_kwargs: {
+        "id": "44444444-4444-4444-8444-444444444444",
+        "companyId": state["companyId"],
+    }
+    recovered_result = claim_agent.claim(recovered, state)
+    assert recovered_result == {
+        "companyId": state["companyId"],
+        "agentId": "44444444-4444-4444-8444-444444444444",
+        "recovered": True,
+    }
+    assert recovery_request_count == 0
+    assert recovered_env.read_text().count("PAPERCLIP_API_KEY=pcp_recovered_fixture_key") == 1
+    assert not marker.exists()
+    recovered_receipt = recovered / ".paperclip-claim-receipt.json"
+    assert stat.S_IMODE(recovered_receipt.stat().st_mode) == 0o600
+    assert recovered_receipt.stat().st_uid == os.geteuid()
+    assert recovered_receipt.stat().st_gid == os.getegid()
 
     interrupted = profile(base / "interrupted")
     claim_agent.render_env = lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("fixture write failure"))

@@ -86,6 +86,23 @@ docker volume inspect "$paperclip_volume" >/dev/null 2>&1 || fail "Paperclip vol
 docker volume inspect "$hermes_volume" >/dev/null 2>&1 || fail "Hermes volume does not exist: $hermes_volume"
 "${compose[@]}" exec -T postgres pg_isready -U paperclip -d paperclip >/dev/null || fail "PostgreSQL is not ready"
 
+if [[ $test_only_unencrypted == 0 ]]; then
+  hermes_image=$("${compose[@]}" config --format json | jq -er '.services.hermes.image') \
+    || fail "could not resolve the pinned Hermes image"
+  docker run --rm --volume "$hermes_volume:/state:ro" "$archive_helper_image" sh -ec '
+    for path in .env auth.json .paperclip-claim-receipt.json; do
+      test -f "/state/$path"
+      test "$(stat -c %u:%g "/state/$path")" = 10000:10000
+      test "$(stat -c %a "/state/$path")" = 600
+    done
+  ' || fail "Hermes credential metadata is unsafe or profile state contains external-only Telegram controls"
+  docker run --rm --entrypoint python3 \
+    --volume "$hermes_volume:/opt/data:ro" \
+    --volume "$repo_root/deploy/hermes/startup-boundary.py:/opt/nix/startup-boundary.py:ro" \
+    "$hermes_image" /opt/nix/startup-boundary.py --check-profile-only \
+    || fail "Hermes profile state contains invalid or external-only Telegram controls"
+fi
+
 if "${compose[@]}" ps --status running --services | grep -qx hermes; then
   hermes_was_running=1
   "${compose[@]}" stop hermes

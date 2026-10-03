@@ -37,7 +37,7 @@ case "$action" in
         dangerouslyAllowInsecureRemoteHttp:true
       }
     }')
-    response=$(printf '%s' "$payload" | "${compose[@]}" exec -T hermes curl -fsS \
+    response=$(printf '%s' "$payload" | "${compose[@]}" exec -T --user 10000:10000 hermes curl -fsS \
       -H 'Content-Type: application/json' -X POST \
       "http://paperclip:3100/api/invites/${invite_token}/accept" --data-binary @-)
     unset invite_token payload api_key
@@ -51,13 +51,13 @@ case "$action" in
     ;;
   claim)
     [[ -f "$state_file" ]] || fail "pending join state is missing: $state_file"
-    "${compose[@]}" exec -T hermes python3 /opt/nix/claim-agent.py preflight >/dev/null
-    claim_result=$("${compose[@]}" exec -T hermes python3 /opt/nix/claim-agent.py claim <"$state_file") \
+    "${compose[@]}" exec -T --user 10000:10000 hermes python3 /opt/nix/claim-agent.py preflight >/dev/null
+    claim_result=$("${compose[@]}" exec -T --user 10000:10000 hermes python3 /opt/nix/claim-agent.py claim <"$state_file") \
       || fail "claim/persistence failed; keep the join state and follow the documented orphan-credential recovery procedure"
     company_id=$(jq -er '.companyId' <<<"$claim_result")
     agent_id=$(jq -er '.agentId' <<<"$claim_result")
     # shellcheck disable=SC2016
-    "${compose[@]}" exec -T hermes sh -ec \
+    "${compose[@]}" exec -T --user 10000:10000 hermes sh -ec \
       'test "$(stat -c %a /opt/data/.env)" = 600 && test -s /opt/data/.paperclip-claim-receipt.json'
     rm -f -- "$state_file"
     "${compose[@]}" restart hermes >/dev/null

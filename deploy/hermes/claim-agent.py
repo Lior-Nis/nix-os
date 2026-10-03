@@ -15,6 +15,8 @@ import tempfile
 import urllib.error
 import urllib.request
 
+from dotenv.parser import Binding, parse_stream
+
 
 MIN_FREE_BYTES = 1024 * 1024
 MANAGED_KEYS = {
@@ -22,6 +24,12 @@ MANAGED_KEYS = {
     "PAPERCLIP_API_KEY",
     "PAPERCLIP_COMPANY_ID",
     "PAPERCLIP_AGENT_ID",
+}
+EXTERNAL_ONLY_KEYS = {
+    "TELEGRAM_BOT_TOKEN",
+    "TELEGRAM_ALLOWED_USERS",
+    "TELEGRAM_ALLOW_ALL_USERS",
+    "GATEWAY_ALLOW_ALL_USERS",
 }
 
 
@@ -61,15 +69,32 @@ def atomic_write(path: pathlib.Path, data: bytes, mode: int = 0o600) -> None:
         raise
 
 
+def require_runtime_secret(path: pathlib.Path, label: str) -> None:
+    if path.is_symlink() or not path.is_file():
+        raise ClaimError(f"{label} is missing or unsafe")
+    metadata = path.stat()
+    if metadata.st_uid != os.geteuid() or metadata.st_gid != os.getegid():
+        raise ClaimError(f"{label} has unexpected ownership")
+    if stat.S_IMODE(metadata.st_mode) != 0o600:
+        raise ClaimError(f"{label} must have mode 0600")
+
+
 def parse_env(path: pathlib.Path) -> dict[str, str]:
     values: dict[str, str] = {}
     if not path.exists():
         return values
-    for line in path.read_text().splitlines():
-        if line and not line.lstrip().startswith("#") and "=" in line:
-            key, value = line.split("=", 1)
-            values[key] = value
+    for binding in parse_env_bindings(path):
+        if binding.key is not None and binding.value is not None:
+            values[binding.key] = binding.value
     return values
+
+
+def parse_env_bindings(path: pathlib.Path) -> list[Binding]:
+    with path.open("r", encoding="utf-8-sig", newline="") as stream:
+        bindings = list(parse_stream(stream))
+    if any(binding.error for binding in bindings):
+        raise ClaimError("Hermes profile environment contains invalid dotenv syntax")
+    return bindings
 
 
 def profile_preflight(profile_dir: pathlib.Path) -> pathlib.Path:
@@ -139,10 +164,9 @@ def get_self(api_url: str, token: str) -> dict:
 def render_env(existing_path: pathlib.Path, api_url: str, token: str, company_id: str, agent_id: str) -> bytes:
     preserved: list[str] = []
     if existing_path.exists():
-        for line in existing_path.read_text().splitlines():
-            key = line.split("=", 1)[0] if "=" in line else ""
-            if key not in MANAGED_KEYS:
-                preserved.append(line)
+        for binding in parse_env_bindings(existing_path):
+            if binding.key not in MANAGED_KEYS and binding.key not in EXTERNAL_ONLY_KEYS:
+                preserved.append(binding.original.string.rstrip("\r\n"))
     preserved.extend(
         [
             f"PAPERCLIP_API_URL={api_url}",
@@ -177,6 +201,7 @@ def claim(profile_dir: pathlib.Path, state: dict) -> dict[str, str | bool]:
     if existing_token:
         if not marker.exists():
             raise ClaimError("a Paperclip credential already exists; refusing to overwrite it")
+        require_runtime_secret(marker, "Paperclip claim recovery marker")
         existing_company = existing.get("PAPERCLIP_COMPANY_ID", "")
         existing_agent = existing.get("PAPERCLIP_AGENT_ID", "")
         if existing_company != company_id or not existing_agent:
@@ -187,11 +212,13 @@ def claim(profile_dir: pathlib.Path, state: dict) -> dict[str, str | bool]:
             json.dumps({"requestId": request_id, "companyId": existing_company, "agentId": existing_agent}).encode()
             + b"\n",
         )
+        require_runtime_secret(receipt, "Paperclip claim receipt")
         marker.unlink(missing_ok=True)
         fsync_directory(profile_dir)
         return {"companyId": existing_company, "agentId": existing_agent, "recovered": True}
 
     atomic_write(marker, json.dumps({"requestId": request_id, "companyId": company_id}).encode() + b"\n")
+    require_runtime_secret(marker, "Paperclip claim recovery marker")
     temp_fd, temp_name = tempfile.mkstemp(prefix=".env.claim-", suffix=".tmp", dir=profile_dir)
     temp_path = pathlib.Path(temp_name)
     os.fchmod(temp_fd, 0o600)
@@ -218,11 +245,13 @@ def claim(profile_dir: pathlib.Path, state: dict) -> dict[str, str | bool]:
         fsync_directory(profile_dir)
         if stat.S_IMODE(target.stat().st_mode) != 0o600:
             raise ConsumedClaimError("persisted Paperclip credential file permissions are unsafe")
+        require_runtime_secret(target, "persisted Paperclip credential file")
         verify_identity(api_url, token, company_id, agent_id)
         atomic_write(
             receipt,
             json.dumps({"requestId": request_id, "companyId": company_id, "agentId": agent_id}).encode() + b"\n",
         )
+        require_runtime_secret(receipt, "Paperclip claim receipt")
         marker.unlink(missing_ok=True)
         fsync_directory(profile_dir)
         return {"companyId": company_id, "agentId": agent_id, "recovered": False}
