@@ -14,8 +14,15 @@ import sys
 import tempfile
 import urllib.error
 import urllib.request
+from types import SimpleNamespace
+from typing import Any
 
-from dotenv.parser import Binding, parse_stream
+try:
+    from dotenv.parser import parse_stream as dotenv_parse_stream
+except ModuleNotFoundError:  # Dependency-free hosted unit tests only.
+    if os.environ.get("NIX_ALLOW_DEPENDENCY_FREE_DOTENV_TEST") != "1":
+        raise
+    dotenv_parse_stream = None
 
 
 MIN_FREE_BYTES = 1024 * 1024
@@ -89,9 +96,31 @@ def parse_env(path: pathlib.Path) -> dict[str, str]:
     return values
 
 
-def parse_env_bindings(path: pathlib.Path) -> list[Binding]:
+def parse_env_bindings(path: pathlib.Path) -> list[Any]:
     with path.open("r", encoding="utf-8-sig", newline="") as stream:
-        bindings = list(parse_stream(stream))
+        if dotenv_parse_stream is not None:
+            bindings = list(dotenv_parse_stream(stream))
+        else:
+            bindings = []
+            assignment = re.compile(
+                r"^\s*(?:export\s+)?(?:'([^']+)'|([A-Za-z_][A-Za-z0-9_]*))\s*=\s*(.*?)(?:\r?\n)?$"
+            )
+            for line in stream:
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    bindings.append(
+                        SimpleNamespace(key=None, value=None, original=SimpleNamespace(string=line), error=False)
+                    )
+                    continue
+                match = assignment.match(line)
+                bindings.append(
+                    SimpleNamespace(
+                        key=(match.group(1) or match.group(2)) if match else None,
+                        value=match.group(3) if match else None,
+                        original=SimpleNamespace(string=line),
+                        error=match is None,
+                    )
+                )
     if any(binding.error for binding in bindings):
         raise ClaimError("Hermes profile environment contains invalid dotenv syntax")
     return bindings

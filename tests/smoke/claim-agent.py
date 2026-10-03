@@ -11,6 +11,7 @@ import tempfile
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
+os.environ["NIX_ALLOW_DEPENDENCY_FREE_DOTENV_TEST"] = "1"
 spec = importlib.util.spec_from_file_location("nix_claim_agent", ROOT / "deploy/hermes/claim-agent.py")
 assert spec and spec.loader
 claim_agent = importlib.util.module_from_spec(spec)
