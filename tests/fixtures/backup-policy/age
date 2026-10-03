@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+output=''
+while (( $# > 0 )); do
+  if [[ $1 == --output ]]; then
+    shift
+    output=$1
+  fi
+  shift
+done
+[[ -n "$output" ]]
+cat >"$output"
+exit "${FAKE_AGE_EXIT:-0}"

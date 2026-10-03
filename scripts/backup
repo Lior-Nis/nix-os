@@ -7,6 +7,11 @@ config_file=${1:-${CONFIG_FILE:-$repo_root/.env}}
 compose=(docker compose --env-file "$config_file")
 archive_helper_image='postgres:17.11-alpine3.24@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24'
 backup_tmp_dir=''
+artifact_staging=''
+checksum_staging=''
+published_artifact=''
+published_checksum=''
+artifact_ready=0
 paperclip_was_running=0
 hermes_was_running=0
 paperclip_restarted=0
@@ -31,15 +36,42 @@ hash_file() {
 }
 
 cleanup() {
+  local cleanup_path
   if [[ $paperclip_was_running == 1 && $paperclip_restarted == 0 ]]; then
     "${compose[@]}" up -d paperclip >/dev/null 2>&1 || true
   fi
   if [[ $hermes_was_running == 1 && $hermes_restarted == 0 ]]; then
     "${compose[@]}" up -d hermes >/dev/null 2>&1 || true
   fi
+  for cleanup_path in "$artifact_staging" "$checksum_staging"; do
+    [[ -z "$cleanup_path" ]] || rm -f "$cleanup_path"
+  done
+  if [[ $artifact_ready == 0 ]]; then
+    for cleanup_path in "$published_artifact" "$published_checksum"; do
+      [[ -z "$cleanup_path" ]] || rm -f "$cleanup_path"
+    done
+  fi
   [[ -z "$backup_tmp_dir" ]] || rm -rf "$backup_tmp_dir"
 }
 trap cleanup EXIT
+
+test_only_unencrypted=${NIX_TEST_ONLY_ALLOW_UNENCRYPTED_BACKUP:-0}
+case "$test_only_unencrypted" in
+  0)
+    [[ -n ${BACKUP_AGE_RECIPIENT:-} ]] \
+      || fail "BACKUP_AGE_RECIPIENT is required; state backups are never written unencrypted"
+    command -v age >/dev/null 2>&1 || fail "age is required"
+    ;;
+  1)
+    [[ ${NIX_ALLOW_TEST_CONFIG:-0} == 1 ]] \
+      || fail "NIX_TEST_ONLY_ALLOW_UNENCRYPTED_BACKUP=1 requires NIX_ALLOW_TEST_CONFIG=1"
+    [[ -z ${BACKUP_AGE_RECIPIENT:-} ]] \
+      || fail "the test-only unencrypted switch cannot be combined with BACKUP_AGE_RECIPIENT"
+    ;;
+  *)
+    fail "NIX_TEST_ONLY_ALLOW_UNENCRYPTED_BACKUP must be 0 or 1"
+    ;;
+esac
 
 "$repo_root/scripts/check-config" "$config_file"
 project_name=$(read_config COMPOSE_PROJECT_NAME)
@@ -136,28 +168,37 @@ hermes_file_count=$(wc -l <"$payload_dir/hermes-files.sha256" | tr -d ' ')
   done >SHA256SUMS
 )
 
-artifact="$output_dir/${backup_name}.tar.gz"
-tar -C "$backup_tmp_dir" -czf "$artifact" "$backup_name"
-chmod 0600 "$artifact"
-
-if [[ -n ${BACKUP_AGE_RECIPIENT:-} ]]; then
-  command -v age >/dev/null 2>&1 || fail "BACKUP_AGE_RECIPIENT is set but age is not installed"
-  encrypted_artifact="${artifact}.age"
-  age --recipient "$BACKUP_AGE_RECIPIENT" --output "$encrypted_artifact" "$artifact"
-  chmod 0600 "$encrypted_artifact"
-  rm -f "$artifact"
-  artifact=$encrypted_artifact
+if [[ $test_only_unencrypted == 1 ]]; then
+  artifact="$output_dir/${backup_name}.tar.gz"
+  artifact_staging="$output_dir/.${backup_name}.tar.gz.test-only.partial.$$"
+  [[ ! -e "$artifact" && ! -e "$artifact_staging" ]] \
+    || fail "backup artifact already exists: $artifact"
+  tar -C "$backup_tmp_dir" -czf "$artifact_staging" "$backup_name"
 else
-  printf 'warning: backup artifact is unencrypted; encrypt it before copying off-host\n' >&2
+  artifact="$output_dir/${backup_name}.tar.gz.age"
+  artifact_staging="$output_dir/.${backup_name}.tar.gz.age.partial.$$"
+  [[ ! -e "$artifact" && ! -e "$artifact_staging" ]] \
+    || fail "backup artifact already exists: $artifact"
+  tar -C "$backup_tmp_dir" -czf - "$backup_name" \
+    | age --recipient "$BACKUP_AGE_RECIPIENT" --output "$artifact_staging"
 fi
+chmod 0600 "$artifact_staging"
 
-artifact_dir=$(dirname "$artifact")
 artifact_basename=$(basename "$artifact")
-(
-  cd "$artifact_dir"
-  hash_file "$artifact_basename" >"${artifact_basename}.sha256"
-)
-chmod 0600 "${artifact}.sha256"
+checksum_staging="$output_dir/.${artifact_basename}.sha256.partial.$$"
+[[ ! -e "${artifact}.sha256" && ! -e "$checksum_staging" ]] \
+  || fail "backup checksum already exists: ${artifact}.sha256"
+artifact_digest=$(hash_file "$artifact_staging" | awk '{print $1}')
+[[ -n "$artifact_digest" ]] || fail "could not calculate backup artifact checksum"
+printf '%s  %s\n' "$artifact_digest" "$artifact_basename" >"$checksum_staging"
+chmod 0600 "$checksum_staging"
+mv "$artifact_staging" "$artifact"
+artifact_staging=''
+published_artifact=$artifact
+mv "$checksum_staging" "${artifact}.sha256"
+checksum_staging=''
+published_checksum="${artifact}.sha256"
+artifact_ready=1
 printf '%s\n' "$artifact"
 
 if [[ $paperclip_was_running == 1 && $paperclip_restarted == 0 ]] || [[ $hermes_was_running == 1 && $hermes_restarted == 0 ]]; then

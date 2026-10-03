@@ -50,7 +50,15 @@ rclone copyto --immutable /var/backups/nix-os/<state-artifact>.tar.gz.age.sha256
   gdrive:Nix/backups/state/<state-artifact>.tar.gz.age.sha256
 ```
 
-Unencrypted output is for isolated tests only and must never leave the VPS.
+State backups fail before touching services or the output directory unless
+`BACKUP_AGE_RECIPIENT` is set and `age` is available. The archive is streamed
+directly into age encryption; no plaintext state archive is written to the
+backup directory. Partial output is removed if packaging or encryption fails.
+
+Unencrypted output exists only for isolated fixtures that explicitly set both
+`NIX_TEST_ONLY_ALLOW_UNENCRYPTED_BACKUP=1` and `NIX_ALLOW_TEST_CONFIG=1`. Never
+use that test-only switch for production, upload its output, or retain it after
+the fixture completes.
 
 ## Download and prove the remote copy
 
