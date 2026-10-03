@@ -139,6 +139,8 @@ recovery-labelled company + related issue + known-byte attachment + harmless loc
 -> restored Hermes starts with Telegram explicitly disabled and its authenticated API private to Compose
 -> unauthenticated API gets 401; authenticated capabilities and exact restricted tool surfaces pass
 -> bounded Paperclip MCP resolves the restored Chief identity against isolated restored Paperclip
+-> Paperclip has exactly one root CEO (Chief); the retained bootstrap manager is `general`, reports to Chief, remains paused and credentialless, and has `/bin/false`, disabled heartbeat, zero budget, and stripped permissions
+-> Hermes has no staged claim or pending claim marker; backups are accepted only after the verified claim receipt and credential are fully converged
 -> after the isolated runtime is destroyed, production Telegram resumes and Chief answers only Lior
 -> openai-codex auth still works, or the documented device-code reauthentication is completed and recorded
 -> Chief reads the restored Paperclip issue and read-only nix-brain checkout
@@ -170,6 +172,6 @@ Only after the isolated proof passes:
 
 6. Start PostgreSQL, restore `postgres.dump` with `pg_restore --clean --if-exists --no-owner --no-privileges`, run `scripts/check-migrations`, then start Paperclip and Hermes.
 7. Run `scripts/configure-tailscale` to reconstruct the node name and Nix-owned Paperclip handler without changing unrelated routes. Verify tailnet health and Paperclip public non-exposure, including that Hermes ports 8642 and 9119 are not host-published.
-8. Run `scripts/configure-hermes verify` while Telegram remains disabled, then repeat CEO/company/issue/attachment/secret and Chief memory/Paperclip checks. Only after proving the previous poller is stopped, run `scripts/configure-hermes telegram-enable` and force-recreate only Hermes. On rollback, disable the marker before starting another poller. Securely remove decrypted temporary files. Never restore over running production volumes.
+8. Run `scripts/configure-hermes verify` while Telegram remains disabled, then repeat CEO/company/issue/attachment/secret and Chief memory/Paperclip checks. In Paperclip, verify Chief is the only root CEO and the retained bootstrap manager is paused, credentialless, `general`, and reports to Chief; do not delete it on the pinned release. Only after proving the previous poller is stopped, run `scripts/configure-hermes telegram-enable` and force-recreate only Hermes. On rollback, disable the marker before starting another poller. Securely remove decrypted temporary files. Never restore over running production volumes.
 
 Targets remain RPO <= 24 hours and manual RTO <= 8 hours. Schedule daily state backups, config packs after changes, and a monthly downloaded-off-host restore.

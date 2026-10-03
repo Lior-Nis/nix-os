@@ -95,6 +95,8 @@ if [[ $test_only_unencrypted == 0 ]]; then
       test "$(stat -c %u:%g "/state/$path")" = 10000:10000
       test "$(stat -c %a "/state/$path")" = 600
     done
+    test "$(find /state -maxdepth 1 -name ".paperclip-claim-*.pending" | wc -l | tr -d " ")" = 0
+    test ! -e /state/mcp-tokens/nix-os-paperclip-claim-stage.json
   ' || fail "Hermes credential metadata is unsafe or profile state contains external-only Telegram controls"
   docker run --rm --entrypoint python3 \
     --volume "$hermes_volume:/opt/data:ro" \

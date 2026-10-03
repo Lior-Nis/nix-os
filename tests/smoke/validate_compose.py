@@ -127,7 +127,13 @@ for forbidden_tool in ("paperclipCreateApproval", "paperclipApprovalDecision", "
     require(forbidden_tool not in hermes_config, f"forbidden Paperclip tool is enabled: {forbidden_tool}")
 require((repo_root / "deploy/hermes/SOUL.md").is_file(), "Chief of Staff SOUL is missing")
 
-for operator_script in ("configure-hermes", "onboard-hermes-agent", "ops", "restore-smoke"):
+for operator_script in (
+    "bootstrap-paperclip-chief",
+    "configure-hermes",
+    "onboard-hermes-agent",
+    "ops",
+    "restore-smoke",
+):
     operator_text = (repo_root / "scripts" / operator_script).read_text()
     require("exec -T hermes" not in operator_text, f"{operator_script} has a root-default Hermes exec")
     require("exec hermes" not in operator_text, f"{operator_script} has a root-default interactive Hermes exec")
@@ -156,6 +162,7 @@ example = (repo_root / ".env.example").read_text()
 for key in (
     "COMPOSE_PROJECT_NAME",
     "PAPERCLIP_PUBLIC_URL",
+    "PAPERCLIP_LIOR_USER_ID",
     "PAPERCLIP_HOST_PORT",
     "POSTGRES_ENV_FILE",
     "PAPERCLIP_ENV_FILE",

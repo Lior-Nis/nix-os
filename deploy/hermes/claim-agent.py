@@ -38,6 +38,9 @@ EXTERNAL_ONLY_KEYS = {
     "TELEGRAM_ALLOW_ALL_USERS",
     "GATEWAY_ALLOW_ALL_USERS",
 }
+CLAIM_STAGE_DIRECTORY = "mcp-tokens"
+CLAIM_STAGE_NAME = "nix-os-paperclip-claim-stage.json"
+REPLACEMENT_MARKER_KIND = "replacement-key-install"
 
 
 class ClaimError(RuntimeError):
@@ -84,6 +87,27 @@ def require_runtime_secret(path: pathlib.Path, label: str) -> None:
         raise ClaimError(f"{label} has unexpected ownership")
     if stat.S_IMODE(metadata.st_mode) != 0o600:
         raise ClaimError(f"{label} must have mode 0600")
+
+
+def claim_stage_path(profile_dir: pathlib.Path, *, create_parent: bool = False) -> pathlib.Path:
+    directory = profile_dir / CLAIM_STAGE_DIRECTORY
+    if not directory.exists() and create_parent:
+        try:
+            directory.mkdir(mode=0o700)
+            fsync_directory(profile_dir)
+        except FileExistsError:
+            pass
+    if directory.exists():
+        if directory.is_symlink() or not directory.is_dir():
+            raise ClaimError("Paperclip claim staging directory is unsafe")
+        metadata = directory.stat()
+        if metadata.st_uid != os.geteuid() or metadata.st_gid != os.getegid():
+            raise ClaimError("Paperclip claim staging directory has unexpected ownership")
+        if stat.S_IMODE(metadata.st_mode) & 0o077:
+            raise ClaimError("Paperclip claim staging directory must be private")
+    elif create_parent:
+        raise ClaimError("Paperclip claim staging directory could not be created")
+    return directory / CLAIM_STAGE_NAME
 
 
 def parse_env(path: pathlib.Path) -> dict[str, str]:
@@ -213,13 +237,333 @@ def verify_identity(api_url: str, token: str, company_id: str, agent_id: str) ->
         raise ClaimError("persisted Paperclip credential resolved to an unexpected identity")
 
 
-def claim(profile_dir: pathlib.Path, state: dict) -> dict[str, str | bool]:
+def recovery_status(profile_dir: pathlib.Path) -> dict[str, Any]:
     target = profile_preflight(profile_dir)
+    receipt_path = profile_dir / ".paperclip-claim-receipt.json"
+    markers = sorted(profile_dir.glob(".paperclip-claim-*.pending"))
+    if len(markers) > 1:
+        raise ClaimError("multiple Paperclip claim recovery markers exist")
+
+    existing = parse_env(target)
+    token = existing.get("PAPERCLIP_API_KEY", "")
+    company_id = existing.get("PAPERCLIP_COMPANY_ID", "")
+    agent_id = existing.get("PAPERCLIP_AGENT_ID", "")
+    if token:
+        if not company_id or not agent_id:
+            raise ClaimError("persisted Paperclip credential identity is incomplete")
+        require_runtime_secret(target, "persisted Paperclip credential file")
+        verify_identity(os.environ.get("PAPERCLIP_API_URL", "http://paperclip:3100").rstrip("/"), token, company_id, agent_id)
+    elif company_id or agent_id:
+        raise ClaimError("persisted Paperclip identity exists without its credential")
+
+    receipt: dict[str, Any] | None = None
+    if receipt_path.exists():
+        require_runtime_secret(receipt_path, "Paperclip claim receipt")
+        try:
+            loaded = json.loads(receipt_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            raise ClaimError("Paperclip claim receipt is invalid") from None
+        if not isinstance(loaded, dict):
+            raise ClaimError("Paperclip claim receipt is invalid")
+        receipt = loaded
+        if not token or loaded.get("companyId") != company_id or loaded.get("agentId") != agent_id:
+            raise ClaimError("Paperclip claim receipt does not match the persisted identity")
+
+    marker: dict[str, Any] | None = None
+    if markers:
+        require_runtime_secret(markers[0], "Paperclip claim recovery marker")
+        try:
+            loaded = json.loads(markers[0].read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            raise ClaimError("Paperclip claim recovery marker is invalid") from None
+        if not isinstance(loaded, dict) or not loaded.get("requestId") or not loaded.get("companyId"):
+            raise ClaimError("Paperclip claim recovery marker is invalid")
+        marker = {
+            "requestId": str(loaded["requestId"]),
+            "companyId": str(loaded["companyId"]),
+        }
+        if loaded.get("kind") == REPLACEMENT_MARKER_KIND:
+            if not loaded.get("agentId") or not loaded.get("keyId"):
+                raise ClaimError("Paperclip replacement-key recovery marker is invalid")
+            marker.update(
+                {
+                    "kind": REPLACEMENT_MARKER_KIND,
+                    "agentId": str(loaded["agentId"]),
+                    "keyId": str(loaded["keyId"]),
+                }
+            )
+        if loaded.get("companyId") != company_id and token:
+            raise ClaimError("Paperclip claim recovery marker does not match the persisted identity")
+        if token and marker.get("agentId") and marker.get("agentId") != agent_id:
+            raise ClaimError("Paperclip replacement-key marker does not match the persisted identity")
+        if receipt is not None and marker.get("keyId") and receipt.get("keyId") != marker.get("keyId"):
+            raise ClaimError("Paperclip replacement-key marker does not match the claim receipt")
+
+    stage: dict[str, Any] | None = None
+    stage_path = claim_stage_path(profile_dir)
+    if stage_path.exists():
+        staged = load_claim_stage(profile_dir)
+        stage = {"requestId": staged["id"], "companyId": staged["companyId"]}
+        if token and staged["companyId"] != company_id:
+            raise ClaimError("staged Paperclip claim does not match the persisted identity")
+
+    return {
+        "credentialPresent": bool(token),
+        "companyId": company_id or None,
+        "agentId": agent_id or None,
+        "receipt": receipt,
+        "marker": marker,
+        "stage": stage,
+    }
+
+
+def validate_claim_state(state: dict, *, require_secret: bool) -> tuple[str, str, str]:
     request_id = str(state.get("id") or "")
     company_id = str(state.get("companyId") or "")
     claim_secret = str(state.get("claimSecret") or "")
-    if not re.fullmatch(r"[0-9a-fA-F-]{20,}", request_id) or not company_id or not claim_secret:
+    if not re.fullmatch(r"[0-9a-fA-F-]{20,}", request_id) or not company_id:
         raise ClaimError("pending join state is incomplete")
+    if require_secret and len(claim_secret) < 16:
+        raise ClaimError("pending join state is missing its claim secret")
+    return request_id, company_id, claim_secret
+
+
+def load_claim_stage(profile_dir: pathlib.Path) -> dict[str, str]:
+    stage_path = claim_stage_path(profile_dir)
+    require_runtime_secret(stage_path, "staged Paperclip claim")
+    try:
+        loaded = json.loads(stage_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        raise ClaimError("staged Paperclip claim is invalid") from None
+    if not isinstance(loaded, dict):
+        raise ClaimError("staged Paperclip claim is invalid")
+    request_id, company_id, claim_secret = validate_claim_state(loaded, require_secret=True)
+    return {"id": request_id, "companyId": company_id, "claimSecret": claim_secret}
+
+
+def stage_claim(profile_dir: pathlib.Path, state: dict) -> dict[str, str]:
+    target = profile_preflight(profile_dir)
+    request_id, company_id, claim_secret = validate_claim_state(state, require_secret=True)
+    if parse_env(target).get("PAPERCLIP_API_KEY"):
+        raise ClaimError("a Paperclip credential already exists; refusing to stage another claim")
+    stage_path = claim_stage_path(profile_dir, create_parent=True)
+    if stage_path.exists():
+        existing = load_claim_stage(profile_dir)
+        if existing != {"id": request_id, "companyId": company_id, "claimSecret": claim_secret}:
+            raise ClaimError("a different Paperclip claim is already staged")
+    else:
+        atomic_write(
+            stage_path,
+            json.dumps(
+                {"id": request_id, "companyId": company_id, "claimSecret": claim_secret},
+                separators=(",", ":"),
+            ).encode()
+            + b"\n",
+        )
+    require_runtime_secret(stage_path, "staged Paperclip claim")
+    return {"requestId": request_id, "companyId": company_id}
+
+
+def resume_claim(profile_dir: pathlib.Path) -> dict[str, str | bool]:
+    staged = load_claim_stage(profile_dir)
+    request_id = staged["id"]
+    company_id = staged["companyId"]
+    status = recovery_status(profile_dir)
+    receipt = status.get("receipt")
+    if isinstance(receipt, dict):
+        if receipt.get("requestId") != request_id or receipt.get("companyId") != company_id:
+            raise ClaimError("staged Paperclip claim does not match the existing receipt")
+        result: dict[str, str | bool] = {
+            "companyId": company_id,
+            "agentId": str(receipt.get("agentId") or ""),
+            "recovered": True,
+        }
+    else:
+        result = claim(profile_dir, staged)
+    stage_path = claim_stage_path(profile_dir)
+    stage_path.unlink(missing_ok=True)
+    fsync_directory(stage_path.parent)
+    return result
+
+
+def install_replacement_key(profile_dir: pathlib.Path, state: dict) -> dict[str, str | bool]:
+    target = profile_preflight(profile_dir)
+    request_id = str(state.get("requestId") or "")
+    company_id = str(state.get("companyId") or "")
+    agent_id = str(state.get("agentId") or "")
+    key_id = str(state.get("keyId") or "")
+    token = str(state.get("token") or "")
+    if (
+        not re.fullmatch(r"[0-9a-fA-F-]{20,}", request_id)
+        or not company_id
+        or not agent_id
+        or not key_id
+        or not token.startswith("pcp_")
+    ):
+        raise ClaimError("replacement Paperclip credential state is incomplete")
+    if parse_env(target).get("PAPERCLIP_API_KEY"):
+        raise ClaimError("a Paperclip credential already exists; refusing to overwrite it")
+
+    markers = sorted(profile_dir.glob(".paperclip-claim-*.pending"))
+    if len(markers) > 1:
+        raise ClaimError("multiple Paperclip claim recovery markers exist")
+    marker_path = profile_dir / f".paperclip-claim-{request_id}.pending"
+    if markers:
+        if markers[0] != marker_path:
+            raise ClaimError("Paperclip claim recovery marker has an unexpected request identifier")
+        require_runtime_secret(markers[0], "Paperclip claim recovery marker")
+        try:
+            marker = json.loads(markers[0].read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            raise ClaimError("Paperclip claim recovery marker is invalid") from None
+        if not isinstance(marker, dict) or marker.get("requestId") != request_id or marker.get("companyId") != company_id:
+            raise ClaimError("Paperclip claim recovery marker does not match replacement state")
+        if marker.get("agentId") not in (None, agent_id):
+            raise ClaimError("Paperclip claim recovery marker does not match replacement agent")
+
+    stage_path = claim_stage_path(profile_dir)
+    if stage_path.exists():
+        staged = load_claim_stage(profile_dir)
+        if staged["id"] != request_id or staged["companyId"] != company_id:
+            raise ClaimError("staged Paperclip claim does not match replacement state")
+
+    api_url = os.environ.get("PAPERCLIP_API_URL", "http://paperclip:3100").rstrip("/")
+    atomic_write(
+        marker_path,
+        json.dumps(
+            {
+                "kind": REPLACEMENT_MARKER_KIND,
+                "requestId": request_id,
+                "companyId": company_id,
+                "agentId": agent_id,
+                "keyId": key_id,
+            },
+            separators=(",", ":"),
+        ).encode()
+        + b"\n",
+    )
+    require_runtime_secret(marker_path, "Paperclip replacement-key recovery marker")
+    previous = target.read_bytes() if target.exists() else None
+    payload = render_env(target, api_url, token, company_id, agent_id)
+    atomic_write(target, payload)
+    try:
+        require_runtime_secret(target, "persisted Paperclip credential file")
+        verify_identity(api_url, token, company_id, agent_id)
+    except Exception:
+        if previous is None:
+            target.unlink(missing_ok=True)
+            fsync_directory(profile_dir)
+        else:
+            atomic_write(target, previous)
+        raise
+    receipt = profile_dir / ".paperclip-claim-receipt.json"
+    atomic_write(
+        receipt,
+        json.dumps(
+            {
+                "requestId": request_id,
+                "companyId": company_id,
+                "agentId": agent_id,
+                "keyId": key_id,
+            },
+            separators=(",", ":"),
+        ).encode()
+        + b"\n",
+    )
+    require_runtime_secret(receipt, "Paperclip claim receipt")
+    marker_path.unlink(missing_ok=True)
+    stage_path.unlink(missing_ok=True)
+    fsync_directory(stage_path.parent)
+    fsync_directory(profile_dir)
+    return {"companyId": company_id, "agentId": agent_id, "recovered": True}
+
+
+def recover_claim(profile_dir: pathlib.Path, state: dict) -> dict[str, str | bool]:
+    request_id = str(state.get("id") or "")
+    company_id = str(state.get("companyId") or "")
+    if not re.fullmatch(r"[0-9a-fA-F-]{20,}", request_id) or not company_id:
+        raise ClaimError("claim recovery state is incomplete")
+    status = recovery_status(profile_dir)
+    marker = status.get("marker")
+    if not status.get("credentialPresent") or not isinstance(marker, dict):
+        raise ClaimError("claim recovery requires a verified persisted credential and matching marker")
+    if marker.get("requestId") != request_id or marker.get("companyId") != company_id:
+        raise ClaimError("claim recovery state does not match the retained marker")
+    agent_id = str(status.get("agentId") or "")
+    if marker.get("agentId") and marker.get("agentId") != agent_id:
+        raise ClaimError("claim recovery marker does not match the verified agent")
+    key_id = str(marker.get("keyId") or "")
+    existing_receipt = status.get("receipt")
+    if isinstance(existing_receipt, dict):
+        if (
+            existing_receipt.get("requestId") != request_id
+            or existing_receipt.get("companyId") != company_id
+            or existing_receipt.get("agentId") != agent_id
+            or (key_id and existing_receipt.get("keyId") != key_id)
+        ):
+            raise ClaimError("claim recovery marker does not match the existing receipt")
+    stage_path = claim_stage_path(profile_dir)
+    if stage_path.exists():
+        staged = load_claim_stage(profile_dir)
+        if staged["id"] != request_id or staged["companyId"] != company_id:
+            raise ClaimError("staged Paperclip claim does not match the recovered credential")
+    receipt = profile_dir / ".paperclip-claim-receipt.json"
+    atomic_write(
+        receipt,
+        json.dumps(
+            {
+                "requestId": request_id,
+                "companyId": company_id,
+                "agentId": agent_id,
+                **({"keyId": key_id} if key_id else {}),
+            },
+            separators=(",", ":"),
+        ).encode()
+        + b"\n",
+    )
+    require_runtime_secret(receipt, "Paperclip claim receipt")
+    marker_path = profile_dir / f".paperclip-claim-{request_id}.pending"
+    marker_path.unlink(missing_ok=True)
+    if stage_path.exists():
+        stage_path.unlink(missing_ok=True)
+        fsync_directory(stage_path.parent)
+    fsync_directory(profile_dir)
+    return {"companyId": company_id, "agentId": agent_id, "recovered": True}
+
+
+def discard_replacement_marker(profile_dir: pathlib.Path, state: dict) -> dict[str, str | bool]:
+    target = profile_preflight(profile_dir)
+    request_id = str(state.get("requestId") or "")
+    company_id = str(state.get("companyId") or "")
+    agent_id = str(state.get("agentId") or "")
+    key_id = str(state.get("keyId") or "")
+    if not request_id or not company_id or not agent_id or not key_id:
+        raise ClaimError("replacement marker cleanup state is incomplete")
+    if parse_env(target).get("PAPERCLIP_API_KEY"):
+        raise ClaimError("refusing to discard replacement marker while a credential is persisted")
+    marker_path = profile_dir / f".paperclip-claim-{request_id}.pending"
+    require_runtime_secret(marker_path, "Paperclip replacement-key recovery marker")
+    try:
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        raise ClaimError("Paperclip replacement-key recovery marker is invalid") from None
+    expected = {
+        "kind": REPLACEMENT_MARKER_KIND,
+        "requestId": request_id,
+        "companyId": company_id,
+        "agentId": agent_id,
+        "keyId": key_id,
+    }
+    if marker != expected:
+        raise ClaimError("Paperclip replacement-key recovery marker does not exactly match cleanup state")
+    marker_path.unlink()
+    fsync_directory(profile_dir)
+    return {"requestId": request_id, "keyId": key_id, "discarded": True}
+
+
+def claim(profile_dir: pathlib.Path, state: dict) -> dict[str, str | bool]:
+    target = profile_preflight(profile_dir)
+    request_id, company_id, claim_secret = validate_claim_state(state, require_secret=True)
 
     api_url = os.environ.get("PAPERCLIP_API_URL", "http://paperclip:3100").rstrip("/")
     marker = profile_dir / f".paperclip-claim-{request_id}.pending"
@@ -260,8 +604,9 @@ def claim(profile_dir: pathlib.Path, state: dict) -> dict[str, str | bool]:
         )
         consumed = True
         token = str(response.get("token") or "")
+        key_id = str(response.get("keyId") or "")
         agent_id = str(response.get("agentId") or "")
-        if not token.startswith("pcp_") or not agent_id:
+        if not token.startswith("pcp_") or not key_id or not agent_id:
             raise ConsumedClaimError("Paperclip returned an invalid claimed credential")
 
         payload = render_env(target, api_url, token, company_id, agent_id)
@@ -278,7 +623,11 @@ def claim(profile_dir: pathlib.Path, state: dict) -> dict[str, str | bool]:
         verify_identity(api_url, token, company_id, agent_id)
         atomic_write(
             receipt,
-            json.dumps({"requestId": request_id, "companyId": company_id, "agentId": agent_id}).encode() + b"\n",
+            json.dumps(
+                {"requestId": request_id, "companyId": company_id, "agentId": agent_id, "keyId": key_id},
+                separators=(",", ":"),
+            ).encode()
+            + b"\n",
         )
         require_runtime_secret(receipt, "Paperclip claim receipt")
         marker.unlink(missing_ok=True)
@@ -304,7 +653,10 @@ def claim(profile_dir: pathlib.Path, state: dict) -> dict[str, str | bool]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=("preflight", "claim"))
+    parser.add_argument(
+        "action",
+        choices=("preflight", "status", "stage", "resume", "install", "claim", "recover", "discard-install"),
+    )
     parser.add_argument("--profile-dir", default="/opt/data")
     args = parser.parse_args()
     profile_dir = pathlib.Path(args.profile_dir)
@@ -313,8 +665,23 @@ def main() -> int:
         if args.action == "preflight":
             print("Hermes claim destination preflight passed.")
             return 0
-        state = json.load(sys.stdin)
-        result = claim(profile_dir, state)
+        if args.action == "status":
+            print(json.dumps(recovery_status(profile_dir), separators=(",", ":")))
+            return 0
+        if args.action == "resume":
+            result = resume_claim(profile_dir)
+        else:
+            state = json.load(sys.stdin)
+            if args.action == "stage":
+                result = stage_claim(profile_dir, state)
+            elif args.action == "install":
+                result = install_replacement_key(profile_dir, state)
+            elif args.action == "claim":
+                result = claim(profile_dir, state)
+            elif args.action == "discard-install":
+                result = discard_replacement_marker(profile_dir, state)
+            else:
+                result = recover_claim(profile_dir, state)
         print(json.dumps(result, separators=(",", ":")))
         return 0
     except (ClaimError, json.JSONDecodeError) as exc:

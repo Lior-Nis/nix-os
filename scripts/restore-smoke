@@ -117,6 +117,7 @@ mkdir -p "$restore_brain"
 {
   printf 'COMPOSE_PROJECT_NAME=%s\n' "$restore_project"
   printf 'PAPERCLIP_PUBLIC_URL=https://nix-os.restore-test.ts.net\n'
+  printf 'PAPERCLIP_LIOR_USER_ID=lior-restore-test-user\n'
   printf 'PAPERCLIP_HOST_PORT=0\n'
   printf 'POSTGRES_ENV_FILE=%s\n' "$restore_postgres_env"
   printf 'PAPERCLIP_ENV_FILE=%s\n' "$restore_paperclip_env"
@@ -154,6 +155,8 @@ docker run --rm --volume "$restore_hermes_volume:/state:ro" "$archive_helper_ima
     test "$(stat -c %u:%g "/state/$path")" = 10000:10000
     test "$(stat -c %a "/state/$path")" = 600
   done
+  test "$(find /state -maxdepth 1 -name ".paperclip-claim-*.pending" | wc -l | tr -d " ")" = 0
+  test ! -e /state/mcp-tokens/nix-os-paperclip-claim-stage.json
 ' || fail "restored Hermes credentials/auth/claim receipt metadata is unsafe"
 docker run --rm \
   --volume "$restore_hermes_volume:/source:ro" \
