@@ -27,12 +27,14 @@ printf 'POSTGRES_PASSWORD=%s\nPAPERCLIP_DB_PASSWORD=%s\n' \
   printf 'TELEGRAM_BOT_TOKEN=test-token\nTELEGRAM_ALLOWED_USERS=123456789\n'
   printf 'TELEGRAM_ALLOW_ALL_USERS=false\nGATEWAY_ALLOW_ALL_USERS=false\n'
 } >"$test_tmp_dir/hermes.env"
+printf 'HERMES_TELEGRAM_MODE=disabled\n' >"$test_tmp_dir/hermes-telegram-mode.env"
 mkdir "$test_tmp_dir/nix-brain"
 {
   printf 'COMPOSE_PROJECT_NAME=nix-os-backup-policy-test\n'
   printf 'PAPERCLIP_PUBLIC_URL=https://nix-os.test-tailnet.ts.net\nPAPERCLIP_HOST_PORT=0\n'
   printf 'POSTGRES_ENV_FILE=%s\nPAPERCLIP_ENV_FILE=%s\n' "$test_tmp_dir/postgres.env" "$test_tmp_dir/paperclip.env"
   printf 'HERMES_ENV_FILE=%s\nNIX_BRAIN_HOST_PATH=%s\n' "$test_tmp_dir/hermes.env" "$test_tmp_dir/nix-brain"
+  printf 'HERMES_TELEGRAM_MODE_FILE=%s\n' "$test_tmp_dir/hermes-telegram-mode.env"
   printf 'PAPERCLIP_AUTH_DISABLE_SIGN_UP=true\nBACKUP_OUTPUT_DIR=%s\n' "$test_tmp_dir/backups"
 } >"$test_tmp_dir/test.env"
 chmod 0600 "$test_tmp_dir"/*.env

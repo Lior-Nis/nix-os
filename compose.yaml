@@ -50,6 +50,7 @@ services:
 
   hermes:
     image: nousresearch/hermes-agent:v2026.9.14@sha256:99641e57ec762c59e54cb44aa6746b7fc68c18b3c5ddb088af54234c613d9294
+    entrypoint: ["/bin/sh", "/opt/nix/entrypoint.sh"]
     restart: unless-stopped
     pids_limit: 2048
     env_file:
@@ -59,14 +60,18 @@ services:
       API_SERVER_ENABLED: "true"
       API_SERVER_HOST: 0.0.0.0
       API_SERVER_PORT: "8642"
+      HERMES_WRITE_SAFE_ROOT: /opt/data/memories
     command: ["gateway", "run"]
     volumes:
       - hermes_data:/opt/data
       - ./deploy/hermes/config.yaml:/opt/data/config.yaml:ro
       - ./deploy/hermes/SOUL.md:/opt/data/SOUL.md:ro
+      - ./deploy/hermes/entrypoint.sh:/opt/nix/entrypoint.sh:ro
+      - ./deploy/hermes/startup-boundary.py:/opt/nix/startup-boundary.py:ro
       - ./deploy/hermes/claim-agent.py:/opt/nix/claim-agent.py:ro
       - ./deploy/hermes/verify-paperclip-mcp.py:/opt/nix/verify-paperclip-mcp.py:ro
       - ./deploy/hermes/validate-tool-boundary.py:/opt/nix/validate-tool-boundary.py:ro
+      - ${HERMES_TELEGRAM_MODE_FILE:?Set HERMES_TELEGRAM_MODE_FILE to the root-owned external mode marker}:/run/nix/hermes-telegram-mode.env:ro
       - ${NIX_BRAIN_HOST_PATH:?Set NIX_BRAIN_HOST_PATH to the canonical nix-brain checkout}:/workspace/nix-brain:ro
     working_dir: /workspace
     networks:

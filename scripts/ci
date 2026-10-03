@@ -9,6 +9,7 @@ for shell_file in \
   scripts/backup-config \
   scripts/check-config \
   scripts/check-migrations \
+  scripts/transition-paperclip \
   scripts/configure-tailscale \
   scripts/configure-hermes \
   scripts/bootstrap-ceo \
@@ -24,17 +25,19 @@ for shell_file in \
   scripts/ci \
   tests/fixtures/backup-policy/age \
   tests/fixtures/backup-policy/docker \
+  tests/fixtures/paperclip-transition/docker \
   tests/smoke/foundation.sh \
   tests/smoke/backup-policy.sh \
   tests/smoke/backup-restore.sh \
   tests/smoke/config-backup.sh \
   tests/smoke/hermes-contract.sh \
+  tests/smoke/paperclip-transition.sh \
   tests/smoke/tailscale-serve-policy.sh; do
   bash -n "$shell_file"
 done
 
 if command -v shellcheck >/dev/null 2>&1; then
-  shellcheck deploy/postgres/10-paperclip.sh scripts/backup-config scripts/bootstrap-ceo scripts/check-config scripts/check-migrations scripts/configure-hermes scripts/configure-tailscale scripts/init-hermes-secrets scripts/init-secrets scripts/initialize-paperclip scripts/onboard-hermes-agent scripts/ops scripts/backup scripts/restore-config scripts/restore-smoke scripts/vps-preflight scripts/ci tests/fixtures/backup-policy/age tests/fixtures/backup-policy/docker tests/smoke/foundation.sh tests/smoke/backup-policy.sh tests/smoke/backup-restore.sh tests/smoke/config-backup.sh tests/smoke/hermes-contract.sh
+  shellcheck deploy/postgres/10-paperclip.sh scripts/backup-config scripts/bootstrap-ceo scripts/check-config scripts/check-migrations scripts/transition-paperclip scripts/configure-hermes scripts/configure-tailscale scripts/init-hermes-secrets scripts/init-secrets scripts/initialize-paperclip scripts/onboard-hermes-agent scripts/ops scripts/backup scripts/restore-config scripts/restore-smoke scripts/vps-preflight scripts/ci tests/fixtures/backup-policy/age tests/fixtures/backup-policy/docker tests/fixtures/paperclip-transition/docker tests/smoke/foundation.sh tests/smoke/backup-policy.sh tests/smoke/backup-restore.sh tests/smoke/config-backup.sh tests/smoke/hermes-contract.sh tests/smoke/paperclip-transition.sh
 elif [[ ${REQUIRE_SHELLCHECK:-0} == 1 ]]; then
   printf 'shellcheck is required but not installed\n' >&2
   exit 1
@@ -46,6 +49,7 @@ tests/smoke/tailscale-serve-policy.sh
 tests/smoke/foundation.sh
 tests/smoke/backup-policy.sh
 tests/smoke/config-backup.sh
+tests/smoke/paperclip-transition.sh
 PYTHONDONTWRITEBYTECODE=1 python3 tests/smoke/claim-agent.py
 
 if [[ ${RUN_DOCKER_SMOKE:-0} == 1 ]]; then

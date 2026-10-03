@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+state=${PAPERCLIP_TRANSITION_FIXTURE_STATE:?Set PAPERCLIP_TRANSITION_FIXTURE_STATE}
+printf '%s\n' "$*" >>"$state/commands.log"
+
+if [[ ${1:-} == compose ]]; then
+  shift
+  if [[ ${1:-} == --env-file ]]; then
+    shift 2
+  fi
+  case ${1:-} in
+    version)
+      printf 'Docker Compose version fixture\n'
+      ;;
+    config)
+      if [[ ${2:-} == --quiet ]]; then
+        exit 0
+      fi
+      cat <<'JSON'
+{"name":"nix-os-transition","services":{"paperclip":{"environment":{"PAPERCLIP_ALLOWED_HOSTNAMES":"paperclip"},"networks":{"app":null,"data":null,"agent":null}}},"networks":{"app":{"name":"nix-os-transition_app"},"data":{"name":"nix-os-transition_data","internal":true},"agent":{"name":"nix-os-transition_agent","internal":true}}}
+JSON
+      ;;
+    ps)
+      cat "$state/paperclip-id"
+      ;;
+    exec)
+      if [[ $* == *pg_isready* ]]; then
+        [[ ${PAPERCLIP_TRANSITION_FIXTURE_FAIL_MIGRATION:-0} != 1 ]]
+        exit
+      fi
+      if [[ $* == *psql* ]]; then
+        printf '211 t\n'
+        exit 0
+      fi
+      exit 1
+      ;;
+    up)
+      [[ "$*" == 'up -d --no-deps --force-recreate --wait paperclip' ]] || exit 1
+      printf 'paperclip-new\n' >"$state/paperclip-id"
+      count=$(cat "$state/recreate-count")
+      printf '%s\n' "$((count + 1))" >"$state/recreate-count"
+      ;;
+    *) exit 1 ;;
+  esac
+  exit 0
+fi
+
+if [[ ${1:-} == inspect && ${2:-} == --format ]]; then
+  format=${3:-}
+  id=${4:-}
+  case "$format" in
+    *Config.Env*)
+      [[ "$id" == paperclip-new ]] && printf 'match'
+      ;;
+    *NetworkSettings.Networks*)
+      if [[ "$id" == paperclip-new ]]; then
+        printf '%s\n' '{"nix-os-transition_app":{},"nix-os-transition_data":{},"nix-os-transition_agent":{}}'
+      else
+        printf '%s\n' '{"nix-os-transition_app":{},"nix-os-transition_data":{}}'
+      fi
+      ;;
+    *Mounts*)
+      printf '%s\n' '[{"Type":"volume","Name":"nix-os-transition_paperclip_data","Destination":"/paperclip","RW":true}]'
+      ;;
+    *) exit 1 ;;
+  esac
+  exit 0
+fi
+
+exit 1

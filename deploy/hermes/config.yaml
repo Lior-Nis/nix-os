@@ -10,14 +10,15 @@ gateway:
 # the broad hermes-* presets here: they include terminal, code, browser, and web
 # capabilities that can bypass the Paperclip MCP allowlist.
 platform_toolsets:
-  cli: [file, skills, memory, session_search, paperclip]
-  telegram: [file, skills, memory, session_search, paperclip]
-  api_server: [file, skills, memory, session_search, paperclip]
+  cli: [file, memory, session_search, paperclip]
+  telegram: [file, memory, session_search, paperclip]
+  api_server: [file, memory, session_search, paperclip]
 
 # Defense in depth if a future upstream resolver or preset changes. The
 # concrete resolved tool surface is regression-tested from the pinned image.
 agent:
   disabled_toolsets:
+    - skills
     - terminal
     - code_execution
     - browser

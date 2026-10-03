@@ -141,7 +141,7 @@ Keep root/public-IP recovery available. Review its tightening separately only af
 
 ## Google Drive setup (live interactive step)
 
-Run `rclone config` as the `nix` operator. Create remote `gdrive` using Lior's Google Drive account and an owned Google Desktop OAuth client ID; rclone's shared client ID is being retired during 2026. Complete browser OAuth interactively. The resulting rclone config is a runtime secret outside Git and may be recreated during recovery.
+Run `rclone config` as the `nix` operator. Create remote `gdrive` using Lior's Google Drive account, an owned Google Desktop OAuth client ID, and the least-privilege `drive.file` scope; rclone's shared client ID is being retired during 2026. Complete browser OAuth interactively only when the encrypted upload/download test is ready. Create the backup root through this client and configure its `root_folder_id`, so the client does not need visibility into unrelated Drive content. The resulting rclone config is a runtime secret outside Git. Escrow an age-encrypted copy separately from this Drive because the refresh token and OAuth client identity are required to regain access after host loss.
 
 Use only:
 
@@ -150,7 +150,7 @@ gdrive:Nix/backups/config/
 gdrive:Nix/backups/state/
 ```
 
-Only `.age` objects and checksum sidecars may be uploaded. Google Drive must never receive plaintext configuration, database dumps, or volume archives.
+Only `.age` objects and checksum sidecars may be uploaded. Google Drive must never receive plaintext configuration, database dumps, volume archives, or the rclone credential escrow. If older backup objects were created by a different OAuth client, download and verify them first, then re-upload through the narrowed client before revoking the old grant.
 
 ## Routine operations and upgrades
 
@@ -190,6 +190,7 @@ Update the deployment `.env` from the reviewed example:
 
 ```text
 HERMES_ENV_FILE=/etc/nix-os/hermes.env
+HERMES_TELEGRAM_MODE_FILE=/etc/nix-os/hermes-telegram-mode.env
 NIX_BRAIN_HOST_PATH=/opt/nix-brain
 ```
 
@@ -204,18 +205,24 @@ Replace both Telegram placeholders directly in the editor. Keep the generated `A
 
 ### 2. Deploy and authorize the provider
 
+Secret initialization also creates a root-owned mode-`0600` marker at `/etc/nix-os/hermes-telegram-mode.env`, initially containing `HERMES_TELEGRAM_MODE=disabled`. Marker changes fsync the new file and parent directory before reporting success. The Compose-mounted entrypoint first removes any stale profile-level Telegram credential/admission variables from `/opt/data/.env` with an atomic, fsync-durable rewrite, then clears the external bot token unless the marker explicitly says `live`; unsafe profile metadata or a missing, malformed, or unsafe marker fails closed. This keeps the root-owned external secret file as Telegram's only credential source even after restoring older profile state.
+
+The persistent marker applies to deploy, restart, upgrade, backup restart, rollback, and recovery. Keep it disabled while the existing bot is still polled by another Hermes gateway:
+
 ```sh
 sudo -E ./scripts/check-config "$PWD/.env"
 sudo -E ./scripts/check-migrations "$PWD/.env"
+sudo -E ./scripts/transition-paperclip "$PWD/.env"
 sudo -E docker compose --env-file "$PWD/.env" pull hermes
-sudo -E docker compose --env-file "$PWD/.env" up -d --wait postgres paperclip hermes
+sudo -E ./scripts/configure-hermes files-preflight "$PWD/.env"
+sudo -E docker compose --env-file "$PWD/.env" up -d --no-deps --wait hermes
+sudo -E docker compose --env-file "$PWD/.env" exec -T --user 10000:10000 hermes sh -ec 'test -z "${TELEGRAM_BOT_TOKEN:-}"'
 sudo -E ./scripts/configure-hermes auth "$PWD/.env"
-sudo -E ./scripts/configure-hermes install-skill "$PWD/.env"
 ```
 
-The tracked Paperclip runtime configuration adds only the isolated Docker service name `paperclip` to the upstream private-host allowlist; Compose policy and `scripts/initialize-paperclip` validate the setting. This is required for Hermes' internal URL, works with the existing Slice 0 instance file, and does not publish another listener. The auth command starts Hermes' supported OpenAI device-code flow for `openai-codex`. Lior completes the displayed browser authorization; the OAuth credential is stored under persistent `/opt/data`, not in Git or `hermes.env`. The selected model is `gpt-5.4`; change it only through reviewed config if the subscription does not offer it.
+The tracked Paperclip runtime configuration adds only the isolated Docker service name `paperclip` to the upstream private-host allowlist. On the existing Slice 0 deployment, `transition-paperclip` validates migrations and named-volume attachments, then recreates only Paperclip when it still lacks that hostname or the internal `agent` network; PostgreSQL, Hermes, unrelated services, and unrelated Docker networks are not targeted. It is a no-op after the topology is compliant. The persistent marker keeps Telegram inert even though `hermes.env` contains the migrated token. `files-preflight` explicitly empties known Telegram, Runs API, Paperclip, and provider credential variables before exercising disposable protected-file fixtures as uid/gid `10000:10000`.
 
-Confirm the bot answers Lior's `ping`. Do not proceed if Telegram reports a second polling consumer. From a different Telegram identity, send a message and verify it is silently ignored and causes no tool call; sanitize logs before recording evidence.
+Do not test the bot yet. The existing gateway remains its sole poller throughout pre-stage.
 
 ### 3. Create the approved project and onboard Chief
 
@@ -244,11 +251,33 @@ sudo -E ./scripts/onboard-hermes-agent claim "$PWD/.env"
 sudo -E ./scripts/configure-hermes verify "$PWD/.env"
 ```
 
-Before contacting the one-time claim endpoint, the claim command verifies the profile, ownership, writability, free space, and destination mode inside the Hermes container. It then claims, writes a prepared mode-`0600` temporary file, flushes it, atomically renames it to `/opt/data/.env`, flushes the directory, and verifies the resulting Paperclip identity. Only after those checks does it remove the pending marker and host-side claim state. It never prints the key or places it in a process argument. The command prints only company and agent IDs, restarts Hermes, and `verify` proves API auth, the exact restricted tool surface, provider auth, skill presence, and bounded Paperclip MCP identity without displaying credentials.
+Before contacting the one-time claim endpoint, the claim command verifies the profile, ownership, writability, free space, and destination mode inside the Hermes container. It then claims, writes a prepared mode-`0600` temporary file, flushes it, atomically renames it to `/opt/data/.env`, flushes the directory, and verifies the resulting Paperclip identity. Only after those checks does it remove the pending marker and host-side claim state. It never prints the key or places it in a process argument. The command prints only company and agent IDs, restarts Hermes, and `verify` proves API auth, the exact restricted tool/file surface, provider auth, pinned read-only grilling guidance, and bounded Paperclip MCP identity without displaying credentials.
 
 The one-time secret cannot be replayed. If Paperclip consumed it but no valid `/opt/data/.env` can be recovered, preserve the helper's pending marker and inspect the volume first. If the credential is genuinely lost, use supported Paperclip administration to revoke the orphaned agent key (or remove the orphaned agent), issue a new agent invite, and repeat the flow. Never retry the consumed secret or edit the Paperclip database.
 
-The verified Chief surface must be identical for `cli`, `telegram`, and `api_server`: `file`, `skills`, `memory`, `session_search`, and bounded `paperclip`. The runtime validator expands these labels and fails if terminal, process management, code execution, browser/web/connectors, delegation, cron, computer-use, an unexpected MCP operation, or any other tool appears. The nine allowed Paperclip operations remain the only Paperclip write path.
+The verified Chief surface must be identical for `cli`, `telegram`, and `api_server`: `file`, `memory`, `session_search`, and bounded `paperclip`. The runtime validator expands these labels and fails if mutable skill management, terminal, process management, code execution, browser/web/connectors, delegation, cron, computer-use, an unexpected MCP operation, or any other tool appears. A second pinned-runtime check proves `.env`/`auth.json` cannot be read or found by broad search, file writes/patches stay under `/opt/data/memories` even across symlinks, and the built-in `grill-me` guidance is readable but not writable. The nine allowed Paperclip operations remain the only Paperclip write path.
+
+### 4. Single-poller Telegram cutover
+
+Immediately before cutover, re-prove the VPS gateway is healthy and Telegram-disabled. Then stop the old gateway first, explicitly enable the external marker, and only afterward recreate the VPS Hermes service:
+
+```sh
+sudo -E docker compose --env-file "$PWD/.env" exec -T --user 10000:10000 hermes curl -fsS http://127.0.0.1:8642/health >/dev/null
+sudo -E docker compose --env-file "$PWD/.env" exec -T --user 10000:10000 hermes sh -ec 'test -z "${TELEGRAM_BOT_TOKEN:-}"'
+ssh pop 'systemctl --user disable --now hermes-gateway.service && ! systemctl --user is-active --quiet hermes-gateway.service && ! systemctl --user is-enabled --quiet hermes-gateway.service'
+sudo -E ./scripts/configure-hermes telegram-enable "$PWD/.env"
+sudo -E docker compose --env-file "$PWD/.env" up -d --no-deps --wait --force-recreate hermes
+```
+
+There must never be two active pollers. If the VPS Hermes health check, Telegram reply, or authorization check fails, stop the VPS Hermes container before restarting the old gateway:
+
+```sh
+sudo -E docker compose --env-file "$PWD/.env" stop hermes
+sudo -E ./scripts/configure-hermes telegram-disable "$PWD/.env"
+ssh pop 'systemctl --user enable --now hermes-gateway.service && systemctl --user is-active --quiet hermes-gateway.service && systemctl --user is-enabled --quiet hermes-gateway.service'
+```
+
+Keep `/etc/nix-os/hermes-telegram-mode.env` root-owned and mode `0600`; routine operations and recovery all obey it. The old host's unit must be both inactive and disabled before the VPS marker becomes live, so an old-host reboot cannot silently recreate a second poller. Only after that proof should the new bot answer Lior's `ping`. Do not proceed if Telegram reports a polling conflict. From a different Telegram identity, send a message and verify it is silently ignored and causes no tool call; sanitize logs before recording evidence.
 
 Inspect the agent in Paperclip and verify adapter type, URLs, issue session strategy, and responsible user. Confirm the Hermes Runs API has no host-published port:
 
@@ -259,7 +288,7 @@ sudo ss -lntup
 
 Public probes from outside the VPS must still show no Nix service on 80, 443, 3100, 5432, 8443, 8642, 9119, or 10000. Attribute any response to its actual owner: the known PDM `8443`, Hatch `10000`, unrelated port-80 workload, and recovery SSH exception are not Nix exposure and must not be changed by this deployment.
 
-### 4. Live Slice 1 acceptance
+### 5. Live Slice 1 acceptance
 
 Use the private Telegram conversation with Chief and verify each result in Paperclip:
 

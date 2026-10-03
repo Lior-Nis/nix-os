@@ -14,7 +14,9 @@ if [[ ${1:-} == compose ]]; then
   done
   case "$operation" in
     config)
-      if [[ " $* " == *' --images '* ]]; then
+      if [[ " $* " == *' --format json '* ]]; then
+        printf '%s\n' '{"services":{"hermes":{"image":"fixture-hermes@sha256:fixture"}}}'
+      elif [[ " $* " == *' --images '* ]]; then
         printf 'fixture-image@sha256:fixture\n'
       fi
       ;;
@@ -36,6 +38,9 @@ if [[ ${1:-} == volume && ${2:-} == inspect ]]; then
 fi
 
 if [[ ${1:-} == run ]]; then
+  if [[ " $* " == *' /opt/nix/startup-boundary.py --check-profile-only '* ]]; then
+    exit 0
+  fi
   backup_dir=''
   source_volume=''
   while (( $# > 0 )); do

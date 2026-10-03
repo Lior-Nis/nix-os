@@ -9,29 +9,75 @@ compose=(docker compose --env-file "$config_file")
 fail() { printf 'Hermes configuration error: %s\n' "$*" >&2; exit 1; }
 read_config() { grep -E "^${1}=" "$config_file" | tail -n 1 | cut -d= -f2- || true; }
 
+set_telegram_mode() {
+  local mode=$1 mode_file temporary
+  mode_file=$(read_config HERMES_TELEGRAM_MODE_FILE)
+  [[ "$mode_file" == /* ]] || fail "HERMES_TELEGRAM_MODE_FILE must be an absolute path"
+  [[ ! -L "$mode_file" ]] || fail "refusing to replace a symlinked Telegram mode marker"
+  if [[ ${NIX_ALLOW_TEST_CONFIG:-0} != 1 && $(id -u) != 0 ]]; then
+    fail "Telegram mode changes must run as root"
+  fi
+  install -d -m 0700 "$(dirname "$mode_file")"
+  temporary=$(mktemp "$(dirname "$mode_file")/.hermes-telegram-mode.XXXXXX")
+  trap 'rm -f -- "${temporary:-}"' RETURN
+  printf 'HERMES_TELEGRAM_MODE=%s\n' "$mode" >"$temporary"
+  chmod 0600 "$temporary"
+  python3 - "$temporary" <<'PY'
+import os
+import sys
+
+with open(sys.argv[1], "rb") as stream:
+    os.fsync(stream.fileno())
+PY
+  mv -f "$temporary" "$mode_file"
+  temporary=''
+  python3 - "$(dirname "$mode_file")" <<'PY'
+import os
+import sys
+
+fd = os.open(sys.argv[1], os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+try:
+    os.fsync(fd)
+finally:
+    os.close(fd)
+PY
+  printf 'Hermes Telegram mode is now %s; recreate only Hermes for it to take effect.\n' "$mode"
+}
+
 [[ -f "$config_file" ]] || fail "configuration file does not exist: $config_file"
 hermes_env=$(read_config HERMES_ENV_FILE)
 [[ -n "$hermes_env" && -f "$hermes_env" ]] || fail "HERMES_ENV_FILE is missing"
 
 case "$action" in
-  install-skill)
+  telegram-disable)
+    set_telegram_mode disabled
+    ;;
+  telegram-enable)
+    set_telegram_mode live
+    ;;
+  files-preflight)
     "$repo_root/scripts/check-config" "$config_file" >/dev/null
-    "${compose[@]}" exec -T hermes hermes skills install official/software-development/grill-me --yes
-    "${compose[@]}" exec -T hermes sh -ec 'test -f /opt/data/skills/grill-me/SKILL.md'
-    printf 'The official grill-me skill is installed in persistent Hermes state.\n'
+    "${compose[@]}" run --rm --no-deps --user 10000:10000 --entrypoint python3 \
+      -e API_SERVER_KEY= -e TELEGRAM_BOT_TOKEN= -e TELEGRAM_ALLOWED_USERS= \
+      -e PAPERCLIP_API_KEY= -e PAPERCLIP_AGENT_ID= -e PAPERCLIP_COMPANY_ID= -e PAPERCLIP_API_URL= \
+      -e OPENAI_API_KEY= -e ANTHROPIC_API_KEY= -e OPENROUTER_API_KEY= -e GOOGLE_API_KEY= \
+      -e GEMINI_API_KEY= -e XAI_API_KEY= -e DEEPSEEK_API_KEY= -e GROQ_API_KEY= \
+      -e TOGETHER_API_KEY= -e HF_TOKEN= -e HUGGINGFACE_TOKEN= hermes \
+      /opt/nix/validate-tool-boundary.py files-preflight >/dev/null
+    printf 'Hermes credential-free preflight and disposable file boundary passed.\n'
     ;;
   auth)
     "$repo_root/scripts/check-config" "$config_file" >/dev/null
     printf 'Complete the OpenAI device authorization in your browser. Tokens stay in the Hermes volume.\n'
-    "${compose[@]}" exec hermes hermes auth add openai-codex --type oauth --priority 0
-    "${compose[@]}" exec -T hermes hermes auth status openai-codex >/dev/null
+    "${compose[@]}" exec --user 10000:10000 hermes hermes auth add openai-codex --type oauth --priority 0
+    "${compose[@]}" exec -T --user 10000:10000 hermes hermes auth status openai-codex >/dev/null
     printf 'Hermes reports an openai-codex credential.\n'
     ;;
   verify)
     "$repo_root/scripts/check-config" "$config_file" >/dev/null
     api_key=$(grep -E '^API_SERVER_KEY=' "$hermes_env" | tail -n 1 | cut -d= -f2-)
     [[ -n "$api_key" ]] || fail "API_SERVER_KEY is missing"
-    "${compose[@]}" exec -T hermes curl -fsS http://127.0.0.1:8642/health >/dev/null
+    "${compose[@]}" exec -T --user 10000:10000 hermes curl -fsS http://127.0.0.1:8642/health >/dev/null
     status=$("${compose[@]}" exec -T paperclip curl -sS -o /dev/null -w '%{http_code}' http://hermes:8642/v1/capabilities)
     [[ "$status" == 401 ]] || fail "Hermes API did not reject an unauthenticated request (HTTP $status)"
     printf 'header = "Authorization: Bearer %s"\n' "$api_key" \
@@ -39,16 +85,16 @@ case "$action" in
     toolsets_json=$(printf 'header = "Authorization: Bearer %s"\n' "$api_key" \
       | "${compose[@]}" exec -T paperclip curl -fsS -K - http://hermes:8642/v1/toolsets)
     printf '%s' "$toolsets_json" \
-      | "${compose[@]}" exec -T hermes python3 /opt/nix/validate-tool-boundary.py api >/dev/null
-    "${compose[@]}" exec -T hermes python3 /opt/nix/validate-tool-boundary.py runtime >/dev/null
-    "${compose[@]}" exec -T hermes curl -fsS http://paperclip:3100/api/health >/dev/null
-    "${compose[@]}" exec -T hermes hermes auth status openai-codex >/dev/null
-    "${compose[@]}" exec -T hermes sh -ec 'test -f /opt/data/skills/grill-me/SKILL.md'
-    "${compose[@]}" exec -T hermes python3 /opt/nix/verify-paperclip-mcp.py >/dev/null
-    printf 'Hermes API auth, restricted tool boundary, bounded Paperclip MCP, provider auth, and grill-me skill are ready.\n'
+      | "${compose[@]}" exec -T --user 10000:10000 hermes python3 /opt/nix/validate-tool-boundary.py api >/dev/null
+    "${compose[@]}" exec -T --user 10000:10000 hermes python3 /opt/nix/validate-tool-boundary.py runtime >/dev/null
+    "${compose[@]}" exec -T --user 10000:10000 hermes python3 /opt/nix/validate-tool-boundary.py files >/dev/null
+    "${compose[@]}" exec -T --user 10000:10000 hermes curl -fsS http://paperclip:3100/api/health >/dev/null
+    "${compose[@]}" exec -T --user 10000:10000 hermes hermes auth status openai-codex >/dev/null
+    "${compose[@]}" exec -T --user 10000:10000 hermes python3 /opt/nix/verify-paperclip-mcp.py >/dev/null
+    printf 'Hermes API auth, restricted tool/file boundary, bounded Paperclip MCP, provider auth, and read-only grilling guidance are ready.\n'
     ;;
   *)
-    printf 'Usage: %s {install-skill|auth|verify} [/absolute/path/to/deployment.env]\n' "$0" >&2
+    printf 'Usage: %s {telegram-disable|telegram-enable|files-preflight|auth|verify} [/absolute/path/to/deployment.env]\n' "$0" >&2
     exit 2
     ;;
 esac

@@ -19,9 +19,10 @@ case "$action" in
     "$repo_root/scripts/check-migrations" "$config_file"
     "$repo_root/scripts/initialize-paperclip" "$config_file"
     "$repo_root/scripts/check-migrations" "$config_file"
+    "$repo_root/scripts/transition-paperclip" "$config_file"
     "${compose[@]}" up -d --wait paperclip hermes
     "${compose[@]}" exec -T paperclip curl -fsS http://127.0.0.1:3100/api/health
-    "${compose[@]}" exec -T hermes curl -fsS http://127.0.0.1:8642/health >/dev/null
+    "${compose[@]}" exec -T --user 10000:10000 hermes curl -fsS http://127.0.0.1:8642/health >/dev/null
     printf '\nPaperclip and Hermes are healthy. Configure Tailscale Serve before checking tailnet health.\n'
     ;;
   upgrade)

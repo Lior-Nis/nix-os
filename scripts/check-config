@@ -43,6 +43,14 @@ private_mode() {
   (( (8#$mode & 077) == 0 )) || fail "$secret_file must not be group/world accessible (current mode $mode)"
 }
 
+file_owner_uid() {
+  if stat -c '%u' "$1" >/dev/null 2>&1; then
+    stat -c '%u' "$1"
+  else
+    stat -f '%u' "$1"
+  fi
+}
+
 command -v docker >/dev/null 2>&1 || fail "docker is required"
 docker compose version >/dev/null 2>&1 || fail "Docker Compose v2 is required"
 [[ -f "$config_file" ]] || fail "$config_file does not exist; copy .env.example and replace placeholders"
@@ -57,6 +65,7 @@ host_port=$(require_config PAPERCLIP_HOST_PORT)
 postgres_env=$(require_config POSTGRES_ENV_FILE)
 paperclip_env=$(require_config PAPERCLIP_ENV_FILE)
 hermes_env=$(require_config HERMES_ENV_FILE)
+hermes_mode_file=$(require_config HERMES_TELEGRAM_MODE_FILE)
 nix_brain_path=$(require_config NIX_BRAIN_HOST_PATH)
 signup_disabled=$(require_config PAPERCLIP_AUTH_DISABLE_SIGN_UP)
 
@@ -78,6 +87,24 @@ for secret_file in "$postgres_env" "$paperclip_env" "$hermes_env"; do
   [[ -f "$secret_file" ]] || fail "secret file does not exist: $secret_file"
   private_mode "$secret_file"
 done
+
+[[ "$hermes_mode_file" == /* ]] || fail "HERMES_TELEGRAM_MODE_FILE must be absolute"
+[[ -f "$hermes_mode_file" && ! -L "$hermes_mode_file" ]] || fail "Hermes Telegram mode marker is missing or unsafe: $hermes_mode_file"
+private_mode "$hermes_mode_file"
+if hermes_mode_permissions=$(stat -c '%a' "$hermes_mode_file" 2>/dev/null); then
+  :
+else
+  hermes_mode_permissions=$(stat -f '%Lp' "$hermes_mode_file")
+fi
+[[ "$hermes_mode_permissions" == 600 ]] \
+  || fail "Hermes Telegram mode marker must be mode 0600 (current mode $hermes_mode_permissions)"
+[[ $(wc -l <"$hermes_mode_file" | tr -d ' ') == 1 ]] \
+  || fail "Hermes Telegram mode marker must contain exactly one line"
+hermes_mode=$(grep -E '^HERMES_TELEGRAM_MODE=(disabled|live)$' "$hermes_mode_file" || true)
+[[ -n "$hermes_mode" ]] || fail "Hermes Telegram mode marker must be disabled or live"
+if [[ ${NIX_ALLOW_TEST_CONFIG:-0} != 1 ]]; then
+  [[ $(file_owner_uid "$hermes_mode_file") == 0 ]] || fail "Hermes Telegram mode marker must be owned by root"
+fi
 
 [[ "$nix_brain_path" == /* ]] || fail "NIX_BRAIN_HOST_PATH must be absolute"
 [[ -d "$nix_brain_path" ]] || fail "NIX_BRAIN_HOST_PATH does not exist: $nix_brain_path"
