@@ -14,11 +14,11 @@ Run the read-only check:
 
 ## Access and exposure contract
 
-- Public Internet: emergency SSH only; no Paperclip, PostgreSQL, or Nix listeners on 80, 443, 3100, 5432, 8443, or 10000.
+- Public Internet: emergency SSH only for Nix; no Paperclip, PostgreSQL, or Nix listener is public. Independently owned cohosted services may have their own exposure policy.
 - Tailnet: ordinary SSH to `nix-os` and Paperclip HTTPS through Tailscale Serve.
 - Host loopback: Paperclip at `127.0.0.1:${PAPERCLIP_HOST_PORT:-3100}`.
 - Compose internal networks: PostgreSQL alone with Paperclip on `data`; Paperclip and Hermes alone on `agent`.
-- Never run `tailscale funnel`.
+- Never run `tailscale funnel` for Paperclip or the Nix-owned `:443` endpoint.
 
 Keep the current `root@<VPS_PUBLIC_IP>` SSH recovery path until the `nix` path is proven. Resolve the real address from Lior's local SSH configuration; do not publish it in repository documentation. Do not change sshd or firewall recovery policy during this amendment.
 
@@ -95,7 +95,7 @@ Keep root/public-IP recovery available. Review its tightening separately only af
    CONFIG_FILE="$PWD/.env" ./scripts/configure-tailscale "$PWD/.env"
    ```
 
-   Run this as `nix`. Nix owns the complete Serve/Funnel state on this dedicated node; unrelated Tailscale web-serving handlers are not supported. The script uses sudo only to set hostname `nix-os` and grant CLI operator status to `nix`. It then inspects `tailscale serve status --json`, resets the entire Nix-owned state with the supported `tailscale serve reset`, proves the state is empty, applies persistent HTTPS `:443` root proxying to `http://127.0.0.1:3100`, and validates the entire final JSON. Any `AllowFunnel` entry (including false), foreground session, Tailscale Service, extra listener/path/handler, or different proxy target fails. Re-run the same script on a replacement VPS; Serve state is reconstructible and is not backed up.
+   Run this as `nix`. Nix owns only HTTPS `:443` at path `/`; PDM on tailnet port `8443` and Hatch on Funnel port `10000` are independently owned examples of valid cohosted state. The script uses sudo only to set hostname `nix-os` and grant CLI operator status to `nix`. It inspects `tailscale serve status --json`, applies the persistent root handler in place with `--https=443 --set-path=/`, verifies the exact Paperclip target and rejects any Funnel entry for that endpoint (including a persisted false value), then proves all unrelated parsed state is structurally unchanged. It never runs `tailscale serve reset`. Re-run the same script on a replacement VPS; the Nix handler is reconstructible and is not backed up.
 
 6. Verify actual exposure from both contexts:
 
@@ -114,19 +114,17 @@ Keep root/public-IP recovery available. Review its tightening separately only af
    nmap -Pn -p 80,443,3100,5432,8443,10000 <VPS_PUBLIC_IP>
    ```
 
-   Every listed port must report closed or filtered. This is live evidence; Compose inspection is not a substitute. Also test the Tailscale FQDN from that non-tailnet machine on every Funnel-supported HTTPS port:
+   Ports `443`, `3100`, and `5432` must not expose Nix publicly. Attribute every response on another listed port to its actual owner and verify it is not Paperclip; Compose inspection is not a substitute. Prove specifically that Paperclip's Tailscale endpoint is not public:
 
    ```sh
-   for port in 443 8443 10000; do
-     if curl --silent --show-error --connect-timeout 5 \
-       "https://nix-os.<tailnet-name>.ts.net:${port}/" >/dev/null; then
-       printf 'unexpected public Tailscale endpoint on port %s\n' "$port" >&2
-       exit 1
-     fi
-   done
+   if curl --silent --show-error --connect-timeout 5 \
+     "https://nix-os.<tailnet-name>.ts.net:443/" >/dev/null; then
+     printf '%s\n' 'unexpected public Paperclip Tailscale endpoint on port 443' >&2
+     exit 1
+   fi
    ```
 
-   Failure to resolve or connect is expected outside the tailnet. From a tailnet device, confirm only normal HTTPS `:443` works, the certificate hostname matches, and ports 8443/10000 have no Serve handler. Also verify `ssh nix@nix-os`.
+   Failure to resolve or connect on `443` is expected outside the tailnet. From a tailnet device, confirm Paperclip works only through normal HTTPS `:443` and the certificate hostname matches. Do not alter or use responses on `8443`/`10000` as Paperclip evidence; verify those independently owned services remain unchanged. Also verify `ssh nix@nix-os`.
 
 7. Bootstrap in the browser using Paperclip's supported private-instance path:
 
@@ -257,7 +255,7 @@ sudo -E docker compose --env-file "$PWD/.env" ps
 sudo ss -lntup
 ```
 
-Public probes from outside the VPS must still show no Nix service on 80, 443, 3100, 5432, 8443, 8642, 9119, or 10000. The existing unrelated port-80 workload and recovery SSH exception remain documented Slice 0 facts.
+Public probes from outside the VPS must still show no Nix service on 80, 443, 3100, 5432, 8443, 8642, 9119, or 10000. Attribute any response to its actual owner: the known PDM `8443`, Hatch `10000`, unrelated port-80 workload, and recovery SSH exception are not Nix exposure and must not be changed by this deployment.
 
 ### 4. Live Slice 1 acceptance
 

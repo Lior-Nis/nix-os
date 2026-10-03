@@ -1,0 +1,22 @@
+{
+  "TCP": {
+    "443": {"HTTPS": true},
+    "8443": {"HTTPS": true},
+    "10000": {"HTTPS": true}
+  },
+  "Web": {
+    "nix-os.tail1234.ts.net:443": {
+      "Handlers": {
+        "/": {"Proxy": "http://127.0.0.1:3999"},
+        "/unrelated": {"Proxy": "http://127.0.0.1:7777"}
+      }
+    },
+    "nix-os.tail1234.ts.net:8443": {
+      "Handlers": {"/": {"Proxy": "http://127.0.0.1:8080"}}
+    },
+    "nix-os.tail1234.ts.net:10000": {
+      "Handlers": {"/": {"Proxy": "http://127.0.0.1:8321"}}
+    }
+  },
+  "AllowFunnel": {"nix-os.tail1234.ts.net:10000": true}
+}

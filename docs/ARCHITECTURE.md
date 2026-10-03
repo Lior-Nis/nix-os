@@ -147,7 +147,7 @@ Approval is kept as close as possible to the actual side effect. A vague earlier
 Per [ADR 0001](decisions/0001-single-vps-compose.md), V0 runs on one Hostinger Linux VPS using Docker Compose. [ADR 0005](decisions/0005-tailnet-private-ingress.md) supersedes the unshipped public-Caddy design.
 
 - Tailscale runs on the host. Its machine name is `nix-os`; MagicDNS supplies the actual `nix-os.<tailnet>.ts.net` name.
-- Nix owns the dedicated node's complete Tailscale Serve/Funnel configuration. Configuration resets prior state and then permits exactly tailnet HTTPS `:443` at `/` to the Paperclip loopback target; `AllowFunnel`, foreground sessions, Services, extra ports, paths, and handlers are rejected.
+- Nix owns only the node's HTTPS `:443` root handler for Paperclip. Configuration updates that handler in place, requires it to proxy to the Paperclip loopback target, and rejects Funnel for that endpoint. Other services may own other ports, paths, foreground sessions, Services, or Funnel routes; Nix preserves and does not validate their application policy.
 - Paperclip runs in `authenticated/private` mode. Tailnet membership limits reachability, while Paperclip login remains mandatory.
 - Paperclip listens on `0.0.0.0:3100` inside its isolated container namespace so Docker forwarding works. Docker publishes that container port only on VPS host `127.0.0.1`; it is not directly reachable through the public or tailnet host interfaces. Tailscale Serve is the intentional tailnet-to-loopback path.
 - Paperclip has a non-internal Compose network for required outbound access and a separate internal data network; neither publishes ingress.

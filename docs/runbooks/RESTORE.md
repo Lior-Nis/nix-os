@@ -7,7 +7,7 @@
 | Git repository | Compose, scripts, tests, and redacted documentation | exact reviewed Git commit |
 | Encrypted configuration pack | `.env`, `postgres.env`, `paperclip.env`, and `hermes.env` | `gdrive:Nix/backups/config/` |
 | Encrypted data backup | PostgreSQL, complete `/paperclip`, and complete Hermes `/opt/data` state | `gdrive:Nix/backups/state/` |
-| Tailscale Serve state | hostname and Serve rule | replaceable from `scripts/configure-tailscale`; not backed up |
+| Nix-owned Tailscale Serve state | hostname and Paperclip `:443/` handler | replaceable from `scripts/configure-tailscale`; unrelated cohosted routes are preserved and remain separately owned |
 | Tailscale/rclone auth | external platform credentials | reauthenticate; never Git or data backup |
 
 The age private identity must be held off the VPS. Caddy/TLS state does not exist; Tailscale manages tailnet certificates.
@@ -149,7 +149,7 @@ Only after the isolated proof passes:
    Repeat the command with `<project>_hermes_data:/target` and `/backup/hermes-data.tar.gz`. The `find` deletion is safe here only because the procedure has already proved these are newly created, isolated restore volumes; it removes image-seeded defaults before exact archive restoration.
 
 6. Start PostgreSQL, restore `postgres.dump` with `pg_restore --clean --if-exists --no-owner --no-privileges`, run `scripts/check-migrations`, then start Paperclip and Hermes.
-7. Run `scripts/configure-tailscale` to reconstruct the node name and Serve rule. Verify tailnet health and public non-exposure, including that Hermes ports 8642 and 9119 are not host-published.
+7. Run `scripts/configure-tailscale` to reconstruct the node name and Nix-owned Paperclip handler without changing unrelated routes. Verify tailnet health and Paperclip public non-exposure, including that Hermes ports 8642 and 9119 are not host-published.
 8. Run `scripts/configure-hermes verify`, then repeat CEO/company/issue/attachment/secret and Chief Telegram/memory/Paperclip checks. Securely remove decrypted temporary files. Never restore over running production volumes.
 
 Targets remain RPO <= 24 hours and manual RTO <= 8 hours. Schedule daily state backups, config packs after changes, and a monthly downloaded-off-host restore.

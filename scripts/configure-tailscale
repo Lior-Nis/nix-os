@@ -56,25 +56,23 @@ curl --fail --silent --show-error "http://127.0.0.1:${host_port}/api/health" >/d
 state_tmp_dir=$(mktemp -d /tmp/nix-os-tailscale-state.XXXXXX)
 target="http://127.0.0.1:${host_port}"
 
-# Nix owns the complete Serve/Funnel configuration on this dedicated node.
-# Inspect it, reset it through the supported CLI, prove the reset is empty,
-# and then install only the desired background route. This removes persisted
-# Funnel state and makes repeat runs converge on the same complete config.
+# Nix owns only the node's HTTPS 443 root handler. Configure that exact path
+# through the supported CLI; do not reset the node because unrelated services
+# may own other ports, paths, foreground sessions, Services, or Funnel routes.
 tailscale serve status --json >"$state_tmp_dir/before.json"
 "$repo_root/scripts/check-tailscale-serve-state" --expect inspect "$state_tmp_dir/before.json"
-printf '%s\n' 'Resetting Nix-owned Tailscale Serve/Funnel state on the dedicated nix-os node.'
-tailscale serve reset
-tailscale serve status --json >"$state_tmp_dir/reset.json"
-"$repo_root/scripts/check-tailscale-serve-state" --expect empty "$state_tmp_dir/reset.json"
 
 # --bg persists across daemon and host restarts. Explicit port 443 and root
-# path make the intended state unambiguous.
-tailscale serve --bg --yes --https=443 "$target"
+# path make the Nix-owned endpoint unambiguous while preserving other state.
+tailscale serve --bg --yes --https=443 --set-path=/ "$target"
 tailscale serve status --json >"$state_tmp_dir/final.json"
 "$repo_root/scripts/check-tailscale-serve-state" \
   --expect paperclip --fqdn "$fqdn" --target "$target" "$state_tmp_dir/final.json"
+"$repo_root/scripts/check-tailscale-serve-state" \
+  --expect preserved --fqdn "$fqdn" --before "$state_tmp_dir/before.json" \
+  "$state_tmp_dir/final.json"
 
 curl --fail --silent --show-error "https://${fqdn}/api/health" >/dev/null \
   || fail "Paperclip is not healthy through Tailscale Serve"
 
-printf 'Tailscale Serve is configured exclusively for https://%s:443/ -> %s.\n' "$fqdn" "$target"
+printf 'Nix-owned Tailscale Serve route is https://%s:443/ -> %s; unrelated routes were preserved.\n' "$fqdn" "$target"
