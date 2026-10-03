@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Validate the complete legacy JSON emitted by `tailscale serve status --json`."""
+"""Validate Nix's endpoint in legacy `tailscale serve status --json` output."""
 
 import argparse
+import copy
 import json
 import sys
 from pathlib import Path
@@ -13,9 +14,14 @@ def fail(message: str) -> None:
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--expect", choices=("inspect", "empty", "paperclip"), required=True)
+parser.add_argument(
+    "--expect",
+    choices=("inspect", "empty", "preflight", "paperclip", "preserved"),
+    required=True,
+)
 parser.add_argument("--fqdn")
 parser.add_argument("--target")
+parser.add_argument("--before", type=Path)
 parser.add_argument("status_json", type=Path)
 args = parser.parse_args()
 
@@ -37,27 +43,142 @@ if args.expect == "empty":
     print("Tailscale Serve/Funnel state is empty after reset.")
     raise SystemExit(0)
 
-if not args.fqdn or not args.target:
-    fail("--fqdn and --target are required for the Paperclip policy")
+if not args.fqdn:
+    fail("--fqdn is required for the Paperclip and preservation policies")
 
 expected_host_port = f"{args.fqdn}:443"
-expected_tcp = {"443": {"HTTPS": True}}
-expected_web = {
-    expected_host_port: {
-        "Handlers": {
-            "/": {"Proxy": args.target},
-        }
-    }
-}
 
-# An exact key set intentionally rejects AllowFunnel even when its value is
-# false, foreground sessions, Tailscale Services, and future handler surfaces
-# until they are reviewed explicitly.
-if set(state) != {"TCP", "Web"}:
-    fail("only top-level TCP and Web configuration is permitted")
-if state["TCP"] != expected_tcp:
-    fail("only tailnet HTTPS on port 443 is permitted")
-if state["Web"] != expected_web:
-    fail("only the root Paperclip proxy handler for the expected FQDN is permitted")
 
-print(f"Verified exclusive tailnet Serve route: https://{args.fqdn}:443/ -> {args.target}.")
+def has_nix_funnel_entry(value: object) -> bool:
+    if isinstance(value, dict):
+        candidate = value.get("AllowFunnel")
+        if isinstance(candidate, dict) and expected_host_port in candidate:
+            return True
+        return any(has_nix_funnel_entry(child) for child in value.values())
+    if isinstance(value, list):
+        return any(has_nix_funnel_entry(child) for child in value)
+    return False
+
+
+def foreground_claim(value: object) -> str | None:
+    """Find a foreground session that competes for Nix's listener or web host."""
+    if isinstance(value, dict):
+        tcp = value.get("TCP")
+        if isinstance(tcp, dict) and "443" in tcp:
+            return "TCP port 443"
+        web = value.get("Web")
+        if isinstance(web, dict) and expected_host_port in web:
+            return f"Web host {expected_host_port}"
+        for child in value.values():
+            claim = foreground_claim(child)
+            if claim:
+                return claim
+    elif isinstance(value, list):
+        for child in value:
+            claim = foreground_claim(child)
+            if claim:
+                return claim
+    return None
+
+
+if args.expect == "preflight":
+    tcp = state.get("TCP")
+    if tcp is not None and not isinstance(tcp, dict):
+        fail("TCP must be a mapping when present")
+    if isinstance(tcp, dict) and "443" in tcp and tcp["443"] != {"HTTPS": True}:
+        fail("TCP port 443 is already claimed by a conflicting listener")
+
+    web = state.get("Web")
+    if web is not None and not isinstance(web, dict):
+        fail("Web must be a mapping when present")
+    host = web.get(expected_host_port) if isinstance(web, dict) else None
+    if host is not None and not isinstance(host, dict):
+        fail(f"Web host {expected_host_port} must be a mapping when present")
+    handlers = host.get("Handlers") if isinstance(host, dict) else None
+    if handlers is not None and not isinstance(handlers, dict):
+        fail(f"Web host {expected_host_port} Handlers must be a mapping when present")
+
+    allow_funnel = state.get("AllowFunnel")
+    if allow_funnel is not None and not isinstance(allow_funnel, dict):
+        fail("AllowFunnel must be a mapping when present")
+    foreground = state.get("Foreground")
+    if foreground is not None and not isinstance(foreground, (dict, list)):
+        fail("Foreground must be a mapping or list when present")
+
+    claim = foreground_claim(foreground)
+    if claim:
+        fail(f"a foreground Serve session already claims Nix-owned {claim}")
+    listener = "existing HTTPS listener" if isinstance(tcp, dict) and "443" in tcp else "free TCP port"
+    print(f"Tailscale preflight passed for {expected_host_port}: {listener}; no competing foreground state.")
+    raise SystemExit(0)
+
+
+def without_nix_endpoint(value: dict) -> dict:
+    """Remove exactly Nix's TCP listener, root handler, and endpoint Funnel key."""
+    result = copy.deepcopy(value)
+
+    tcp = result.get("TCP")
+    if isinstance(tcp, dict):
+        tcp.pop("443", None)
+        if not tcp:
+            result.pop("TCP", None)
+
+    web = result.get("Web")
+    if isinstance(web, dict):
+        host = web.get(expected_host_port)
+        if isinstance(host, dict):
+            handlers = host.get("Handlers")
+            if isinstance(handlers, dict):
+                handlers.pop("/", None)
+                if not handlers:
+                    host.pop("Handlers", None)
+            if not host:
+                web.pop(expected_host_port, None)
+        if not web:
+            result.pop("Web", None)
+
+    allow_funnel = result.get("AllowFunnel")
+    if isinstance(allow_funnel, dict):
+        allow_funnel.pop(expected_host_port, None)
+        if not allow_funnel:
+            result.pop("AllowFunnel", None)
+
+    return result
+
+
+if args.expect == "preserved":
+    if args.before is None:
+        fail("--before is required for the preservation policy")
+    try:
+        before = json.loads(args.before.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        fail(f"cannot read valid before JSON: {error}")
+    if not isinstance(before, dict):
+        fail("before status must be a JSON object")
+    if without_nix_endpoint(before) != without_nix_endpoint(state):
+        fail("configuration outside Nix's TCP 443 listener, HTTPS root handler, and Funnel key changed")
+    print("Verified unrelated Tailscale Serve/Funnel configuration was preserved.")
+    raise SystemExit(0)
+
+if not args.target:
+    fail("--target is required for the Paperclip policy")
+
+tcp = state.get("TCP")
+if not isinstance(tcp, dict) or tcp.get("443") != {"HTTPS": True}:
+    fail("the Nix-owned port 443 listener must be HTTPS")
+
+web = state.get("Web")
+host = web.get(expected_host_port) if isinstance(web, dict) else None
+handlers = host.get("Handlers") if isinstance(host, dict) else None
+if not isinstance(handlers, dict) or handlers.get("/") != {"Proxy": args.target}:
+    fail("the Nix-owned root handler does not proxy to the expected Paperclip target")
+
+allow_funnel = state.get("AllowFunnel")
+if allow_funnel is not None and not isinstance(allow_funnel, dict):
+    fail("AllowFunnel must be a mapping when present")
+
+
+if has_nix_funnel_entry(state):
+    fail("the Nix-owned Paperclip endpoint must have no Funnel entry")
+
+print(f"Verified tailnet-only Paperclip route: https://{args.fqdn}:443/ -> {args.target}.")

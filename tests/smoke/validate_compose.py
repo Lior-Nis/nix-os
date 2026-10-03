@@ -85,9 +85,17 @@ require("RUN_DOCKER_SMOKE=1 ./scripts/ci" in workflow, "CI recovery job must run
 tailscale_script = (repo_root / "scripts/configure-tailscale").read_text()
 require("tailscale set --hostname=nix-os" in tailscale_script, "Tailscale machine naming is not reproducible")
 require("tailscale set --operator=nix" in tailscale_script, "Tailscale operator user is not configured")
-require("tailscale serve reset" in tailscale_script, "stale Tailscale web-serving state is not reset")
-require("tailscale serve status --json" in tailscale_script, "complete Tailscale state is not inspected")
-require("tailscale serve --bg --yes --https=443" in tailscale_script, "exclusive HTTPS Serve route is not explicit")
+require("tailscale serve reset" not in tailscale_script, "Nix must not reset unrelated Tailscale routes")
+require("tailscale serve status --json" in tailscale_script, "Tailscale state is not inspected")
+require("tailscale serve --bg --yes --https=443 --set-path=/" in tailscale_script, "Nix-owned HTTPS root route is not explicit")
+require("--expect preflight" in tailscale_script, "Tailscale collision preflight is not enforced")
+require(
+    tailscale_script.index("--expect preflight")
+    < tailscale_script.index("tailscale serve --bg --yes --https=443 --set-path=/"),
+    "Tailscale collision preflight must run before mutation",
+)
+require("--expect preserved" in tailscale_script, "unrelated Tailscale route preservation is not verified")
+require("/var/lib/nix-os/tailscale-failures" in tailscale_script, "private Tailscale failure evidence is not retained")
 require("check-tailscale-serve-state" in tailscale_script, "final Tailscale state policy is not enforced")
 
 paperclip_environment = services["paperclip"].get("environment", {})
