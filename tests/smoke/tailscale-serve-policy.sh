@@ -51,6 +51,9 @@ done
 
 "$validator" --expect preserved --fqdn "$fqdn" \
   --before "$fixtures/coexistence-before.json" "$fixtures/coexistence-after.json" >/dev/null
+"$validator" --expect preserved --fqdn "$fqdn" \
+  --before "$fixtures/coexistence-before-owned-funnel.json" \
+  "$fixtures/coexistence-after.json" >/dev/null
 
 for clobbered_fixture in coexistence-clobbered coexistence-modified-handler; do
   if "$validator" --expect preserved --fqdn "$fqdn" \
