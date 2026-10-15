@@ -172,6 +172,14 @@ Only after the isolated proof passes:
 
 6. Start PostgreSQL, restore `postgres.dump` with `pg_restore --clean --if-exists --no-owner --no-privileges`, run `scripts/check-migrations`, then start Paperclip and Hermes.
 7. Run `scripts/configure-tailscale` to reconstruct the node name and Nix-owned Paperclip handler without changing unrelated routes. Verify tailnet health and Paperclip public non-exposure, including that Hermes ports 8642 and 9119 are not host-published.
-8. Run `scripts/configure-hermes verify` while Telegram remains disabled, then repeat CEO/company/issue/attachment/secret and Chief memory/Paperclip checks. In Paperclip, verify Chief is the only root CEO and the retained bootstrap manager is paused, credentialless, `general`, and reports to Chief; do not delete it on the pinned release. Only after proving the previous poller is stopped, run `scripts/configure-hermes telegram-enable` and force-recreate only Hermes. On rollback, disable the marker before starting another poller. Securely remove decrypted temporary files. Never restore over running production volumes.
+8. Run `scripts/configure-hermes verify` while Telegram remains disabled, then repeat CEO/company/issue/attachment/secret and Chief memory/Paperclip checks. In Paperclip, verify Chief is the only root CEO and the retained bootstrap manager is paused, credentialless, `general`, and reports to Chief; do not delete it on the pinned release. Only after proving the previous poller is stopped, run `scripts/configure-hermes telegram-enable`, force-recreate only Hermes, and immediately run the full verifier again:
+
+   ```sh
+   sudo -E ./scripts/configure-hermes telegram-enable "$PWD/.env"
+   sudo -E docker compose --env-file "$PWD/.env" up -d --no-deps --wait --force-recreate hermes
+   sudo -E ./scripts/configure-hermes verify "$PWD/.env"
+   ```
+
+   On rollback, stop Hermes, disable the marker, force-recreate only Hermes, and run `scripts/configure-hermes verify-processes` before starting another poller. If recreation or verification fails, stop Hermes again and leave every other poller disabled until the failure is diagnosed. Replacing the individually bind-mounted marker without recreating the container is not a durable rollback. Securely remove decrypted temporary files. Never restore over running production volumes.
 
 Targets remain RPO <= 24 hours and manual RTO <= 8 hours. Schedule daily state backups, config packs after changes, and a monthly downloaded-off-host restore.

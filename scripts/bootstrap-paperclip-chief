@@ -9,6 +9,7 @@ token before exiting.  It never prints or persists the bearer token.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import pathlib
@@ -36,6 +37,13 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 class BootstrapError(RuntimeError):
     pass
+
+
+class OperatorCommandError(BootstrapError):
+    def __init__(self, label: str, returncode: int):
+        self.label = label
+        self.returncode = returncode
+        super().__init__(f"{label} operator command failed (exit {returncode})")
 
 
 def redact_request_path(path: str) -> str:
@@ -133,7 +141,7 @@ def run_operator_command(command: list[str], *, input_text: str | None = None, l
     except OSError:
         raise BootstrapError(f"{label} could not be started") from None
     if result.returncode != 0:
-        raise BootstrapError(f"{label} failed (exit {result.returncode}); inspect the service logs")
+        raise OperatorCommandError(label, result.returncode)
     return result.stdout
 
 
@@ -164,6 +172,92 @@ def claim_helper(config_path: pathlib.Path, action: str, state: dict[str, Any] |
     except json.JSONDecodeError:
         raise BootstrapError(f"Hermes claim {action} returned invalid JSON") from None
     return require_dict(parsed, f"Hermes claim {action} result")
+
+
+def mounted_claim_helper_hash(config_path: pathlib.Path) -> str:
+    output = run_operator_command(
+        compose_command(
+            config_path,
+            "exec",
+            "-T",
+            "--user",
+            "10000:10000",
+            "hermes",
+            "python3",
+            "-c",
+            (
+                "import hashlib,sys; "
+                "print(hashlib.sha256(open(sys.argv[1], 'rb').read()).hexdigest())"
+            ),
+            "/opt/nix/claim-agent.py",
+        ),
+        label="Hermes mounted claim-helper fingerprint",
+    ).strip()
+    if not re.fullmatch(r"[0-9a-f]{64}", output):
+        raise BootstrapError("Hermes mounted claim helper returned an invalid fingerprint")
+    return output
+
+
+def require_disabled_telegram_marker(config_path: pathlib.Path) -> None:
+    marker_path = pathlib.Path(read_config(config_path, "HERMES_TELEGRAM_MODE_FILE"))
+    if not marker_path.is_absolute() or marker_path.is_symlink() or not marker_path.is_file():
+        raise BootstrapError("Hermes Telegram mode marker is missing or unsafe; refusing helper refresh")
+    metadata = marker_path.stat()
+    if metadata.st_uid != os.geteuid() or stat.S_IMODE(metadata.st_mode) != 0o600:
+        raise BootstrapError(
+            "Hermes Telegram mode marker must be owned by the operator and mode 0600; refusing helper refresh"
+        )
+    try:
+        contents = marker_path.read_text(encoding="utf-8")
+    except OSError:
+        raise BootstrapError("Hermes Telegram mode marker could not be read; refusing helper refresh") from None
+    if contents not in ("HERMES_TELEGRAM_MODE=disabled", "HERMES_TELEGRAM_MODE=disabled\n"):
+        raise BootstrapError("Hermes Telegram mode is not exactly disabled; refusing helper refresh")
+
+
+def initial_claim_status(config_path: pathlib.Path) -> dict[str, Any]:
+    """Validate the in-container helper before requesting a board approval.
+
+    Git updates a file bind mount by replacing its host inode. A running
+    container can therefore retain the old inode even though the checkout is
+    current. Compare the reviewed and mounted helper bytes before any browser
+    approval. Refresh only Hermes once when they differ and the root-owned
+    Telegram marker is safely disabled, preserving its named profile volume.
+    """
+
+    refreshed = False
+    reviewed_hash = hashlib.sha256((REPO_ROOT / "deploy/hermes/claim-agent.py").read_bytes()).hexdigest()
+    mounted_hash = mounted_claim_helper_hash(config_path)
+    if mounted_hash != reviewed_hash:
+        require_disabled_telegram_marker(config_path)
+        run_operator_command(
+            compose_command(
+                config_path,
+                "up",
+                "-d",
+                "--no-deps",
+                "--wait",
+                "--force-recreate",
+                "hermes",
+            ),
+            label="Hermes stale-helper refresh",
+        )
+        refreshed = True
+        if mounted_claim_helper_hash(config_path) != reviewed_hash:
+            raise BootstrapError(
+                "Hermes mounted claim helper still differs from the reviewed checkout after refresh"
+            )
+    claim_helper(config_path, "preflight")
+    try:
+        return claim_helper(config_path, "status")
+    except OperatorCommandError as exc:
+        if exc.returncode == 2:
+            context = "after one verified refresh" if refreshed else "without a helper mismatch"
+            raise BootstrapError(
+                f"the fingerprint-matched Hermes claim helper rejected the required status action {context}; "
+                "refusing any additional service change based only on its exit code"
+            ) from None
+        raise
 
 
 def restart_and_verify_hermes(config_path: pathlib.Path) -> None:
@@ -874,10 +968,9 @@ def converge(
     company_id: str,
     board_user_id: str,
     config_path: pathlib.Path,
+    runtime_status: dict[str, Any],
 ) -> tuple[str, str, str, str]:
     hermes_api_key = read_hermes_api_key(config_path)
-    claim_helper(config_path, "preflight")
-    runtime_status = claim_helper(config_path, "status")
     agents = list_agents(api, company_id)
     marked = [agent for agent in agents if is_marked_temp(agent)]
     accepted_invites = list_invites(api, company_id, "accepted")
@@ -1141,13 +1234,16 @@ def main(argv: list[str] | None = None) -> int:
         expected_user_id = (
             None if args.action == "identify" else read_config(config_path, "PAPERCLIP_LIOR_USER_ID")
         )
+        runtime_status = initial_claim_status(config_path) if args.action == "converge" else None
         identity = authenticate(api, args.company_id, expected_user_id)
         key_id = str(identity["keyId"])
         board_user_id = str(identity["userId"])
         if args.action == "identify":
             result = board_user_id
         elif args.action == "converge":
-            result = converge(api, args.company_id, board_user_id, config_path)
+            if not isinstance(runtime_status, dict):
+                raise BootstrapError("Hermes claim helper returned invalid initial status")
+            result = converge(api, args.company_id, board_user_id, config_path, runtime_status)
         elif args.action == "prepare":
             result = prepare(api, args.company_id)
         else:

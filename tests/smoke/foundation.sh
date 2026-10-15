@@ -99,4 +99,33 @@ fi
 grep -q '^permissions:$' "$repo_root/.github/workflows/ci.yml"
 grep -q '^  contents: read$' "$repo_root/.github/workflows/ci.yml"
 
+grep -Fq 'up -d --no-deps --wait --force-recreate hermes' "$repo_root/docs/runbooks/DEPLOY.md"
+if grep -Fq "test -z \"\${TELEGRAM_BOT_TOKEN:-}\"" "$repo_root/docs/runbooks/DEPLOY.md"; then
+  printf 'deployment runbook must inspect the live gateway process, not docker exec environment defaults\n' >&2
+  exit 1
+fi
+grep -Fq "NIX_EXPECT_TELEGRAM_MODE=\$mode" "$repo_root/scripts/configure-hermes"
+grep -Fq "verify-processes \"\$PWD/.env\"" "$repo_root/docs/runbooks/DEPLOY.md"
+python3 - "$repo_root" <<'PY'
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+deploy = (root / "docs/runbooks/DEPLOY.md").read_text()
+restore = (root / "docs/runbooks/RESTORE.md").read_text()
+live_sequence = '''sudo -E ./scripts/configure-hermes telegram-enable "$PWD/.env"
+sudo -E docker compose --env-file "$PWD/.env" up -d --no-deps --wait --force-recreate hermes
+sudo -E ./scripts/configure-hermes verify "$PWD/.env"'''
+assert live_sequence in "\n".join(line.strip() for line in deploy.splitlines())
+assert live_sequence in "\n".join(line.strip() for line in restore.splitlines())
+assert 'verify-processes)' in (root / "scripts/configure-hermes").read_text()
+rollback = '''if sudo -E docker compose --env-file "$PWD/.env" stop hermes \\
+&& sudo -E ./scripts/configure-hermes telegram-disable "$PWD/.env" \\
+&& sudo -E docker compose --env-file "$PWD/.env" up -d --no-deps --wait --force-recreate hermes \\
+&& sudo -E ./scripts/configure-hermes verify-processes "$PWD/.env"; then'''
+assert rollback in "\n".join(line.strip() for line in deploy.splitlines())
+assert "Replacing the individually bind-mounted marker without recreating the container is not a durable rollback." in restore
+assert 'NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$restore_config"' in (root / "scripts/restore-smoke").read_text()
+PY
+
 printf 'Foundation configuration tests passed.\n'

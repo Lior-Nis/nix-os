@@ -130,6 +130,7 @@ mkdir -p "$restore_brain"
 chmod 0600 "$restore_postgres_env" "$restore_paperclip_env" "$restore_hermes_env" "$restore_config"
 printf 'HERMES_TELEGRAM_MODE=disabled\n' >"$restore_hermes_mode"
 chmod 0600 "$restore_hermes_mode"
+NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$restore_config" >/dev/null
 
 compose_restore=(docker compose -f "$repo_root/compose.yaml" --env-file "$restore_config")
 "${compose_restore[@]}" create postgres paperclip hermes >/dev/null
@@ -215,7 +216,19 @@ printf '%s' "$toolsets_json" \
   | "${compose_restore[@]}" exec -T --user 10000:10000 hermes python3 /opt/nix/validate-tool-boundary.py api >/dev/null
 "${compose_restore[@]}" exec -T --user 10000:10000 hermes python3 /opt/nix/validate-tool-boundary.py runtime >/dev/null
 "${compose_restore[@]}" exec -T --user 10000:10000 hermes python3 /opt/nix/validate-tool-boundary.py files >/dev/null
-"${compose_restore[@]}" exec -T --user 10000:10000 -e NIX_EXPECT_TELEGRAM_MODE=disabled hermes \
+telegram_token=$(grep -E '^TELEGRAM_BOT_TOKEN=' "$restore_hermes_env" | tail -n 1 | cut -d= -f2-)
+telegram_token_digest=$(printf '%s' "$telegram_token" \
+  | python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())')
+unset telegram_token
+telegram_users=$(grep -E '^TELEGRAM_ALLOWED_USERS=' "$restore_hermes_env" | tail -n 1 | cut -d= -f2-)
+telegram_allow_all=$(grep -E '^TELEGRAM_ALLOW_ALL_USERS=' "$restore_hermes_env" | tail -n 1 | cut -d= -f2-)
+gateway_allow_all=$(grep -E '^GATEWAY_ALLOW_ALL_USERS=' "$restore_hermes_env" | tail -n 1 | cut -d= -f2-)
+"${compose_restore[@]}" exec -T --user 10000:10000 \
+  -e NIX_EXPECT_TELEGRAM_MODE=disabled \
+  -e "NIX_EXPECT_TELEGRAM_TOKEN_SHA256=$telegram_token_digest" \
+  -e "NIX_EXPECT_TELEGRAM_ALLOWED_USERS=$telegram_users" \
+  -e "NIX_EXPECT_TELEGRAM_ALLOW_ALL_USERS=$telegram_allow_all" \
+  -e "NIX_EXPECT_GATEWAY_ALLOW_ALL_USERS=$gateway_allow_all" hermes \
   python3 /opt/nix/validate-tool-boundary.py processes >/dev/null \
   || fail "restored Hermes process ownership or Telegram-disable boundary is unsafe"
 # shellcheck disable=SC2016

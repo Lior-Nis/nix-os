@@ -8,6 +8,8 @@ suffix=$(openssl rand -hex 8)
 container="nix-hermes-contract-$suffix"
 volume="nix-hermes-contract-$suffix"
 api_key=$(openssl rand -hex 32)
+telegram_token='nix-disabled-token-canary'
+telegram_token_digest=$(printf '%s' "$telegram_token" | sha256sum | cut -d' ' -f1)
 mode_dir="/tmp/${container}-telegram-mode"
 mode_file="$mode_dir/mode.env"
 mkdir -m 0700 "$mode_dir"
@@ -206,7 +208,9 @@ docker run -d --name "$container" --entrypoint /bin/sh --volume "$volume:/opt/da
   --volume "$repo_root:/workspace/nix-brain:ro" \
   --env API_SERVER_ENABLED=true --env API_SERVER_HOST=0.0.0.0 --env API_SERVER_PORT=8642 \
   --env API_SERVER_KEY="$api_key" --env HERMES_GATEWAY_BOOTSTRAP_STATE=running \
-  --env TELEGRAM_BOT_TOKEN=nix-disabled-token-canary \
+  --env TELEGRAM_BOT_TOKEN="$telegram_token" \
+  --env TELEGRAM_ALLOWED_USERS=123456789 \
+  --env TELEGRAM_ALLOW_ALL_USERS=false --env GATEWAY_ALLOW_ALL_USERS=false \
   --env HERMES_WRITE_SAFE_ROOT=/opt/data/memories \
   --env NIX_HERMES_PROC_CANARY=nix-proc-canary-4a6b \
   --env PAPERCLIP_API_KEY=pcp_contract_fixture --env PAPERCLIP_COMPANY_ID=contract-company \
@@ -242,7 +246,12 @@ done
 printf '%s' "$toolsets_json" | docker exec -i --user 10000:10000 "$container" python3 /opt/nix/validate-tool-boundary.py api
 docker exec --user 10000:10000 "$container" python3 /opt/nix/validate-tool-boundary.py runtime >"/tmp/${container}-tool-boundary.json"
 docker exec --user 10000:10000 "$container" python3 /opt/nix/validate-tool-boundary.py files >/dev/null
-docker exec --user 10000:10000 -e NIX_EXPECT_TELEGRAM_MODE=disabled "$container" \
+docker exec --user 10000:10000 \
+  -e NIX_EXPECT_TELEGRAM_MODE=disabled \
+  -e "NIX_EXPECT_TELEGRAM_TOKEN_SHA256=$telegram_token_digest" \
+  -e NIX_EXPECT_TELEGRAM_ALLOWED_USERS=123456789 \
+  -e NIX_EXPECT_TELEGRAM_ALLOW_ALL_USERS=false \
+  -e NIX_EXPECT_GATEWAY_ALLOW_ALL_USERS=false "$container" \
   python3 /opt/nix/validate-tool-boundary.py processes >/dev/null
 python3 - "$container" <<'PY'
 import json, pathlib, sys
