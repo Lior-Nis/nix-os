@@ -8,6 +8,7 @@ compose=(docker compose --env-file "$config_file")
 
 fail() { printf 'Hermes configuration error: %s\n' "$*" >&2; exit 1; }
 read_config() { grep -E "^${1}=" "$config_file" | tail -n 1 | cut -d= -f2- || true; }
+read_hermes_secret() { grep -E "^${1}=" "$hermes_env" | tail -n 1 | cut -d= -f2- || true; }
 
 set_telegram_mode() {
   local mode=$1 mode_file temporary
@@ -44,6 +45,36 @@ PY
   printf 'Hermes Telegram mode is now %s; recreate only Hermes for it to take effect.\n' "$mode"
 }
 
+telegram_mode() {
+  local mode_file mode
+  mode_file=$(read_config HERMES_TELEGRAM_MODE_FILE)
+  mode=$(cut -d= -f2- "$mode_file")
+  [[ "$mode" == disabled || "$mode" == live ]] \
+    || fail "Hermes Telegram mode marker is invalid"
+  printf '%s' "$mode"
+}
+
+verify_processes() {
+  local mode telegram_token token_digest telegram_users telegram_allow_all gateway_allow_all
+  mode=$(telegram_mode)
+  telegram_token=$(read_hermes_secret TELEGRAM_BOT_TOKEN)
+  telegram_users=$(read_hermes_secret TELEGRAM_ALLOWED_USERS)
+  telegram_allow_all=$(read_hermes_secret TELEGRAM_ALLOW_ALL_USERS)
+  gateway_allow_all=$(read_hermes_secret GATEWAY_ALLOW_ALL_USERS)
+  [[ -n "$telegram_token" ]] || fail "TELEGRAM_BOT_TOKEN is missing"
+  token_digest=$(printf '%s' "$telegram_token" \
+    | python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())')
+  unset telegram_token
+  "${compose[@]}" exec -T --user 10000:10000 \
+    -e "NIX_EXPECT_TELEGRAM_MODE=$mode" \
+    -e "NIX_EXPECT_TELEGRAM_TOKEN_SHA256=$token_digest" \
+    -e "NIX_EXPECT_TELEGRAM_ALLOWED_USERS=$telegram_users" \
+    -e "NIX_EXPECT_TELEGRAM_ALLOW_ALL_USERS=$telegram_allow_all" \
+    -e "NIX_EXPECT_GATEWAY_ALLOW_ALL_USERS=$gateway_allow_all" hermes \
+    python3 /opt/nix/validate-tool-boundary.py processes >/dev/null
+  printf '%s' "$mode"
+}
+
 [[ -f "$config_file" ]] || fail "configuration file does not exist: $config_file"
 hermes_env=$(read_config HERMES_ENV_FILE)
 [[ -n "$hermes_env" && -f "$hermes_env" ]] || fail "HERMES_ENV_FILE is missing"
@@ -73,8 +104,14 @@ case "$action" in
     "${compose[@]}" exec -T --user 10000:10000 hermes hermes auth status openai-codex >/dev/null
     printf 'Hermes reports an openai-codex credential.\n'
     ;;
+  verify-processes)
+    "$repo_root/scripts/check-config" "$config_file" >/dev/null
+    telegram_mode=$(verify_processes)
+    printf 'Hermes process ownership and %s Telegram runtime boundary are ready.\n' "$telegram_mode"
+    ;;
   verify)
     "$repo_root/scripts/check-config" "$config_file" >/dev/null
+    telegram_mode=$(verify_processes)
     api_key=$(grep -E '^API_SERVER_KEY=' "$hermes_env" | tail -n 1 | cut -d= -f2-)
     [[ -n "$api_key" ]] || fail "API_SERVER_KEY is missing"
     "${compose[@]}" exec -T --user 10000:10000 hermes curl -fsS http://127.0.0.1:8642/health >/dev/null
@@ -91,10 +128,10 @@ case "$action" in
     "${compose[@]}" exec -T --user 10000:10000 hermes curl -fsS http://paperclip:3100/api/health >/dev/null
     "${compose[@]}" exec -T --user 10000:10000 hermes hermes auth status openai-codex >/dev/null
     "${compose[@]}" exec -T --user 10000:10000 hermes python3 /opt/nix/verify-paperclip-mcp.py >/dev/null
-    printf 'Hermes API auth, restricted tool/file boundary, bounded Paperclip MCP, provider auth, and read-only grilling guidance are ready.\n'
+    printf 'Hermes API auth, restricted tool/file/process boundary, %s Telegram process mode, bounded Paperclip MCP, provider auth, and read-only grilling guidance are ready.\n' "$telegram_mode"
     ;;
   *)
-    printf 'Usage: %s {telegram-disable|telegram-enable|files-preflight|auth|verify} [/absolute/path/to/deployment.env]\n' "$0" >&2
+    printf 'Usage: %s {telegram-disable|telegram-enable|files-preflight|auth|verify-processes|verify} [/absolute/path/to/deployment.env]\n' "$0" >&2
     exit 2
     ;;
 esac

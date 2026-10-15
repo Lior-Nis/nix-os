@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import sys
 import uuid
@@ -363,15 +365,42 @@ def files_check(*, preflight: bool = False) -> None:
     print("Hermes file read/write boundary verified.")
 
 
-def process_check() -> None:
+def _process_environment(proc_dir: Path) -> dict[str, list[bytes]]:
+    try:
+        raw_items = (proc_dir / "environ").read_bytes().split(b"\0")
+    except (FileNotFoundError, PermissionError, ProcessLookupError):
+        fail("could not inspect the live gateway environment")
+    values: dict[str, list[bytes]] = {}
+    for item in raw_items:
+        if b"=" not in item:
+            continue
+        key, value = item.split(b"=", 1)
+        try:
+            decoded_key = key.decode("ascii")
+        except UnicodeDecodeError:
+            continue
+        values.setdefault(decoded_key, []).append(value)
+    return values
+
+
+def _one_process_value(environment: dict[str, list[bytes]], key: str) -> bytes:
+    values = environment.get(key, [])
+    if len(values) != 1:
+        fail(f"live gateway must contain exactly one {key} entry")
+    return values[0]
+
+
+def process_check(
+    *, proc_root: Path = Path("/proc"), profile_env: Path = HERMES_ENV
+) -> dict[str, list[dict[str, int]]]:
     """Prove the model-facing gateway, MCP child, and logger run as Hermes."""
     expected = {
         "gateway": lambda command: "hermes gateway run --replace" in command,
         "mcp": lambda command: "npm exec @paperclipai/mcp-server@2026.916.1" in command,
         "logger": lambda command: "s6-log" in command and "/opt/data/logs/gateways/default" in command,
     }
-    found: dict[str, tuple[int, int, int]] = {}
-    for proc_dir in Path("/proc").iterdir():
+    found: dict[str, list[tuple[int, int, int]]] = {label: [] for label in expected}
+    for proc_dir in proc_root.iterdir():
         if not proc_dir.name.isdigit():
             continue
         try:
@@ -384,14 +413,19 @@ def process_check() -> None:
         gid = int(fields["Gid"][0])
         for label, matches in expected.items():
             if matches(command):
-                found[label] = (int(proc_dir.name), uid, gid)
-    missing = sorted(set(expected) - set(found))
+                found[label].append((int(proc_dir.name), uid, gid))
+    missing = sorted(label for label, values in found.items() if not values)
     if missing:
         fail("required Hermes processes were not found: " + ", ".join(missing))
-    unsafe = {label: values for label, values in found.items() if values[1:] != (10000, 10000)}
+    if len(found["gateway"]) != 1:
+        fail(f"expected exactly one Hermes gateway process; found {len(found['gateway'])}")
+    unsafe = {
+        label: values
+        for label, values in found.items()
+        if any(value[1:] != (10000, 10000) for value in values)
+    }
     if unsafe:
         fail("Hermes process ownership is unsafe: " + ", ".join(sorted(unsafe)))
-    profile_env = Path("/opt/data/.env")
     if profile_env.exists():
         forbidden_profile_keys = {
             "TELEGRAM_BOT_TOKEN",
@@ -408,17 +442,51 @@ def process_check() -> None:
                 fail("persistent profile retained an external-only Telegram control")
     expected_telegram_mode = os.getenv("NIX_EXPECT_TELEGRAM_MODE", "")
     if expected_telegram_mode:
-        if expected_telegram_mode != "disabled":
+        if expected_telegram_mode not in ("disabled", "live"):
             fail("unsupported expected Telegram mode")
-        gateway_pid = found["gateway"][0]
-        try:
-            environment = (Path("/proc") / str(gateway_pid) / "environ").read_bytes().split(b"\0")
-        except (FileNotFoundError, PermissionError, ProcessLookupError):
-            fail("could not inspect the live gateway environment")
-        token_values = [item.split(b"=", 1)[1] for item in environment if item.startswith(b"TELEGRAM_BOT_TOKEN=")]
-        if any(token_values):
+        expected_token_digest = os.getenv("NIX_EXPECT_TELEGRAM_TOKEN_SHA256", "").encode()
+        expected_user = os.getenv("NIX_EXPECT_TELEGRAM_ALLOWED_USERS", "").encode()
+        expected_telegram_allow_all = os.getenv(
+            "NIX_EXPECT_TELEGRAM_ALLOW_ALL_USERS", ""
+        ).encode()
+        expected_gateway_allow_all = os.getenv("NIX_EXPECT_GATEWAY_ALLOW_ALL_USERS", "").encode()
+        if re.fullmatch(rb"[0-9a-f]{64}", expected_token_digest) is None:
+            fail("validated external Telegram token digest is missing or invalid")
+        if re.fullmatch(rb"[1-9][0-9]*", expected_user) is None:
+            fail("validated external Telegram allowlist is not exactly one positive numeric user ID")
+        if expected_telegram_allow_all != b"false" or expected_gateway_allow_all != b"false":
+            fail("validated external Telegram allow-all controls are not false")
+
+        gateway_pid = found["gateway"][0][0]
+        environment = _process_environment(proc_root / str(gateway_pid))
+        live_token = _one_process_value(environment, "TELEGRAM_BOT_TOKEN")
+        live_user = _one_process_value(environment, "TELEGRAM_ALLOWED_USERS")
+        live_telegram_allow_all = _one_process_value(environment, "TELEGRAM_ALLOW_ALL_USERS")
+        live_gateway_allow_all = _one_process_value(environment, "GATEWAY_ALLOW_ALL_USERS")
+        if expected_telegram_mode == "disabled" and live_token:
             fail("live gateway retained a Telegram token while disabled")
-    print(json.dumps({label: {"pid": values[0], "uid": values[1], "gid": values[2]} for label, values in sorted(found.items())}))
+        if expected_telegram_mode == "live" and (
+            not live_token
+            or not hmac.compare_digest(hashlib.sha256(live_token).hexdigest().encode(), expected_token_digest)
+        ):
+            fail("live gateway Telegram token differs from the validated external configuration")
+        for label, live, expected_value in (
+            ("TELEGRAM_ALLOWED_USERS", live_user, expected_user),
+            ("TELEGRAM_ALLOW_ALL_USERS", live_telegram_allow_all, expected_telegram_allow_all),
+            ("GATEWAY_ALLOW_ALL_USERS", live_gateway_allow_all, expected_gateway_allow_all),
+        ):
+            if not hmac.compare_digest(live, expected_value):
+                fail(f"live gateway {label} differs from the validated external configuration")
+
+    summary = {
+        label: [
+            {"pid": pid, "uid": uid, "gid": gid}
+            for pid, uid, gid in sorted(values)
+        ]
+        for label, values in sorted(found.items())
+    }
+    print(json.dumps(summary, separators=(",", ":"), sort_keys=True))
+    return summary
 
 
 def main() -> None:

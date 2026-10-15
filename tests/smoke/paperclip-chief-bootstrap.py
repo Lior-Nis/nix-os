@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import contextlib
+import hashlib
 import http.server
 import importlib.machinery
 import importlib.util
@@ -414,6 +415,8 @@ class FakeOperator:
         if command[0].endswith("scripts/configure-hermes"):
             self.verify_count += 1
             return "verified\n"
+        if command[-1:] == ["/opt/nix/claim-agent.py"] and "-c" in command:
+            return hashlib.sha256((REPO / "deploy/hermes/claim-agent.py").read_bytes()).hexdigest() + "\n"
         if "/opt/nix/claim-agent.py" in command:
             action = command[-1]
             if action == "preflight":
@@ -546,17 +549,84 @@ class FakeOperator:
         raise AssertionError(f"unexpected operator command for {label}: {command}")
 
 
+class ClaimRuntimeOperator:
+    def __init__(
+        self,
+        mounted_hashes: list[str],
+        *,
+        status_exit: int | None = None,
+        refresh_exit: int | None = None,
+    ) -> None:
+        self.commands: list[list[str]] = []
+        self.mounted_hashes = mounted_hashes
+        self.hash_calls = 0
+        self.status_calls = 0
+        self.status_exit = status_exit
+        self.refresh_exit = refresh_exit
+
+    def __call__(self, command: list[str], *, input_text: str | None = None, label: str) -> str:
+        assert input_text is None
+        self.commands.append(command)
+        if command[-1:] == ["/opt/nix/claim-agent.py"] and "-c" in command:
+            value = self.mounted_hashes[min(self.hash_calls, len(self.mounted_hashes) - 1)]
+            self.hash_calls += 1
+            return value + "\n"
+        if "/opt/nix/claim-agent.py" in command:
+            action = command[-1]
+            if action == "preflight":
+                return "preflight passed\n"
+            if action == "status":
+                self.status_calls += 1
+                if self.status_exit is not None:
+                    raise bootstrap.OperatorCommandError(label, self.status_exit)
+                return json.dumps(
+                    {
+                        "credentialPresent": False,
+                        "companyId": None,
+                        "agentId": None,
+                        "receipt": None,
+                        "marker": None,
+                        "stage": None,
+                    }
+                )
+        if command[-6:] == [
+            "up",
+            "-d",
+            "--no-deps",
+            "--wait",
+            "--force-recreate",
+            "hermes",
+        ]:
+            if self.refresh_exit is not None:
+                raise bootstrap.OperatorCommandError(label, self.refresh_exit)
+            return ""
+        raise AssertionError(f"unexpected claim-runtime command for {label}: {command}")
+
+
+def write_runtime_config(tmp: pathlib.Path, mode: str = "disabled", marker_mode: int = 0o600) -> pathlib.Path:
+    marker = tmp / f"telegram-{mode}-{marker_mode:o}.env"
+    marker.write_text(f"HERMES_TELEGRAM_MODE={mode}\n", encoding="utf-8")
+    marker.chmod(marker_mode)
+    config = tmp / f"runtime-{mode}-{marker_mode:o}.env"
+    config.write_text(f"HERMES_TELEGRAM_MODE_FILE={marker}\n", encoding="utf-8")
+    return config
+
+
 def write_config(tmp: pathlib.Path, port: int, lior_user_id: str = "lior-user") -> pathlib.Path:
     hermes_env = tmp / "hermes.env"
     api_key = "api-server-key-" + "x" * 64
     hermes_env.write_text(f"API_SERVER_KEY={api_key}\n", encoding="utf-8")
     hermes_env.chmod(0o600)
+    telegram_mode = tmp / "telegram-mode.env"
+    telegram_mode.write_text("HERMES_TELEGRAM_MODE=disabled\n", encoding="utf-8")
+    telegram_mode.chmod(0o600)
     state.secret_values.add(api_key)
     config = tmp / "deployment.env"
     config.write_text(
         f"PAPERCLIP_PUBLIC_URL=http://127.0.0.1:{port}\n"
         f"PAPERCLIP_LIOR_USER_ID={lior_user_id}\n"
-        f"HERMES_ENV_FILE={hermes_env}\n",
+        f"HERMES_ENV_FILE={hermes_env}\n"
+        f"HERMES_TELEGRAM_MODE_FILE={telegram_mode}\n",
         encoding="utf-8",
     )
     return config
@@ -592,6 +662,115 @@ def run_helper(
 def main() -> None:
     with tempfile.TemporaryDirectory(prefix="nix-os-chief-bootstrap-") as directory:
         tmp = pathlib.Path(directory)
+        reviewed_hash = hashlib.sha256((REPO / "deploy/hermes/claim-agent.py").read_bytes()).hexdigest()
+        stale_hash = "0" * 64 if reviewed_hash != "0" * 64 else "1" * 64
+
+        matching = ClaimRuntimeOperator([reviewed_hash])
+        bootstrap.run_operator_command = matching
+        matching_status = bootstrap.initial_claim_status(write_runtime_config(tmp))
+        assert matching_status["credentialPresent"] is False
+        assert matching.status_calls == 1 and matching.hash_calls == 1
+        assert matching.commands[0][-1] == "/opt/nix/claim-agent.py" and "-c" in matching.commands[0]
+        assert matching.commands[1][-1] == "preflight"
+        assert not any("--force-recreate" in command for command in matching.commands)
+
+        stale = ClaimRuntimeOperator([stale_hash, reviewed_hash])
+        bootstrap.run_operator_command = stale
+        stale_status = bootstrap.initial_claim_status(write_runtime_config(tmp))
+        assert stale_status["credentialPresent"] is False
+        assert stale.status_calls == 1 and stale.hash_calls == 2
+        assert sum("--force-recreate" in command for command in stale.commands) == 1
+
+        for status_exit in (1, 2):
+            failed_status = ClaimRuntimeOperator([reviewed_hash], status_exit=status_exit)
+            bootstrap.run_operator_command = failed_status
+            try:
+                bootstrap.initial_claim_status(write_runtime_config(tmp))
+            except bootstrap.BootstrapError as exc:
+                if status_exit == 2:
+                    assert "fingerprint-matched" in str(exc)
+                else:
+                    assert isinstance(exc, bootstrap.OperatorCommandError)
+            else:
+                raise AssertionError(f"status exit {status_exit} unexpectedly passed")
+            assert not any("--force-recreate" in command for command in failed_status.commands)
+
+        stale_then_rejected = ClaimRuntimeOperator(
+            [stale_hash, reviewed_hash], status_exit=2
+        )
+        bootstrap.run_operator_command = stale_then_rejected
+        try:
+            bootstrap.initial_claim_status(write_runtime_config(tmp))
+        except bootstrap.BootstrapError as exc:
+            assert "after one verified refresh" in str(exc)
+            assert "refusing any additional service change" in str(exc)
+        else:
+            raise AssertionError("post-refresh status exit 2 unexpectedly passed")
+        assert sum(
+            "--force-recreate" in command for command in stale_then_rejected.commands
+        ) == 1
+
+        for marker_mode, marker_permissions, expected in (
+            ("live", 0o600, "not exactly disabled"),
+            ("disabled", 0o644, "mode 0600"),
+        ):
+            unsafe_marker = ClaimRuntimeOperator([stale_hash, reviewed_hash])
+            bootstrap.run_operator_command = unsafe_marker
+            try:
+                bootstrap.initial_claim_status(
+                    write_runtime_config(tmp, mode=marker_mode, marker_mode=marker_permissions)
+                )
+            except bootstrap.BootstrapError as exc:
+                assert expected in str(exc)
+            else:
+                raise AssertionError("unsafe Telegram marker unexpectedly allowed a helper refresh")
+            assert unsafe_marker.status_calls == 0
+            assert not any("--force-recreate" in command for command in unsafe_marker.commands)
+
+        failed_refresh = ClaimRuntimeOperator([stale_hash], refresh_exit=1)
+        bootstrap.run_operator_command = failed_refresh
+        try:
+            bootstrap.initial_claim_status(write_runtime_config(tmp))
+        except bootstrap.OperatorCommandError as exc:
+            assert exc.label == "Hermes stale-helper refresh"
+        else:
+            raise AssertionError("failed Hermes refresh unexpectedly passed")
+        assert failed_refresh.hash_calls == 1 and failed_refresh.status_calls == 0
+
+        mismatched_after_refresh = ClaimRuntimeOperator([stale_hash, stale_hash])
+        bootstrap.run_operator_command = mismatched_after_refresh
+        try:
+            bootstrap.initial_claim_status(write_runtime_config(tmp))
+        except bootstrap.BootstrapError as exc:
+            assert "still differs" in str(exc)
+        else:
+            raise AssertionError("post-refresh helper mismatch unexpectedly passed")
+        assert mismatched_after_refresh.hash_calls == 2
+        assert mismatched_after_refresh.status_calls == 0
+
+        preauth_config = write_runtime_config(tmp)
+        preauth_config.write_text(
+            preauth_config.read_text(encoding="utf-8")
+            + "PAPERCLIP_PUBLIC_URL=http://127.0.0.1:1\n"
+            + "PAPERCLIP_LIOR_USER_ID=lior-user\n",
+            encoding="utf-8",
+        )
+        rejected_status = ClaimRuntimeOperator([reviewed_hash], status_exit=2)
+        bootstrap.run_operator_command = rejected_status
+        original_authenticate = bootstrap.authenticate
+        authentication_called = False
+
+        def unexpected_authentication(*_args: object, **_kwargs: object) -> dict:
+            nonlocal authentication_called
+            authentication_called = True
+            raise AssertionError("browser authentication started before claim-runtime validation")
+
+        bootstrap.authenticate = unexpected_authentication
+        with contextlib.redirect_stderr(io.StringIO()):
+            assert bootstrap.main(["converge", "company-1", "--config", str(preauth_config)]) == 1
+        bootstrap.authenticate = original_authenticate
+        assert authentication_called is False
+
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()

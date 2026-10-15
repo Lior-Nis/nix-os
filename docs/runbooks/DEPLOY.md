@@ -215,12 +215,12 @@ sudo -E ./scripts/check-migrations "$PWD/.env"
 sudo -E ./scripts/transition-paperclip "$PWD/.env"
 sudo -E docker compose --env-file "$PWD/.env" pull hermes
 sudo -E ./scripts/configure-hermes files-preflight "$PWD/.env"
-sudo -E docker compose --env-file "$PWD/.env" up -d --no-deps --wait hermes
-sudo -E docker compose --env-file "$PWD/.env" exec -T --user 10000:10000 hermes sh -ec 'test -z "${TELEGRAM_BOT_TOKEN:-}"'
+sudo -E docker compose --env-file "$PWD/.env" up -d --no-deps --wait --force-recreate hermes
 sudo -E ./scripts/configure-hermes auth "$PWD/.env"
+sudo -E ./scripts/configure-hermes verify-processes "$PWD/.env"
 ```
 
-The tracked Paperclip runtime configuration adds only the isolated Docker service name `paperclip` to the upstream private-host allowlist. On the existing Slice 0 deployment, `transition-paperclip` validates migrations and named-volume attachments, then recreates only Paperclip when it still lacks that hostname or the internal `agent` network; PostgreSQL, Hermes, unrelated services, and unrelated Docker networks are not targeted. It is a no-op after the topology is compliant. The persistent marker keeps Telegram inert even though `hermes.env` contains the migrated token. `files-preflight` explicitly empties known Telegram, Runs API, Paperclip, and provider credential variables before exercising disposable protected-file fixtures as uid/gid `10000:10000`.
+The tracked Paperclip runtime configuration adds only the isolated Docker service name `paperclip` to the upstream private-host allowlist. On the existing Slice 0 deployment, `transition-paperclip` validates migrations and named-volume attachments, then recreates only Paperclip when it still lacks that hostname or the internal `agent` network; PostgreSQL, Hermes, unrelated services, and unrelated Docker networks are not targeted. It is a no-op after the topology is compliant. Hermes is deliberately force-recreated after the reviewed checkout changes: its Nix helpers are individual file bind mounts, and Git may replace their host inodes while a running container retains the old mounted inode. The named profile volume is preserved and the disabled mode marker keeps Telegram inert. As defense in depth, `converge` compares the reviewed and in-container claim-helper SHA-256 values before executing that helper or opening the browser approval. It performs this same bounded Hermes-only refresh once only when the hashes differ and the external marker is an operator-owned, mode-`0600` regular file set exactly to `disabled`; it verifies the hash again afterward. A matching helper that rejects `status`, a live/unsafe marker, or a post-refresh mismatch fails closed without another service change. The persistent marker keeps Telegram inert even though `hermes.env` contains the migrated token. `files-preflight` explicitly empties known Telegram, Runs API, Paperclip, and provider credential variables before exercising disposable protected-file fixtures as uid/gid `10000:10000`. The pre-claim `verify-processes` action checks the running process identity, singleton gateway, and Telegram token/admission state only; the full verifier additionally requires the claimed Paperclip credential and therefore runs after `converge`.
 
 Do not test the bot yet. The existing gateway remains its sole poller throughout pre-stage.
 
@@ -274,18 +274,26 @@ Immediately before cutover, re-prove the VPS gateway is healthy and Telegram-dis
 
 ```sh
 sudo -E docker compose --env-file "$PWD/.env" exec -T --user 10000:10000 hermes curl -fsS http://127.0.0.1:8642/health >/dev/null
-sudo -E docker compose --env-file "$PWD/.env" exec -T --user 10000:10000 hermes sh -ec 'test -z "${TELEGRAM_BOT_TOKEN:-}"'
+sudo -E ./scripts/configure-hermes verify "$PWD/.env"
 ssh pop 'systemctl --user disable --now hermes-gateway.service && ! systemctl --user is-active --quiet hermes-gateway.service && ! systemctl --user is-enabled --quiet hermes-gateway.service'
 sudo -E ./scripts/configure-hermes telegram-enable "$PWD/.env"
 sudo -E docker compose --env-file "$PWD/.env" up -d --no-deps --wait --force-recreate hermes
+sudo -E ./scripts/configure-hermes verify "$PWD/.env"
 ```
 
-There must never be two active pollers. If the VPS Hermes health check, Telegram reply, or authorization check fails, stop the VPS Hermes container before restarting the old gateway:
+There must never be two active pollers. If the VPS Hermes health check, Telegram reply, or authorization check fails, make the disabled state durable before restarting the old gateway. Because the marker is an individual file bind mount, replacing it is not enough for an existing container: stop Hermes, write the disabled marker, force-recreate Hermes against that marker, and prove the new gateway process has no Telegram token. If any step fails, stop Hermes again and leave the old poller disabled until the failure is diagnosed:
 
 ```sh
-sudo -E docker compose --env-file "$PWD/.env" stop hermes
-sudo -E ./scripts/configure-hermes telegram-disable "$PWD/.env"
-ssh pop 'systemctl --user enable --now hermes-gateway.service && systemctl --user is-active --quiet hermes-gateway.service && systemctl --user is-enabled --quiet hermes-gateway.service'
+if sudo -E docker compose --env-file "$PWD/.env" stop hermes \
+  && sudo -E ./scripts/configure-hermes telegram-disable "$PWD/.env" \
+  && sudo -E docker compose --env-file "$PWD/.env" up -d --no-deps --wait --force-recreate hermes \
+  && sudo -E ./scripts/configure-hermes verify-processes "$PWD/.env"; then
+  ssh pop 'systemctl --user enable --now hermes-gateway.service && systemctl --user is-active --quiet hermes-gateway.service && systemctl --user is-enabled --quiet hermes-gateway.service'
+else
+  sudo -E docker compose --env-file "$PWD/.env" stop hermes
+  printf 'VPS Hermes could not be proved Telegram-disabled; the old poller remains disabled.\n' >&2
+  false
+fi
 ```
 
 Keep `/etc/nix-os/hermes-telegram-mode.env` root-owned and mode `0600`; routine operations and recovery all obey it. The old host's unit must be both inactive and disabled before the VPS marker becomes live, so an old-host reboot cannot silently recreate a second poller. Only after that proof should the new bot answer Lior's `ping`. Do not proceed if Telegram reports a polling conflict. From a different Telegram identity, send a message and verify it is silently ignored and causes no tool call; sanitize logs before recording evidence.
