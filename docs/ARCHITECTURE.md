@@ -1,6 +1,6 @@
 # Nix Business OS V0 architecture
 
-Status: Slices 0 and 1 are accepted in production. Slice 1 runs at merge `120083439dca52ba9c482664b1fc19acb7733bcf`; hosted CI, run attribution, final Chief topology, native Telegram-to-Paperclip work creation, persistent Telegram model-route enforcement, downloaded-artifact recovery, and post-reboot acceptance all pass as of 2026-10-17.
+Status: Slices 0 and 1 are accepted in production. The deployed checkout is PR #15 merge `ec83c9f28c941823b222dd5eb93d242d1ec5e443`; its runtime implementation came from PR #14 merge `120083439dca52ba9c482664b1fc19acb7733bcf`. Hosted CI, run attribution, final Chief topology, native Telegram-to-Paperclip work creation, persistent Telegram model-route enforcement, downloaded-artifact recovery, and post-reboot acceptance all pass as of 2026-10-17.
 
 ## Purpose and scope
 
@@ -169,7 +169,7 @@ A fresh Paperclip volume is initialized with the pinned release's official `pape
 | Class | Examples | Location and recovery |
 |---|---|---|
 | Git-controlled configuration | Compose files, Tailscale Serve reconstruction command, redacted Hermes config/SOUL templates, policy text, tests, n8n workflow JSON after Slice 7 | GitHub `nix-os`; rebuildable from a commit |
-| External deployment configuration | deployment `.env`, PostgreSQL/Paperclip env files, and Hermes env file containing the Telegram token/allowlist plus Runs API key | separate age-encrypted configuration pack, restored to recorded paths with mode `0600` and verified checksums |
+| External deployment configuration | deployment `.env`, PostgreSQL/Paperclip env files, and Hermes env file containing Telegram token/allowlist/home chat, Runs API key, provider key, and the distinct fixed decision-webhook secret | separate age-encrypted configuration pack, restored to recorded paths with mode `0600` and verified checksums |
 | Runtime state | Paperclip PostgreSQL data, Paperclip uploads/config, Hermes profile memory/sessions/gateway state, n8n database and storage, local worktrees/logs | named volumes/host state directory; restored from verified off-host backups |
 | Durable company knowledge | `nix-brain` Markdown and Git history | separate private GitHub repository; local clones are disposable |
 | Secrets | bot token, model credentials, Hermes API keys, Paperclip agent keys, DB passwords, GitHub App key, Todoist token, n8n encryption key | root-owned external files or the relevant encrypted persistent service state outside the checkout; per-service injection; separately backed up encrypted |
@@ -186,7 +186,7 @@ Slice 0 establishes the procedure; later slices extend its manifest.
 | Paperclip database | nightly compressed logical dump, encrypted and copied off-host | restore to an isolated database; CEO authenticates and real company/issue values and relationships match |
 | Paperclip home/storage | encrypted file backup coordinated with the database backup | attachment bytes match a known SHA-256; config and encrypted-secret master key are preserved |
 | Paperclip portable company bundle | periodic export including company, agents, projects, skills, issues | preview/import to a disposable company |
-| Hermes profile state | stop Hermes, archive the complete `/opt/data` volume with the coordinated Paperclip backup | restored Hermes boots with Telegram disabled, rejects unauthenticated API access, accepts the restored API key, loads the exact restricted tool surface and profile state, and resolves its claimed identity through bounded Paperclip MCP; live Telegram/provider operation is rechecked only after the isolated restore is destroyed |
+| Hermes profile state | stop Hermes, archive the complete `/opt/data` volume with the coordinated Paperclip backup, including Runs idempotency and Paperclip-question delivery state when present | restored Hermes boots with Telegram disabled, rejects unauthenticated API access, accepts the restored API key, loads the exact restricted tool surface and profile state, preserves safe modes and contents for `runs_idempotency.db` and the question-delivery outbox, and resolves its claimed identity through bounded Paperclip MCP; live Telegram/provider operation is rechecked only after the isolated restore is destroyed |
 | `nix-os` source | public GitHub repository plus feature-branch/PR/green-CI convention | fresh clone and CI pass; secrets and runtime state remain excluded |
 | `nix-brain` | separate private GitHub repository | fresh authenticated clone and knowledge checks pass |
 | n8n (when added) | its database, storage volume, workflow exports, and `N8N_ENCRYPTION_KEY` | credentials decrypt and Todoist test workflow runs |

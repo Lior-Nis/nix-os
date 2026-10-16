@@ -21,6 +21,9 @@ PACKAGE = "@paperclipai/mcp-server@2026.916.1"
 SECRET = "pcp_wrapper_secret_must_not_leak"
 RUN_ONE = "11111111-1111-4111-8111-111111111111"
 RUN_TWO = "22222222-2222-4222-8222-222222222222"
+ISSUE_ONE = "33333333-3333-4333-8333-333333333333"
+PARENT_ONE = "44444444-4444-4444-8444-444444444444"
+PROJECT_ONE = "55555555-5555-4555-8555-555555555555"
 
 
 FAKE_UPSTREAM = r'''#!/usr/bin/env python3
@@ -34,8 +37,10 @@ import time
 TOOLS = [
     {"name":"paperclipMe","inputSchema":{"type":"object","properties":{}}},
     {"name":"paperclipCreateIssue","inputSchema":{"type":"object","properties":{"title":{"type":"string"}},"required":["title"]}},
+    {"name":"paperclipCheckoutIssue","inputSchema":{"type":"object","properties":{"issueId":{"type":"string"}},"required":["issueId"]}},
     {"name":"paperclipUpdateIssue","inputSchema":{"type":"object","properties":{"issueId":{"type":"string"}},"required":["issueId"]}},
     {"name":"paperclipAddComment","inputSchema":{"type":"object","properties":{"issueId":{"type":"string"},"body":{"type":"string"}},"required":["issueId","body"]}},
+    {"name":"paperclipAskUserQuestions","inputSchema":{"type":"object","properties":{"issueId":{"type":"string"},"payload":{"type":"object"}},"required":["issueId","payload"]}},
 ]
 for line in sys.stdin:
     request = json.loads(line)
@@ -58,6 +63,10 @@ for line in sys.stdin:
     elif method == "tools/call":
         params = request["params"]
         args = params.get("arguments", {})
+        if params.get("name") == "paperclipApiRequest":
+            api_body = json.loads(args.get("jsonBody", "{}"))
+            if api_body.get("idempotencyKey") == "force-crash":
+                os._exit(7)
         if args.get("forceCrash"):
             os._exit(7)
         if args.get("forceHang"):
@@ -139,6 +148,27 @@ def main() -> None:
     assert scoped_command.count("--offline") == 1
     assert "--min-release-age=0" not in scoped_command
 
+    successful_interaction = {
+        "result": {"content": [{"type": "text", "text": "interaction"}]}
+    }
+    production["_surface_delivery_disposition"](
+        successful_interaction, "failed_not_sent"
+    )
+    retry_instruction = successful_interaction["result"]["content"][-1]["text"]
+    assert "exact same issueId, payload, and idempotencyKey" in retry_instruction
+    assert "do not create another interaction" in retry_instruction
+    uncertain_interaction = {
+        "result": {"content": [{"type": "text", "text": "interaction"}]}
+    }
+    production["_surface_delivery_disposition"](uncertain_interaction, "unknown")
+    uncertain_instruction = uncertain_interaction["result"]["content"][-1]["text"]
+    assert "Do not retry" in uncertain_instruction
+    delivered_interaction = {
+        "result": {"content": [{"type": "text", "text": "interaction"}]}
+    }
+    production["_surface_delivery_disposition"](delivered_interaction, "delivered")
+    assert len(delivered_interaction["result"]["content"]) == 1
+
     with tempfile.TemporaryDirectory(prefix="nix-run-scoped-mcp-") as directory:
         root = Path(directory)
         fake = root / "fake-upstream.py"
@@ -162,6 +192,7 @@ def main() -> None:
         )
         environment = os.environ | {
             "PAPERCLIP_API_KEY": SECRET,
+            "PAPERCLIP_LIOR_USER_ID": "lior-user",
             "PAPERCLIP_RUN_ID": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
             "NIX_TEST_SCOPED_DESCENDANT_READY": str(root / "scoped-descendant-ready"),
             "NIX_TEST_SCOPED_DESCENDANT_TERMINATED": str(root / "scoped-descendant-terminated"),
@@ -194,8 +225,10 @@ def main() -> None:
             assert initialized["result"]["serverInfo"]["name"] == "fake"
             listing = request(process, 2, "tools/list", {})
             tools = {item["name"]: item for item in listing["result"]["tools"]}
+            assert tools["paperclipCheckoutIssue"]["inputSchema"]["required"] == ["issueId"]
             assert tools["paperclipUpdateIssue"]["inputSchema"]["required"] == ["issueId"]
             assert tools["paperclipAddComment"]["inputSchema"]["required"] == ["issueId", "body"]
+            assert tools["paperclipAskUserQuestions"]["inputSchema"]["required"] == ["issueId", "payload"]
 
             # Missing reserved metadata keeps the official no-run behavior.
             missing = tool_payload(request(
@@ -210,18 +243,52 @@ def main() -> None:
             assert missing["argv"] == ["persistent"]
             assert missing["meta"] == {"unrelated": "kept"}
 
-            # Explicit malformed reserved metadata fails before upstream dispatch.
-            for invalid in ("", "not-a-uuid", "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"):
+            # Telegram-originated commitments intentionally retain the exact
+            # official no-run issue-creation path.
+            telegram_create = tool_payload(request(
+                process, 30, "tools/call",
+                {
+                    "name": "paperclipCreateIssue",
+                    "arguments": {"title": "telegram commitment"},
+                },
+            ))
+            assert telegram_create["runId"] is None
+            assert telegram_create["argv"] == ["persistent"]
+
+            # Checkout and decision interactions are Paperclip-run lifecycle
+            # operations and never dispatch without trusted run context.
+            for request_id, name in (
+                (31, "paperclipCheckoutIssue"),
+                (32, "paperclipAskUserQuestions"),
+            ):
                 response = request(
-                    process, 4, "tools/call",
-                    {
-                        "name": "paperclipUpdateIssue",
-                        "arguments": {"issueId": "one"},
-                        "_meta": {"com.paperclip/run-id": invalid},
-                    },
+                    process, request_id, "tools/call",
+                    {"name": name, "arguments": {"issueId": "one"}},
                 )
                 assert response["error"]["code"] == -32602
+                assert response["error"]["message"] == "Trusted Paperclip run metadata is required"
                 assert SECRET not in json.dumps(response)
+
+            # Explicit malformed reserved metadata fails before upstream dispatch.
+            for name in (
+                "paperclipCreateIssue",
+                "paperclipCheckoutIssue",
+                "paperclipUpdateIssue",
+                "paperclipAddComment",
+                "paperclipAskUserQuestions",
+            ):
+                for invalid in ("", "not-a-uuid", "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"):
+                    response = request(
+                        process, 4, "tools/call",
+                        {
+                            "name": name,
+                            "arguments": {"issueId": "one"},
+                            "_meta": {"com.paperclip/run-id": invalid},
+                        },
+                    )
+                    assert response["error"]["code"] == -32602
+                    assert response["error"]["message"] == "Trusted Paperclip run metadata is invalid"
+                    assert SECRET not in json.dumps(response)
 
             first = tool_payload(request(
                 process, 5, "tools/call",
@@ -245,6 +312,127 @@ def main() -> None:
             ))
             assert second["runId"] == RUN_TWO
             assert second["meta"] is None
+
+            child = tool_payload(request(
+                process, 33, "tools/call",
+                {
+                    "name": "paperclipCreateIssue",
+                    "arguments": {
+                        "title": "bounded child",
+                        "parentId": PARENT_ONE,
+                        "projectId": PROJECT_ONE,
+                        "idempotencyKey": "child-one",
+                    },
+                    "_meta": {"com.paperclip/run-id": RUN_ONE},
+                },
+            ))
+            assert child["runId"] == RUN_ONE
+            assert child["arguments"]["parentId"] == PARENT_ONE
+            assert child["argv"] == ["scoped", "--offline", PACKAGE]
+
+            # A run-attributed create can only add an idempotent child inside
+            # the already approved project; malformed scope fails pre-dispatch.
+            for bad_child in (
+                {"title": "missing scope", "idempotencyKey": "child-missing"},
+                {
+                    "title": "bad parent", "parentId": "not-a-uuid",
+                    "projectId": PROJECT_ONE, "idempotencyKey": "child-parent",
+                },
+                {
+                    "title": "missing key", "parentId": PARENT_ONE,
+                    "projectId": PROJECT_ONE,
+                },
+            ):
+                invalid_child = request(
+                    process, 41, "tools/call",
+                    {
+                        "name": "paperclipCreateIssue",
+                        "arguments": bad_child,
+                        "_meta": {"com.paperclip/run-id": RUN_ONE},
+                    },
+                )
+                assert invalid_child["error"]["code"] == -32602
+
+            checkout = tool_payload(request(
+                process, 34, "tools/call",
+                {
+                    "name": "paperclipCheckoutIssue",
+                    "arguments": {"issueId": "one"},
+                    "_meta": {"com.paperclip/run-id": RUN_ONE},
+                },
+            ))
+            assert checkout["runId"] == RUN_ONE
+            assert checkout["meta"] is None
+
+            question = tool_payload(request(
+                process, 35, "tools/call",
+                {
+                    "name": "paperclipAskUserQuestions",
+                    "arguments": {
+                        "issueId": ISSUE_ONE,
+                        "idempotencyKey": "question-one",
+                        "payload": {
+                            "version": 1,
+                            "questions": [{
+                                "id": "choice",
+                                "prompt": "Choose",
+                                "selectionMode": "single",
+                                "required": True,
+                                "options": [{"id": "one", "label": "One"}],
+                            }],
+                        },
+                    },
+                    "_meta": {"com.paperclip/run-id": RUN_ONE},
+                },
+            ))
+            assert question["name"] == "paperclipApiRequest"
+            assert question["runId"] == RUN_ONE
+            assert question["meta"] is None
+            assert question["arguments"]["method"] == "POST"
+            assert question["arguments"]["path"] == f"/issues/{ISSUE_ONE}/interactions"
+            question_body = json.loads(question["arguments"]["jsonBody"])
+            assert question_body["kind"] == "ask_user_questions"
+            assert question_body["resolverPolicy"] == "human_only"
+            assert question_body["addresseeUserId"] == "lior-user"
+            assert question_body["idempotencyKey"] == "question-one"
+            assert question_body["sourceRunId"] == RUN_ONE
+            assert "issueId" not in question_body
+
+            # The excluded generic API tool is never caller-visible even if a
+            # crafted MCP request names it directly.
+            forbidden_api = request(
+                process, 39, "tools/call",
+                {
+                    "name": "paperclipApiRequest",
+                    "arguments": {"method": "GET", "path": "/companies"},
+                },
+            )
+            assert forbidden_api["error"]["code"] == -32602
+
+            # Ask requires stable replay identity and the legacy structured
+            # question shape before any official child is dispatched.
+            for bad_arguments in (
+                {
+                    "issueId": ISSUE_ONE,
+                    "payload": {"version": 1, "questions": []},
+                },
+                {
+                    "issueId": ISSUE_ONE,
+                    "idempotencyKey": "bad-schema",
+                    "payload": {"version": 1, "questions": [{
+                        "id": "choice", "prompt": "Choose", "options": [],
+                    }]},
+                },
+            ):
+                invalid_question = request(
+                    process, 40, "tools/call",
+                    {
+                        "name": "paperclipAskUserQuestions",
+                        "arguments": bad_arguments,
+                        "_meta": {"com.paperclip/run-id": RUN_ONE},
+                    },
+                )
+                assert invalid_question["error"]["code"] == -32602
 
             # Reserved run context is stripped from every other tool.
             ordinary = tool_payload(request(
@@ -290,7 +478,7 @@ def main() -> None:
                 },
             ))
             assert crashed["error"] == "outcome_uncertain"
-            assert "Read back the issue and comments before retrying" in crashed["message"]
+            assert "pending interactions before retrying" in crashed["message"]
 
             hanging = tool_payload(request(
                 process, 11, "tools/call",
@@ -309,6 +497,35 @@ def main() -> None:
                 time.sleep(0.02)
             assert group_gone(process_group), "scoped process group survived timeout cleanup"
 
+            uncertain_cases = (
+                (36, "paperclipCreateIssue", {
+                    "title": "child", "parentId": PARENT_ONE,
+                    "projectId": PROJECT_ONE, "idempotencyKey": "child-crash",
+                    "forceCrash": True,
+                }),
+                (37, "paperclipCheckoutIssue", {"issueId": "two", "forceCrash": True}),
+                (38, "paperclipAskUserQuestions", {
+                    "issueId": ISSUE_ONE,
+                    "idempotencyKey": "force-crash",
+                    "payload": {"version": 1, "questions": [{
+                        "id": "choice", "prompt": "Choose",
+                        "selectionMode": "single", "required": True,
+                        "options": [{"id": "one", "label": "One"}],
+                    }]},
+                }),
+            )
+            for request_id, name, arguments in uncertain_cases:
+                uncertain = tool_payload(request(
+                    process, request_id, "tools/call",
+                    {
+                        "name": name,
+                        "arguments": arguments,
+                        "_meta": {"com.paperclip/run-id": RUN_TWO},
+                    },
+                ))
+                assert uncertain["error"] == "outcome_uncertain"
+                assert "pending interactions before retrying" in uncertain["message"]
+
             after_scoped_failure = tool_payload(request(
                 process, 12, "tools/call", {"name": "paperclipMe", "arguments": {}},
             ))
@@ -323,7 +540,7 @@ def main() -> None:
                 },
             ))
             assert create_crash["error"] == "outcome_uncertain"
-            assert "Read back the issue and comments before retrying" in create_crash["message"]
+            assert "pending interactions before retrying" in create_crash["message"]
             after_create_crash = tool_payload(request(
                 process, 14, "tools/call", {"name": "paperclipMe", "arguments": {}},
             ))
@@ -337,7 +554,7 @@ def main() -> None:
                 },
             ))
             assert update_hang["error"] == "outcome_uncertain"
-            assert "Read back the issue and comments before retrying" in update_hang["message"]
+            assert "pending interactions before retrying" in update_hang["message"]
             assert (root / "persistent-descendant-terminated").read_text() == "terminated"
             persistent_group = int((root / "persistent-pgid").read_text())
             for _ in range(100):

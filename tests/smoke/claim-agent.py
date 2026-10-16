@@ -201,7 +201,11 @@ with tempfile.TemporaryDirectory(prefix="nix-claim-test.") as temporary:
     stale_env = stale / ".env"
     stale_env.write_text(
         "KEEP=value\n"
+        "HERMES_DECISION_WEBHOOK_SECRET=must-not-survive\n"
+        "WEBHOOK_SECRET=must-not-survive\n"
+        "PAPERCLIP_LIOR_USER_ID=profile-user-must-not-survive\n"
         "'TELEGRAM_BOT_TOKEN'=must-not-survive\n"
+        "TELEGRAM_HOME_CHANNEL=999\n"
         "TELEGRAM_ALLOWED_USERS=999\n"
         "TELEGRAM_ALLOW_ALL_USERS=true\n"
         "GATEWAY_ALLOW_ALL_USERS=true\n",

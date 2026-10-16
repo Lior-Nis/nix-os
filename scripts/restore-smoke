@@ -124,9 +124,13 @@ else
   } >"$restore_paperclip_env"
   {
     printf 'API_SERVER_KEY=%s\n' "$(openssl rand -hex 32)"
+    decision_webhook_secret=$(openssl rand -hex 32)
+    printf 'HERMES_DECISION_WEBHOOK_SECRET=%s\n' "$decision_webhook_secret"
+    printf 'WEBHOOK_SECRET=%s\n' "$decision_webhook_secret"
     printf 'OPENCODE_GO_API_KEY=test-opencode-go-key-12345678\n'
     printf 'TELEGRAM_BOT_TOKEN=test-token\n'
     printf 'TELEGRAM_ALLOWED_USERS=123456789\n'
+    printf 'TELEGRAM_HOME_CHANNEL=123456789\n'
     printf 'TELEGRAM_ALLOW_ALL_USERS=false\nGATEWAY_ALLOW_ALL_USERS=false\n'
   } >"$restore_hermes_env"
 fi
@@ -176,7 +180,10 @@ docker run --rm \
   --volume "$restore_hermes_volume:/target" \
   --volume "$payload_dir:/backup:ro" \
   "$archive_helper_image" sh -ec 'find /target -mindepth 1 -delete && cd /target && tar -xzf /backup/hermes-data.tar.gz'
-docker run --rm --volume "$restore_hermes_volume:/state:ro" "$archive_helper_image" sh -ec '
+docker run --rm \
+  --volume "$restore_hermes_volume:/state:ro" \
+  --volume "$payload_dir:/backup:ro" \
+  "$archive_helper_image" sh -ec '
   for path in .env .paperclip-claim-receipt.json; do
     test -f "/state/$path"
     test "$(stat -c %u:%g "/state/$path")" = 10000:10000
@@ -187,6 +194,15 @@ docker run --rm --volume "$restore_hermes_volume:/state:ro" "$archive_helper_ima
     test "$(stat -c %u:%g /state/auth.json)" = 10000:10000
     test "$(stat -c %a /state/auth.json)" = 600
   fi
+  for path in runs_idempotency.db state/paperclip-question-delivery.db; do
+    test ! -L "/state/$path"
+    if grep -Fq "  ./$path" /backup/hermes-files.sha256; then
+      test -f "/state/$path"
+      test "$(stat -c %h "/state/$path")" = 1
+      test "$(stat -c %u:%g "/state/$path")" = 10000:10000
+      test "$(stat -c %a "/state/$path")" = 600
+    fi
+  done
   test "$(find /state -maxdepth 1 -name ".paperclip-claim-*.pending" | wc -l | tr -d " ")" = 0
   test ! -e /state/mcp-tokens/nix-os-paperclip-claim-stage.json
 ' || fail "restored Hermes credentials/auth/claim receipt metadata is unsafe"
@@ -203,6 +219,10 @@ if [[ ${NIX_RESTORE_INJECT_PROFILE_TELEGRAM_CANARY:-0} == 1 ]]; then
     printf "\357\273\277%s\n" "TELEGRAM_BOT_TOKEN=restored-profile-token-must-not-poll" > /state/.env
     printf "%s\n" \
       "'TELEGRAM_ALLOWED_USERS'=999999999" \
+      "TELEGRAM_HOME_CHANNEL=999999999" \
+      "PAPERCLIP_LIOR_USER_ID=profile-user-must-not-override" \
+      "HERMES_DECISION_WEBHOOK_SECRET=profile-secret-must-not-override" \
+      "WEBHOOK_SECRET=profile-secret-must-not-override" \
       "TELEGRAM_ALLOW_ALL_USERS=true" \
       "GATEWAY_ALLOW_ALL_USERS=true" >> /state/.env
     cat "$existing" >> /state/.env
@@ -258,14 +278,17 @@ telegram_token_digest=$(printf '%s' "$telegram_token" \
   | python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())')
 unset telegram_token
 telegram_users=$(grep -E '^TELEGRAM_ALLOWED_USERS=' "$restore_hermes_env" | tail -n 1 | cut -d= -f2-)
+telegram_home=$(grep -E '^TELEGRAM_HOME_CHANNEL=' "$restore_hermes_env" | tail -n 1 | cut -d= -f2-)
 telegram_allow_all=$(grep -E '^TELEGRAM_ALLOW_ALL_USERS=' "$restore_hermes_env" | tail -n 1 | cut -d= -f2-)
 gateway_allow_all=$(grep -E '^GATEWAY_ALLOW_ALL_USERS=' "$restore_hermes_env" | tail -n 1 | cut -d= -f2-)
 "${compose_restore[@]}" exec -T --user 10000:10000 \
   -e NIX_EXPECT_TELEGRAM_MODE=disabled \
   -e "NIX_EXPECT_TELEGRAM_TOKEN_SHA256=$telegram_token_digest" \
   -e "NIX_EXPECT_TELEGRAM_ALLOWED_USERS=$telegram_users" \
+  -e "NIX_EXPECT_TELEGRAM_HOME_CHANNEL=$telegram_home" \
   -e "NIX_EXPECT_TELEGRAM_ALLOW_ALL_USERS=$telegram_allow_all" \
   -e "NIX_EXPECT_GATEWAY_ALLOW_ALL_USERS=$gateway_allow_all" \
+  -e "NIX_EXPECT_PAPERCLIP_LIOR_USER_ID=$source_lior_user_id" \
   -e "NIX_EXPECT_BRAIN_GID=$restore_brain_gid" hermes \
   python3 /opt/nix/validate-tool-boundary.py processes >/dev/null \
   || fail "restored Hermes process ownership or Telegram-disable boundary is unsafe"

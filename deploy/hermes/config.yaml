@@ -34,10 +34,24 @@ platforms:
     unauthorized_dm_behavior: ignore
     guest_mode: false
     allow_bots: none
+    gateway_restart_notification: false
     # Telegram group IDs are negative. Restricting allowed chats to Lior's
     # positive user ID makes Chief DM-only; task-scoped specialists have no
     # Telegram route or persistent Hermes profile.
     allowed_chats: ["${TELEGRAM_ALLOWED_USERS}"]
+  webhook:
+    enabled: true
+    extra:
+      host: 127.0.0.1
+      port: 8644
+      rate_limit: 10
+      max_body_bytes: 16384
+      routes:
+        paperclip-decision:
+          events: [paperclip.decision_required]
+          prompt: "{message}"
+          deliver: telegram
+          deliver_only: true
 
 mcp_servers:
   paperclip:
@@ -49,6 +63,8 @@ mcp_servers:
       PAPERCLIP_API_KEY: "${PAPERCLIP_API_KEY}"
       PAPERCLIP_COMPANY_ID: "${PAPERCLIP_COMPANY_ID}"
       PAPERCLIP_AGENT_ID: "${PAPERCLIP_AGENT_ID}"
+      PAPERCLIP_LIOR_USER_ID: "${PAPERCLIP_LIOR_USER_ID}"
+      HERMES_DECISION_WEBHOOK_SECRET: "${HERMES_DECISION_WEBHOOK_SECRET}"
     tools:
       include:
         - paperclipMe
@@ -58,7 +74,9 @@ mcp_servers:
         - paperclipListProjects
         - paperclipGetProject
         - paperclipCreateIssue
+        - paperclipCheckoutIssue
         - paperclipUpdateIssue
         - paperclipAddComment
+        - paperclipAskUserQuestions
       resources: false
       prompts: false

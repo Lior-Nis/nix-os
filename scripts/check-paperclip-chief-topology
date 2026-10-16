@@ -163,6 +163,8 @@ def validate_topology(metadata: dict[str, Any], snapshot: dict[str, Any], board_
     gateway_key_sha256 = str(metadata.get("gatewayKeySha256") or "")
     if not re.fullmatch(r"[0-9a-f]{64}", gateway_key_sha256):
         raise TopologyError("Hermes Runs API credential fingerprint is invalid")
+    if hmac.compare_digest(credential_sha256, gateway_key_sha256):
+        raise TopologyError("Hermes Paperclip and Runs API credentials are not distinct")
     if receipt.get("companyId") != company_id or receipt.get("agentId") != chief_id:
         raise TopologyError("Hermes claim receipt identity is inconsistent")
     agents = snapshot.get("agents")

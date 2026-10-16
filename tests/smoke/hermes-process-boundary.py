@@ -45,17 +45,21 @@ spec.loader.exec_module(validator)
 
 
 CONFIG = {
+    "PAPERCLIP_LIOR_USER_ID": "lior-contract-user",
     "TELEGRAM_BOT_TOKEN": "configured-token-canary",
     "TELEGRAM_ALLOWED_USERS": "123456789",
+    "TELEGRAM_HOME_CHANNEL": "123456789",
     "TELEGRAM_ALLOW_ALL_USERS": "false",
     "GATEWAY_ALLOW_ALL_USERS": "false",
 }
 EXPECTATIONS = {
+    "NIX_EXPECT_PAPERCLIP_LIOR_USER_ID": CONFIG["PAPERCLIP_LIOR_USER_ID"],
     "NIX_EXPECT_BRAIN_GID": "20000",
     "NIX_EXPECT_TELEGRAM_TOKEN_SHA256": hashlib.sha256(
         CONFIG["TELEGRAM_BOT_TOKEN"].encode()
     ).hexdigest(),
     "NIX_EXPECT_TELEGRAM_ALLOWED_USERS": CONFIG["TELEGRAM_ALLOWED_USERS"],
+    "NIX_EXPECT_TELEGRAM_HOME_CHANNEL": CONFIG["TELEGRAM_HOME_CHANNEL"],
     "NIX_EXPECT_TELEGRAM_ALLOW_ALL_USERS": CONFIG["TELEGRAM_ALLOW_ALL_USERS"],
     "NIX_EXPECT_GATEWAY_ALLOW_ALL_USERS": CONFIG["GATEWAY_ALLOW_ALL_USERS"],
 }
@@ -206,6 +210,72 @@ def rejected(root: Path, mode: str, expected: str) -> None:
 
 
 def main() -> None:
+    with tempfile.TemporaryDirectory(prefix="nix-hermes-subscriptions-") as directory:
+        subscriptions = Path(directory) / "webhook_subscriptions.json"
+        subscriptions.write_text("{}", encoding="utf-8")
+        try:
+            validator.validate_no_dynamic_webhook_subscriptions(subscriptions)
+        except SystemExit as exc:
+            assert "dynamic Hermes webhook subscriptions are forbidden" in str(exc)
+        else:
+            raise AssertionError("empty dynamic webhook subscriptions unexpectedly passed")
+        subscriptions.unlink()
+        subscriptions.symlink_to(Path(directory) / "missing-subscriptions")
+        try:
+            validator.validate_no_dynamic_webhook_subscriptions(subscriptions)
+        except SystemExit as exc:
+            assert "dynamic Hermes webhook subscriptions are forbidden" in str(exc)
+        else:
+            raise AssertionError("dangling dynamic webhook subscription symlink passed")
+
+    with tempfile.TemporaryDirectory(prefix="nix-hermes-dangling-outbox-") as directory:
+        dangling = Path(directory) / "paperclip-question-delivery.db"
+        dangling.symlink_to(Path(directory) / "missing-target")
+        try:
+            validator.validate_optional_state_database(
+                dangling, "Paperclip question outbox"
+            )
+        except SystemExit as exc:
+            assert "Paperclip question outbox ownership or mode is unsafe" in str(exc)
+        else:
+            raise AssertionError("dangling question outbox symlink unexpectedly passed")
+
+        dangling_runs = Path(directory) / "runs_idempotency.db"
+        dangling_runs.symlink_to(Path(directory) / "missing-runs-target")
+        try:
+            validator.validate_optional_state_database(
+                dangling_runs, "Hermes Runs idempotency database"
+            )
+        except SystemExit as exc:
+            assert "Hermes Runs idempotency database ownership or mode is unsafe" in str(exc)
+        else:
+            raise AssertionError("dangling Runs database symlink unexpectedly passed")
+
+        regular = Path(directory) / "regular.db"
+        alias = Path(directory) / "hardlinked.db"
+        regular.touch(mode=0o600)
+        os.link(regular, alias)
+        try:
+            validator.validate_optional_state_database(
+                alias, "Paperclip question outbox"
+            )
+        except SystemExit as exc:
+            assert "Paperclip question outbox ownership or mode is unsafe" in str(exc)
+        else:
+            raise AssertionError("hardlinked state database unexpectedly passed")
+
+        unsafe_directory = Path(directory) / "unsafe-state"
+        unsafe_directory.mkdir(mode=0o777)
+        unsafe_directory.chmod(0o777)
+        try:
+            validator.validate_optional_private_directory(
+                unsafe_directory, "Paperclip question outbox directory"
+            )
+        except SystemExit as exc:
+            assert "question outbox directory ownership or mode is unsafe" in str(exc)
+        else:
+            raise AssertionError("unsafe state directory unexpectedly passed")
+
     with configured_environment():
         with tempfile.TemporaryDirectory(prefix="nix-hermes-process-disabled-") as directory:
             root = Path(directory)
@@ -305,6 +375,8 @@ def main() -> None:
         for changed, expected in (
             ({"TELEGRAM_BOT_TOKEN": "stale-token"}, "token differs"),
             ({"TELEGRAM_ALLOWED_USERS": "987654321"}, "TELEGRAM_ALLOWED_USERS differs"),
+            ({"TELEGRAM_HOME_CHANNEL": "987654321"}, "TELEGRAM_HOME_CHANNEL differs"),
+            ({"PAPERCLIP_LIOR_USER_ID": "stale-lior-user"}, "founder Paperclip user differs"),
             ({"TELEGRAM_ALLOW_ALL_USERS": "true"}, "TELEGRAM_ALLOW_ALL_USERS differs"),
             ({"GATEWAY_ALLOW_ALL_USERS": "true"}, "GATEWAY_ALLOW_ALL_USERS differs"),
             ({"OPENCODE_GO_BASE_URL": "https://unreviewed.invalid/v1"},

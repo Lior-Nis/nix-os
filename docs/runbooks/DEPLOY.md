@@ -207,7 +207,7 @@ sudoedit /etc/nix-os/hermes.env
 
 The rotation helper prompts for the BotFather token through `/dev/tty` with terminal echo disabled. It never accepts the token in an argument or environment variable. It verifies BotFather token shape and calls Telegram `getMe`; `ok`, `result.is_bot`, and the case-insensitive username must match the non-secret `HERMES_TELEGRAM_BOT_USERNAME` before the file can change. The helper then replaces exactly one `TELEGRAM_BOT_TOKEN` entry with an atomic, fsynced mode-`0600` rewrite while preserving every other byte. It rejects a relative, symlinked, non-regular, hard-linked, non-root-owned, or group/world-accessible production secret file. Only the validated non-secret bot ID and username are printed.
 
-For an operator pipeline that already receives the token securely on standard input, use `--stdin`; still never place the token in the command line, an environment variable, a file in the checkout, or chat. With `sudoedit`, replace the remaining numeric user-ID placeholder and `OPENCODE_GO_API_KEY` placeholder. Keep the generated `API_SERVER_KEY`; do not reuse it as any other credential. The completed file contains exactly the API server key, OpenCode Go key, Telegram token/user allowlist, and two explicit false allow-all flags. Keep mode `0600`. The Git-controlled Hermes config uses Lior's positive user ID as its non-empty `allowed_chats` value; because Telegram group/forum IDs are negative, this is the pinned release's hard DM-only gate in addition to `guest_mode: false` and `allow_bots: none`. `group_policy` is not a supported pinned-release setting and is intentionally absent.
+For an operator pipeline that already receives the token securely on standard input, use `--stdin`; still never place the token in the command line, an environment variable, a file in the checkout, or chat. With `sudoedit`, replace the numeric user-ID placeholders and `OPENCODE_GO_API_KEY` placeholder. Set `TELEGRAM_HOME_CHANNEL` to the same positive ID as `TELEGRAM_ALLOWED_USERS`. Keep the generated `API_SERVER_KEY` and the generated decision-webhook secret; do not reuse either for another credential. `HERMES_DECISION_WEBHOOK_SECRET` and upstream's `WEBHOOK_SECRET` alias must remain identical to each other but distinct from `API_SERVER_KEY`. The completed file contains exactly those three key entries, the OpenCode Go key, Telegram token/user allowlist/home chat, and two explicit false allow-all flags. Keep mode `0600`. The Git-controlled Hermes config uses Lior's positive user ID as its non-empty `allowed_chats` value; because Telegram group/forum IDs are negative, this is the pinned release's hard DM-only gate in addition to `guest_mode: false` and `allow_bots: none`. `group_policy` is not a supported pinned-release setting and is intentionally absent.
 
 ### 2. Deploy and authorize the provider
 
@@ -336,3 +336,39 @@ Use the private Telegram conversation with Chief and verify each result in Paper
 8. Restart the Compose runtime, then reboot the VPS. After each, verify Paperclip health, bot response, continuity marker, brain read, and current Paperclip issue access.
 
 Complete the Slice 1 downloaded-off-host recovery gate in `RESTORE.md`. Record timestamps plus non-secret company/project/agent/issue IDs in the implementation plan only after every gate passes. Do not start Slice 2.
+
+## Slice 2 pre-acceptance deployment diagnostics
+
+Use this section only from a reviewed, green, merged Slice 2 commit. It documents the intended diagnostics and does not by itself establish Slice 2 acceptance.
+
+On a fresh install, the reviewed secret initializer creates the Slice 2 fields. On an existing Slice 1 deployment it deliberately refuses to overwrite `/etc/nix-os/hermes.env`; use `sudoedit` to preserve the existing values and add a newly generated 64-lowercase-hex `HERMES_DECISION_WEBHOOK_SECRET`, an identical `WEBHOOK_SECRET`, and `TELEGRAM_HOME_CHANNEL` equal to the sole existing `TELEGRAM_ALLOWED_USERS` value. Never print the secret. Confirm `.env` still pins `PAPERCLIP_LIOR_USER_ID` to Lior's immutable Paperclip user ID. Then run the ordinary configuration and runtime gates:
+
+```sh
+sudo -E ./scripts/check-config "$PWD/.env"
+sudo -E ./scripts/check-paperclip-chief-topology "$PWD/.env"
+sudo -E docker compose --env-file "$PWD/.env" up -d --no-deps --wait --force-recreate hermes
+sudo -E ./scripts/configure-hermes verify "$PWD/.env"
+sudo -E docker compose --env-file "$PWD/.env" exec -T --user 10000:10000 hermes \
+  python3 /opt/nix/validate-tool-boundary.py webhook-config
+```
+
+The verifier must find exactly eleven Paperclip tools, with checkout and structured questions as the only additions to the accepted Slice 1 nine-tool surface. It must also prove the webhook binds only to container loopback on port 8644, has one fixed HMAC route, uses `deliver_only` to the existing Telegram adapter, permits no dynamic subscription, and keeps `paperclipApiRequest` out of the model-visible catalog. Neither 8642 nor 8644 may be host-published.
+
+The two new state files live inside the already-backed-up Hermes volume. Inspect metadata without dumping either database:
+
+```sh
+sudo -E docker compose --env-file "$PWD/.env" exec -T --user 10000:10000 hermes \
+  sh -ec 'for path in /opt/data/runs_idempotency.db /opt/data/state/paperclip-question-delivery.db; do test ! -e "$path" || stat -c "%F %h %u:%g %a %n" "$path"; done'
+```
+
+Every existing file must be a uid/gid `10000:10000`, mode `0600`, regular single-link file. `runs_idempotency.db` preserves Runs API replay/conflict state across restart. The question outbox preserves one row per authoritative Paperclip interaction. Treat `failed_not_sent` as the only automatically retryable notification state; `unknown` means delivery may have occurred and must not be replayed blindly. Do not print webhook payloads, question bodies, Telegram chat IDs, or secrets while diagnosing. Use sanitized service logs and the Paperclip interaction/run records for correlation.
+
+Before live acceptance, run the fast in-memory contract model from the reviewed checkout. It is regression coverage, not upstream integration or acceptance evidence:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 tests/e2e/paperclip-hermes-loop.py
+```
+
+Hosted Docker CI additionally runs `tests/smoke/paperclip-hermes-gateway-image.sh`. That fresh-state check compiles and invokes the exact adapter source in the pinned Paperclip image against the pinned Hermes image. It proves run admission, redacted correlation, event-stream use, polling fallback, issue-session isolation, idempotent replay and conflict, and replay after a gateway restart. With no provider secret, the admitted runs are expected to end in a visible provider failure; this is admission and transport evidence only, not a successful employee lifecycle. The following `tests/smoke/backup-restore.sh` CI step separately uses a real pinned Paperclip server and the exact official MCP package under supported heartbeat runs to prove checkout, run-attributed issue update/comment/child creation, forced human-only structured questioning addressed to the pinned Lior user, exact-key replay, a real competing-run HTTP-409 checkout conflict, transition to `in_review`, and preservation of the resulting interaction plus execution/delivery databases through encrypted backup and isolated restore. Neither secret-free check replaces the successful live lifecycle acceptance below.
+
+Live acceptance must still prove the Paperclip issue/run/Hermes-run correlation, one child issue, issue-scoped session isolation, a human-only question addressed exactly to Lior and delivered once through Chief's existing Telegram chat, and an interrupted attempt followed by one deliberate successful retry. Do not record Slice 2 as accepted until the PR, hosted CI, independent review, deployment, live checks, and recovery extension all pass.

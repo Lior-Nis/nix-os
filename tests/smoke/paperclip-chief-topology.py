@@ -145,6 +145,15 @@ def main() -> None:
         "gateway key does not match",
     )
     expect_rejected(
+        lambda value, snapshot: (
+            value.update({"gatewayKeySha256": value["credentialSha256"]}),
+            snapshot["agents"][0].update(
+                {"chiefGatewayKeyHash": value["credentialSha256"]}
+            ),
+        ),
+        "credentials are not distinct",
+    )
+    expect_rejected(
         lambda _metadata, value: value["agents"].append(
             {
                 "id": "77777777-7777-4777-8777-777777777777",

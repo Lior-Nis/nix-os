@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Add trusted per-call heartbeat attribution to two Paperclip MCP mutations.
+"""Add trusted per-call heartbeat attribution to Paperclip MCP mutations.
 
 All ordinary traffic is proxied to one warmed instance of the exact official
-package. When Hermes supplies a valid request-local Paperclip run ID, only an
-existing-issue update/comment is routed through a short-lived, offline official
-MCP process carrying that ID. The official schemas remain unchanged.
+package. When Hermes supplies a valid request-local Paperclip run ID, lifecycle
+mutations are routed through a short-lived, offline official MCP process
+carrying that ID. Checkout and user-question interactions require that trusted
+context; issue creation intentionally retains official no-run behavior for
+Telegram commitments. The official schemas remain unchanged.
 """
 
 from __future__ import annotations
@@ -18,19 +20,39 @@ import signal
 import subprocess
 import sys
 import time
+from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from paperclip_question_delivery import (
+    human_only_question_api_arguments,
+    notify_question_created,
+)
 
 
 PACKAGE = "@paperclipai/mcp-server@2026.916.1"
 PERSISTENT_UPSTREAM_COMMAND = ("npx", "-y", PACKAGE)
 SCOPED_UPSTREAM_COMMAND = ("npx", "-y", "--offline", PACKAGE)
-RUN_SCOPED_TOOLS = {"paperclipUpdateIssue", "paperclipAddComment"}
-MUTATION_TOOLS = {
+RUN_SCOPED_TOOLS = {
     "paperclipCreateIssue",
+    "paperclipCheckoutIssue",
     "paperclipUpdateIssue",
     "paperclipAddComment",
+    "paperclipAskUserQuestions",
+}
+REQUIRED_RUN_SCOPED_TOOLS = {
+    "paperclipCheckoutIssue",
+    "paperclipAskUserQuestions",
+}
+MUTATION_TOOLS = {
+    "paperclipCreateIssue",
+    "paperclipCheckoutIssue",
+    "paperclipUpdateIssue",
+    "paperclipAddComment",
+    "paperclipAskUserQuestions",
 }
 RUN_ID_META_KEY = "com.paperclip/run-id"
+INTERNAL_API_TOOL = "paperclipApiRequest"
 UUID_PATTERN = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 )
@@ -208,13 +230,17 @@ def _emit(payload: dict[str, Any]) -> None:
     sys.stdout.flush()
 
 
-def _invalid_params(request_id: Any) -> dict[str, Any]:
+def _invalid_params(request_id: Any, *, missing: bool = False) -> dict[str, Any]:
     return {
         "jsonrpc": "2.0",
         "id": request_id,
         "error": {
             "code": -32602,
-            "message": "Trusted Paperclip run metadata is invalid",
+            "message": (
+                "Trusted Paperclip run metadata is required"
+                if missing
+                else "Trusted Paperclip run metadata is invalid"
+            ),
         },
     }
 
@@ -225,7 +251,8 @@ def _tool_failure(request_id: Any, *, uncertain: bool) -> dict[str, Any]:
             "error": "outcome_uncertain",
             "message": (
                 "The mutation was dispatched but no conclusive response was received. "
-                "Read back the issue and comments before retrying."
+                "Read back the issue, child issues, comments, checkout, and pending "
+                "interactions before retrying."
             ),
         }
     else:
@@ -276,6 +303,23 @@ def _explicit_run_metadata(request: dict[str, Any]) -> tuple[bool, str | None]:
     if not isinstance(value, str) or UUID_PATTERN.fullmatch(value) is None:
         return True, None
     return True, value
+
+
+def _valid_scoped_child_issue(request: dict[str, Any]) -> bool:
+    params = request.get("params")
+    arguments = params.get("arguments") if isinstance(params, dict) else None
+    if not isinstance(arguments, dict):
+        return False
+    for key in ("parentId", "projectId"):
+        value = arguments.get(key)
+        if not isinstance(value, str) or UUID_PATTERN.fullmatch(value) is None:
+            return False
+    idempotency_key = arguments.get("idempotencyKey")
+    return (
+        isinstance(idempotency_key, str)
+        and bool(idempotency_key.strip())
+        and len(idempotency_key.strip()) <= 255
+    )
 
 
 def _mutation_call(
@@ -347,6 +391,51 @@ def _restart_persistent(
         return None
 
 
+def _deliver_question_notification(
+    request: dict[str, Any], response: dict[str, Any]
+) -> str | None:
+    """Run the fixed Hermes delivery side effect and return a safe disposition."""
+    try:
+        state = notify_question_created(response, request)
+    except Exception as exc:
+        print(
+            f"Paperclip question notification failed safely ({type(exc).__name__})",
+            file=sys.stderr,
+            flush=True,
+        )
+        return "failed"
+    if state is not None:
+        print(
+            f"Paperclip question notification state={state}",
+            file=sys.stderr,
+            flush=True,
+        )
+    return state
+
+
+def _surface_delivery_disposition(response: dict[str, Any], state: str | None) -> None:
+    """Tell Chief how to recover without changing Paperclip interaction truth."""
+    if state in (None, "delivered", "duplicate"):
+        return
+    result = response.get("result")
+    content = result.get("content") if isinstance(result, dict) else None
+    if not isinstance(content, list):
+        return
+    if state == "failed_not_sent":
+        instruction = (
+            "Nix notification status: Telegram was definitely not sent. After the "
+            "delivery service is healthy, retry paperclipAskUserQuestions with the exact "
+            "same issueId, payload, and idempotencyKey; do not create another interaction."
+        )
+    else:
+        instruction = (
+            "Nix notification status: Telegram delivery is not confirmed. Do not retry "
+            "or create another interaction because delivery may have occurred; keep the "
+            "Paperclip interaction pending and request operator recovery."
+        )
+    content.append({"type": "text", "text": instruction})
+
+
 def serve() -> int:
     try:
         persistent = McpProcess(PERSISTENT_UPSTREAM_COMMAND)
@@ -373,29 +462,60 @@ def serve() -> int:
             persistent_mutation = False
             if method == "tools/call" and isinstance(params, dict):
                 name = params.get("name")
+                if name == INTERNAL_API_TOOL:
+                    _emit(_invalid_params(request.get("id")))
+                    continue
                 persistent_mutation = name in MUTATION_TOOLS
                 has_reserved, run_id = _explicit_run_metadata(request)
-                if name in RUN_SCOPED_TOOLS and has_reserved:
-                    if run_id is None:
-                        _emit(_invalid_params(request.get("id")))
+                if name in RUN_SCOPED_TOOLS:
+                    if has_reserved:
+                        if run_id is None:
+                            _emit(_invalid_params(request.get("id")))
+                            continue
+                        if initialize_params is None:
+                            _emit(_tool_failure(request.get("id"), uncertain=False))
+                            continue
+                        if name == "paperclipCreateIssue" and not _valid_scoped_child_issue(
+                            request
+                        ):
+                            _emit(_invalid_params(request.get("id")))
+                            continue
+                        scoped_request = request
+                        if name == "paperclipAskUserQuestions":
+                            arguments = params.get("arguments")
+                            if not isinstance(arguments, dict):
+                                _emit(_invalid_params(request.get("id")))
+                                continue
+                            try:
+                                internal_arguments = human_only_question_api_arguments(
+                                    arguments, run_id
+                                )
+                            except (ValueError, RuntimeError):
+                                _emit(_invalid_params(request.get("id")))
+                                continue
+                            scoped_request = copy.deepcopy(request)
+                            scoped_request["params"]["name"] = INTERNAL_API_TOOL
+                            scoped_request["params"]["arguments"] = internal_arguments
+                        try:
+                            response, preceding = _mutation_call(
+                                scoped_request, initialize_params, run_id
+                            )
+                        except (BrokenPipeError, OSError, UpstreamFailure, ValueError) as exc:
+                            uncertain = not isinstance(exc, UpstreamFailure) or exc.dispatched
+                            response = _tool_failure(
+                                request.get("id"), uncertain=uncertain
+                            )
+                            preceding = []
+                        if name == "paperclipAskUserQuestions":
+                            delivery_state = _deliver_question_notification(request, response)
+                            _surface_delivery_disposition(response, delivery_state)
+                        for message in preceding:
+                            _emit(message)
+                        _emit(response)
                         continue
-                    if initialize_params is None:
-                        _emit(_tool_failure(request.get("id"), uncertain=False))
+                    if name in REQUIRED_RUN_SCOPED_TOOLS:
+                        _emit(_invalid_params(request.get("id"), missing=True))
                         continue
-                    try:
-                        response, preceding = _mutation_call(
-                            request, initialize_params, run_id
-                        )
-                    except (BrokenPipeError, OSError, UpstreamFailure, ValueError) as exc:
-                        uncertain = not isinstance(exc, UpstreamFailure) or exc.dispatched
-                        response = _tool_failure(
-                            request.get("id"), uncertain=uncertain
-                        )
-                        preceding = []
-                    for message in preceding:
-                        _emit(message)
-                    _emit(response)
-                    continue
                 request = _strip_reserved_metadata(request)
 
             if "id" not in request:

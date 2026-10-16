@@ -67,6 +67,7 @@ def fixture(base: Path, *, content: bytes | None = None) -> tuple[Path, Path, Pa
             + b"TELEGRAM_BOT_TOKEN="
             + OLD_TOKEN.encode("ascii")
             + b"\r\nTELEGRAM_ALLOWED_USERS=123456789\r\n"
+            + b"TELEGRAM_HOME_CHANNEL=123456789\r\n"
             + b"TELEGRAM_ALLOW_ALL_USERS=false\r\nGATEWAY_ALLOW_ALL_USERS=false"
         )
     env_file.write_bytes(content)

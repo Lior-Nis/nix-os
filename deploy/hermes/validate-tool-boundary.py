@@ -36,8 +36,10 @@ APPROVED_PAPERCLIP_TOOLS = {
     "paperclipListProjects",
     "paperclipGetProject",
     "paperclipCreateIssue",
+    "paperclipCheckoutIssue",
     "paperclipUpdateIssue",
     "paperclipAddComment",
+    "paperclipAskUserQuestions",
 }
 FORBIDDEN_EXACT = {
     "terminal",
@@ -59,7 +61,9 @@ HERMES_ENV = Path("/opt/data/.env")
 HERMES_AUTH = Path("/opt/data/auth.json")
 HERMES_PROTECTED_TOKENS = Path("/opt/data/mcp-tokens")
 PREFLIGHT_CREDENTIAL_ENV = {
-    "API_SERVER_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS",
+    "API_SERVER_KEY", "HERMES_DECISION_WEBHOOK_SECRET", "TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS",
+    "TELEGRAM_HOME_CHANNEL",
+    "PAPERCLIP_LIOR_USER_ID", "WEBHOOK_SECRET",
     "PAPERCLIP_API_KEY", "PAPERCLIP_AGENT_ID", "PAPERCLIP_COMPANY_ID", "PAPERCLIP_API_URL",
     "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "GOOGLE_API_KEY",
     "OPENCODE_GO_API_KEY", "OPENCODE_GO_BASE_URL", "OPENCODE_ZEN_API_KEY",
@@ -71,11 +75,109 @@ BRAIN_ROOT = Path("/workspace/nix-brain")
 HERMES_STATE_DB = Path("/opt/data/state.db")
 HERMES_CONFIG = Path("/opt/data/config.yaml")
 HERMES_LEGACY_SESSIONS = Path("/opt/data/sessions/sessions.json")
+WEBHOOK_SUBSCRIPTIONS = Path("/opt/data/webhook_subscriptions.json")
+RUNS_IDEMPOTENCY_DB = Path("/opt/data/runs_idempotency.db")
+QUESTION_OUTBOX = Path("/opt/data/state/paperclip-question-delivery.db")
 EXPECTED_MODEL_ROUTE = {
     "provider": "opencode-go",
     "model": "gpt-5.6-luna",
     "base_url": "https://opencode.ai/zen/go/v1",
 }
+
+
+def validate_optional_state_database(path: Path, label: str) -> None:
+    """Reject every non-regular representation, including dangling symlinks."""
+    if not os.path.lexists(path):
+        return
+    metadata = path.lstat()
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_nlink != 1
+        or metadata.st_uid != 10000
+        or metadata.st_gid != 10000
+        or stat.S_IMODE(metadata.st_mode) != 0o600
+    ):
+        fail(f"the {label} ownership or mode is unsafe")
+
+
+def validate_optional_private_directory(path: Path, label: str) -> None:
+    if not os.path.lexists(path):
+        return
+    metadata = path.lstat()
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != 10000
+        or metadata.st_gid != 10000
+        or stat.S_IMODE(metadata.st_mode) & 0o022
+    ):
+        fail(f"the {label} ownership or mode is unsafe")
+
+
+def validate_no_dynamic_webhook_subscriptions(path: Path) -> None:
+    """Chief has one immutable route; even an empty mutable route file is unsafe."""
+    if os.path.lexists(path):
+        fail("dynamic Hermes webhook subscriptions are forbidden for Chief")
+
+
+def webhook_config_check(
+    *, subscriptions_path: Path = WEBHOOK_SUBSCRIPTIONS,
+    runs_idempotency_path: Path = RUNS_IDEMPOTENCY_DB,
+    outbox_path: Path = QUESTION_OUTBOX,
+    quiet: bool = False,
+) -> None:
+    """Validate the fixed, non-model-visible Paperclip decision delivery lane."""
+    from gateway.config import Platform, load_gateway_config
+
+    config = load_gateway_config()
+    telegram = config.platforms.get(Platform.TELEGRAM)
+    webhook = config.platforms.get(Platform.WEBHOOK)
+    if telegram is None or telegram.home_channel is None:
+        fail("Telegram has no statically configured home channel")
+    allowed_user = os.getenv("TELEGRAM_ALLOWED_USERS", "")
+    configured_home = os.getenv("TELEGRAM_HOME_CHANNEL", "")
+    if re.fullmatch(r"[1-9][0-9]*", allowed_user) is None:
+        fail("Telegram home channel is not backed by one positive allowlisted user")
+    if not hmac.compare_digest(configured_home, allowed_user):
+        fail("external Telegram home channel differs from the sole allowlisted user")
+    if str(telegram.home_channel.chat_id) != allowed_user:
+        fail("Telegram home channel differs from the sole allowlisted user")
+    if telegram.gateway_restart_notification is not False:
+        fail("Telegram restart notifications must remain disabled")
+    if webhook is None or webhook.enabled is not True:
+        fail("the fixed Hermes webhook receiver is not enabled")
+    secret = os.getenv("HERMES_DECISION_WEBHOOK_SECRET", "")
+    if re.fullmatch(r"[0-9a-f]{64}", secret) is None:
+        fail("the decision webhook secret is missing or invalid")
+    if hmac.compare_digest(secret, os.getenv("API_SERVER_KEY", "")):
+        fail("the decision webhook and Runs API secrets are not distinct")
+    if os.getenv("WEBHOOK_ENABLED") != "true" or not hmac.compare_digest(
+        secret, os.getenv("WEBHOOK_SECRET", "")
+    ):
+        fail("the upstream webhook receiver secret differs from the decision sender secret")
+    expected_route = {
+        "events": ["paperclip.decision_required"],
+        "prompt": "{message}",
+        "deliver": "telegram",
+        "deliver_only": True,
+    }
+    expected_extra = {
+        "host": "127.0.0.1",
+        "port": 8644,
+        "rate_limit": 10,
+        "max_body_bytes": 16384,
+        "secret": secret,
+        "routes": {"paperclip-decision": expected_route},
+    }
+    if webhook.extra != expected_extra:
+        fail("the Hermes webhook boundary differs from the fixed delivery policy")
+    validate_no_dynamic_webhook_subscriptions(subscriptions_path)
+    validate_optional_state_database(runs_idempotency_path, "Hermes Runs idempotency database")
+    validate_optional_private_directory(outbox_path.parent, "Paperclip question outbox directory")
+    validate_optional_state_database(outbox_path, "Paperclip question outbox")
+    if not quiet:
+        print("Hermes Paperclip decision-delivery boundary verified.")
 
 
 def fail(message: str) -> None:
@@ -103,11 +205,18 @@ def runtime_check() -> None:
     from tools.mcp_tool_discovery import discover_mcp_tools
     from tools.mcp_tool_schema import mcp_prefixed_tool_name
 
+    webhook_config_check(quiet=True)
     config = load_config()
+    paperclip_server = config.get("mcp_servers", {}).get("paperclip", {})
+    paperclip_environment = paperclip_server.get("env", {})
+    if paperclip_environment.get("PAPERCLIP_LIOR_USER_ID") != os.getenv(
+        "PAPERCLIP_LIOR_USER_ID"
+    ):
+        fail("Paperclip question addressee differs from the validated founder user")
     discovered = set(discover_mcp_tools(allowed_mcp_names=["paperclip"]))
     expected_mcp = {mcp_prefixed_tool_name("paperclip", name) for name in APPROVED_PAPERCLIP_TOOLS}
     if discovered != expected_mcp:
-        fail(f"Paperclip MCP discovery differs from the nine-tool policy: {sorted(discovered)}")
+        fail(f"Paperclip MCP discovery differs from the eleven-tool policy: {sorted(discovered)}")
     expected_concrete = EXPECTED_NATIVE_TOOLS | expected_mcp
 
     summary: dict[str, dict[str, list[str]]] = {}
@@ -636,10 +745,14 @@ def process_check(
             fail("live gateway lacks the validated nix-brain supplemental group")
     if profile_env.exists():
         forbidden_profile_keys = {
+            "HERMES_DECISION_WEBHOOK_SECRET",
             "OPENCODE_GO_BASE_URL",
+            "PAPERCLIP_LIOR_USER_ID",
             "TELEGRAM_BOT_TOKEN",
+            "TELEGRAM_HOME_CHANNEL",
             "TELEGRAM_ALLOWED_USERS",
             "TELEGRAM_ALLOW_ALL_USERS",
+            "WEBHOOK_SECRET",
             "GATEWAY_ALLOW_ALL_USERS",
         }
         with profile_env.open("r", encoding="utf-8-sig", newline="") as stream:
@@ -658,6 +771,7 @@ def process_check(
             fail("unsupported expected Telegram mode")
         expected_token_digest = os.getenv("NIX_EXPECT_TELEGRAM_TOKEN_SHA256", "").encode()
         expected_user = os.getenv("NIX_EXPECT_TELEGRAM_ALLOWED_USERS", "").encode()
+        expected_home = os.getenv("NIX_EXPECT_TELEGRAM_HOME_CHANNEL", "").encode()
         expected_telegram_allow_all = os.getenv(
             "NIX_EXPECT_TELEGRAM_ALLOW_ALL_USERS", ""
         ).encode()
@@ -666,16 +780,25 @@ def process_check(
             fail("validated external Telegram token digest is missing or invalid")
         if re.fullmatch(rb"[1-9][0-9]*", expected_user) is None:
             fail("validated external Telegram allowlist is not exactly one positive numeric user ID")
+        if not hmac.compare_digest(expected_home, expected_user):
+            fail("validated external Telegram home channel differs from the sole allowlisted user")
         if expected_telegram_allow_all != b"false" or expected_gateway_allow_all != b"false":
             fail("validated external Telegram allow-all controls are not false")
 
         gateway_pid = found["gateway"][0][0]
         environment = _process_environment(proc_root / str(gateway_pid))
+        expected_lior_user = os.getenv("NIX_EXPECT_PAPERCLIP_LIOR_USER_ID", "").encode()
+        if not expected_lior_user:
+            fail("validated founder Paperclip user ID is missing")
+        live_lior_user = _one_process_value(environment, "PAPERCLIP_LIOR_USER_ID")
+        if not hmac.compare_digest(live_lior_user, expected_lior_user):
+            fail("live gateway founder Paperclip user differs from deployment configuration")
         opencode_go_base_urls = environment.get("OPENCODE_GO_BASE_URL", [])
         if len(opencode_go_base_urls) > 1 or any(opencode_go_base_urls):
             fail("live gateway overrides the reviewed OpenCode Go endpoint")
         live_token = _one_process_value(environment, "TELEGRAM_BOT_TOKEN")
         live_user = _one_process_value(environment, "TELEGRAM_ALLOWED_USERS")
+        live_home = _one_process_value(environment, "TELEGRAM_HOME_CHANNEL")
         live_telegram_allow_all = _one_process_value(environment, "TELEGRAM_ALLOW_ALL_USERS")
         live_gateway_allow_all = _one_process_value(environment, "GATEWAY_ALLOW_ALL_USERS")
         if expected_telegram_mode == "disabled" and live_token:
@@ -687,6 +810,7 @@ def process_check(
             fail("live gateway Telegram token differs from the validated external configuration")
         for label, live, expected_value in (
             ("TELEGRAM_ALLOWED_USERS", live_user, expected_user),
+            ("TELEGRAM_HOME_CHANNEL", live_home, expected_home),
             ("TELEGRAM_ALLOW_ALL_USERS", live_telegram_allow_all, expected_telegram_allow_all),
             ("GATEWAY_ALLOW_ALL_USERS", live_gateway_allow_all, expected_gateway_allow_all),
         ):
@@ -706,7 +830,10 @@ def process_check(
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("runtime", "api", "files-preflight", "files", "processes"))
+    parser.add_argument(
+        "mode",
+        choices=("runtime", "api", "files-preflight", "files", "processes", "webhook-config"),
+    )
     args = parser.parse_args()
     if args.mode == "runtime":
         runtime_check()
@@ -716,6 +843,8 @@ def main() -> None:
         files_check(preflight=True)
     elif args.mode == "processes":
         process_check()
+    elif args.mode == "webhook-config":
+        webhook_config_check()
     else:
         files_check()
 
