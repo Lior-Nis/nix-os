@@ -66,6 +66,7 @@ host_port=$(require_config PAPERCLIP_HOST_PORT)
 postgres_env=$(require_config POSTGRES_ENV_FILE)
 paperclip_env=$(require_config PAPERCLIP_ENV_FILE)
 hermes_env=$(require_config HERMES_ENV_FILE)
+hermes_telegram_bot_username=$(require_config HERMES_TELEGRAM_BOT_USERNAME)
 hermes_mode_file=$(require_config HERMES_TELEGRAM_MODE_FILE)
 nix_brain_path=$(require_config NIX_BRAIN_HOST_PATH)
 signup_disabled=$(require_config PAPERCLIP_AUTH_DISABLE_SIGN_UP)
@@ -75,6 +76,10 @@ signup_disabled=$(require_config PAPERCLIP_AUTH_DISABLE_SIGN_UP)
 [[ "$host_port" =~ ^[0-9]+$ ]] || fail "PAPERCLIP_HOST_PORT must be an integer"
 [[ "$lior_paperclip_user_id" =~ ^[A-Za-z0-9._:-]{3,200}$ ]] \
   || fail "PAPERCLIP_LIOR_USER_ID has an invalid shape"
+[[ "$hermes_telegram_bot_username" =~ ^[A-Za-z0-9_]{5,32}$ ]] \
+  || fail "HERMES_TELEGRAM_BOT_USERNAME must be a bare Telegram username"
+[[ $(printf '%s' "$hermes_telegram_bot_username" | tr '[:upper:]' '[:lower:]') == *bot ]] \
+  || fail "HERMES_TELEGRAM_BOT_USERNAME must end in bot"
 
 if [[ ${NIX_ALLOW_TEST_CONFIG:-0} != 1 ]]; then
   [[ "$public_url" =~ ^https://nix-os\.[a-z0-9-]+\.ts\.net$ ]] \
@@ -87,9 +92,13 @@ fi
 
 for secret_file in "$postgres_env" "$paperclip_env" "$hermes_env"; do
   [[ "$secret_file" == /* ]] || fail "secret file paths must be absolute: $secret_file"
-  [[ -f "$secret_file" ]] || fail "secret file does not exist: $secret_file"
+  [[ -f "$secret_file" && ! -L "$secret_file" ]] || fail "secret file is missing or unsafe: $secret_file"
   private_mode "$secret_file"
 done
+
+if [[ ${NIX_ALLOW_TEST_CONFIG:-0} != 1 ]]; then
+  [[ $(file_owner_uid "$hermes_env") == 0 ]] || fail "Hermes external environment must be owned by root"
+fi
 
 [[ "$hermes_mode_file" == /* ]] || fail "HERMES_TELEGRAM_MODE_FILE must be absolute"
 [[ -f "$hermes_mode_file" && ! -L "$hermes_mode_file" ]] || fail "Hermes Telegram mode marker is missing or unsafe: $hermes_mode_file"

@@ -30,6 +30,7 @@ mkdir "$test_tmp_dir/nix-brain"
   printf 'POSTGRES_ENV_FILE=%s\n' "$test_tmp_dir/postgres.env"
   printf 'PAPERCLIP_ENV_FILE=%s\n' "$test_tmp_dir/paperclip.env"
   printf 'HERMES_ENV_FILE=%s\n' "$test_tmp_dir/hermes.env"
+  printf 'HERMES_TELEGRAM_BOT_USERNAME=the_nixos_bot\n'
   printf 'HERMES_TELEGRAM_MODE_FILE=%s\n' "$test_tmp_dir/hermes-telegram-mode.env"
   printf 'NIX_BRAIN_HOST_PATH=%s\n' "$test_tmp_dir/nix-brain"
   printf 'PAPERCLIP_AUTH_DISABLE_SIGN_UP=true\n'
@@ -55,6 +56,15 @@ if NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$test_tmp_dir/test
   exit 1
 fi
 mv "$test_tmp_dir/hermes-safe.env" "$test_tmp_dir/hermes.env"
+
+cp "$test_tmp_dir/test.env" "$test_tmp_dir/invalid-bot.env"
+sed 's/^HERMES_TELEGRAM_BOT_USERNAME=the_nixos_bot$/HERMES_TELEGRAM_BOT_USERNAME=@the_nixos_bot/' \
+  "$test_tmp_dir/invalid-bot.env" >"$test_tmp_dir/invalid-bot-new.env"
+mv "$test_tmp_dir/invalid-bot-new.env" "$test_tmp_dir/invalid-bot.env"
+if NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$test_tmp_dir/invalid-bot.env" >/dev/null 2>&1; then
+  printf 'unsafe Telegram bot username configuration unexpectedly passed\n' >&2
+  exit 1
+fi
 
 age_private_pattern='AGE-SECRET-KEY-(PQ-)?1[[:alnum:]]{20,}|AGE-PLUGIN-[A-Z0-9-]+-1[[:alnum:]]{20,}'
 public_secret_pattern='[0-9]{8,}:[A-Za-z0-9_-]{30,}|pcp_(api|claim|invite|bootstrap)?[_-]?[A-Za-z0-9_-]{30,}|ya29\.[A-Za-z0-9._-]{20,}|"refresh_token"[[:space:]]*:[[:space:]]*"[A-Za-z0-9._/-]{20,}"|^API_SERVER_KEY=[A-Za-z0-9_-]{32,}'

@@ -1,0 +1,283 @@
+#!/usr/bin/env python3
+"""Rotate the external Hermes Telegram token without exposing it to argv/env."""
+
+from __future__ import annotations
+
+import argparse
+import getpass
+import json
+import os
+from pathlib import Path
+import re
+import secrets
+import stat
+import subprocess
+import sys
+
+
+TOKEN_PATTERN = re.compile(r"^[0-9]{6,}:[A-Za-z0-9_-]{30,}$")
+USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9_]{5,32}$")
+TELEGRAM_API_BASE = "https://api.telegram.org"
+
+
+class RotationError(Exception):
+    pass
+
+
+def fail(message: str) -> None:
+    raise RotationError(message)
+
+
+def one_config_value(path: Path, key: str) -> str:
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        fail(f"cannot read configuration file {path}: {exc.strerror}")
+    prefix = key.encode("ascii") + b"="
+    values = [line[len(prefix) :] for line in raw.splitlines() if line.startswith(prefix)]
+    if len(values) != 1:
+        fail(f"{key} must appear exactly once in {path}")
+    try:
+        return values[0].decode("utf-8")
+    except UnicodeDecodeError:
+        fail(f"{key} is not valid UTF-8 in {path}")
+
+
+def read_token_from_stdin() -> str:
+    line = sys.stdin.buffer.readline()
+    if not line:
+        fail("no Telegram token was received on stdin")
+    if line.endswith(b"\n"):
+        line = line[:-1]
+    if line.endswith(b"\r"):
+        line = line[:-1]
+    try:
+        return line.decode("ascii")
+    except UnicodeDecodeError:
+        fail("Telegram token must contain only ASCII characters")
+
+
+def read_token_interactively() -> str:
+    try:
+        with open("/dev/tty", "r+", encoding="utf-8") as tty:
+            return getpass.getpass("Paste the replacement BotFather token: ", stream=tty)
+    except (EOFError, OSError) as exc:
+        fail(f"cannot read a hidden token from /dev/tty; use --stdin: {exc}")
+
+
+def validate_token_shape(token: str) -> None:
+    if not TOKEN_PATTERN.fullmatch(token):
+        fail("replacement token does not match the BotFather token shape")
+
+
+def telegram_get_me(token: str, expected_username: str) -> tuple[int, str]:
+    api_base = TELEGRAM_API_BASE
+    if os.environ.get("NIX_ALLOW_TEST_CONFIG") == "1":
+        api_base = os.environ.get("NIX_TELEGRAM_API_BASE", api_base).rstrip("/")
+    curl_config = f'url = "{api_base}/bot{token}/getMe"\n'.encode("ascii")
+    try:
+        completed = subprocess.run(
+            [
+                "curl",
+                "--disable",
+                "--silent",
+                "--show-error",
+                "--fail",
+                "--connect-timeout",
+                "10",
+                "--max-time",
+                "20",
+                "--config",
+                "-",
+            ],
+            input=curl_config,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    except FileNotFoundError:
+        fail("curl is required for Telegram bot identity validation")
+    if completed.returncode != 0:
+        fail("Telegram getMe validation failed; the external secret file was not changed")
+    try:
+        payload = json.loads(completed.stdout)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        fail("Telegram getMe returned an invalid response; the external secret file was not changed")
+    result = payload.get("result") if isinstance(payload, dict) else None
+    if not isinstance(payload, dict) or payload.get("ok") is not True or not isinstance(result, dict):
+        fail("Telegram getMe rejected the token; the external secret file was not changed")
+    bot_id = result.get("id")
+    username = result.get("username")
+    if result.get("is_bot") is not True:
+        fail("Telegram getMe did not identify a bot; the external secret file was not changed")
+    if isinstance(bot_id, bool) or not isinstance(bot_id, int) or bot_id <= 0:
+        fail("Telegram getMe returned an invalid bot ID; the external secret file was not changed")
+    if not isinstance(username, str) or not USERNAME_PATTERN.fullmatch(username):
+        fail("Telegram getMe returned an invalid bot username; the external secret file was not changed")
+    if username.casefold() != expected_username.casefold():
+        fail(
+            f"Telegram token belongs to @{username}, not the configured "
+            f"@{expected_username}; the external secret file was not changed"
+        )
+    return bot_id, username
+
+
+def validate_target_metadata(metadata: os.stat_result, target: Path, test_mode: bool) -> None:
+    if not stat.S_ISREG(metadata.st_mode):
+        fail(f"Hermes external environment must be a regular non-symlink file: {target}")
+    if metadata.st_nlink != 1:
+        fail(f"Hermes external environment must have exactly one hard link: {target}")
+    if metadata.st_mode & 0o077:
+        fail(f"Hermes external environment must not be group/world accessible: {target}")
+    if not test_mode and metadata.st_uid != 0:
+        fail(f"Hermes external environment must be owned by root: {target}")
+
+
+def read_target(dir_fd: int, name: str, target: Path, test_mode: bool) -> tuple[os.stat_result, bytes]:
+    try:
+        metadata = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        fail(f"Hermes external environment does not exist: {target}")
+    except OSError as exc:
+        fail(f"cannot inspect Hermes external environment {target}: {exc.strerror}")
+    validate_target_metadata(metadata, target, test_mode)
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(name, flags, dir_fd=dir_fd)
+    except OSError as exc:
+        fail(f"cannot safely open Hermes external environment {target}: {exc.strerror}")
+    try:
+        opened = os.fstat(fd)
+        if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
+            fail(f"Hermes external environment changed while it was being opened: {target}")
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        return metadata, b"".join(chunks)
+    finally:
+        os.close(fd)
+
+
+def replace_token_bytes(original: bytes, token: str) -> bytes:
+    pattern = re.compile(br"(?m)^TELEGRAM_BOT_TOKEN=[^\r\n]*")
+    matches = list(pattern.finditer(original))
+    if len(matches) != 1:
+        fail("TELEGRAM_BOT_TOKEN must appear exactly once in the Hermes external environment")
+    match = matches[0]
+    return original[: match.start()] + b"TELEGRAM_BOT_TOKEN=" + token.encode("ascii") + original[match.end() :]
+
+
+def write_atomically(
+    dir_fd: int,
+    name: str,
+    target: Path,
+    initial: os.stat_result,
+    original: bytes,
+    replacement: bytes,
+    test_mode: bool,
+) -> None:
+    current, current_bytes = read_target(dir_fd, name, target, test_mode)
+    identity_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_uid", "st_gid", "st_mode")
+    if any(getattr(initial, field) != getattr(current, field) for field in identity_fields) or current_bytes != original:
+        fail("Hermes external environment changed during identity validation; retry the rotation")
+
+    temporary_name = f".{name}.rotate-{secrets.token_hex(12)}"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    temp_fd = -1
+    try:
+        temp_fd = os.open(temporary_name, flags, 0o600, dir_fd=dir_fd)
+        offset = 0
+        while offset < len(replacement):
+            offset += os.write(temp_fd, replacement[offset:])
+        os.fchmod(temp_fd, 0o600)
+        os.fchown(temp_fd, initial.st_uid, initial.st_gid)
+        os.fsync(temp_fd)
+        os.close(temp_fd)
+        temp_fd = -1
+        os.replace(temporary_name, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        temporary_name = ""
+        os.fsync(dir_fd)
+    finally:
+        if temp_fd >= 0:
+            os.close(temp_fd)
+        if temporary_name:
+            try:
+                os.unlink(temporary_name, dir_fd=dir_fd)
+            except FileNotFoundError:
+                pass
+
+    final, final_bytes = read_target(dir_fd, name, target, test_mode)
+    if stat.S_IMODE(final.st_mode) != 0o600 or final_bytes != replacement:
+        fail("post-write verification of the Hermes external environment failed")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Safely rotate the external Hermes Telegram bot token."
+    )
+    parser.add_argument(
+        "config",
+        nargs="?",
+        default=os.environ.get("CONFIG_FILE", ".env"),
+        help="deployment configuration file (default: CONFIG_FILE or .env)",
+    )
+    parser.add_argument(
+        "--stdin",
+        action="store_true",
+        help="read one token line from stdin instead of prompting on /dev/tty",
+    )
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    config_path = Path(args.config)
+    test_mode = os.environ.get("NIX_ALLOW_TEST_CONFIG") == "1"
+    if test_mode and os.geteuid() == 0:
+        fail("NIX_ALLOW_TEST_CONFIG must not be set for a root production rotation")
+    if not test_mode and os.geteuid() != 0:
+        fail("production Telegram token rotation must run as root")
+
+    target_value = one_config_value(config_path, "HERMES_ENV_FILE")
+    expected_username = one_config_value(config_path, "HERMES_TELEGRAM_BOT_USERNAME")
+    target = Path(target_value)
+    if not target.is_absolute():
+        fail("HERMES_ENV_FILE must be an absolute path")
+    if expected_username.startswith("@") or not USERNAME_PATTERN.fullmatch(expected_username):
+        fail("HERMES_TELEGRAM_BOT_USERNAME must be a bare Telegram username")
+    if not expected_username.casefold().endswith("bot"):
+        fail("HERMES_TELEGRAM_BOT_USERNAME must end in bot")
+
+    parent = target.parent
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
+    try:
+        dir_fd = os.open(parent, flags)
+    except OSError as exc:
+        fail(f"cannot safely open Hermes external environment directory {parent}: {exc.strerror}")
+    try:
+        initial, original = read_target(dir_fd, target.name, target, test_mode)
+        replacement_probe = replace_token_bytes(original, "0" * 6 + ":" + "A" * 30)
+        del replacement_probe
+
+        token = read_token_from_stdin() if args.stdin else read_token_interactively()
+        validate_token_shape(token)
+        bot_id, username = telegram_get_me(token, expected_username)
+        replacement = replace_token_bytes(original, token)
+        write_atomically(dir_fd, target.name, target, initial, original, replacement, test_mode)
+        print(f"Validated Telegram bot @{username} (ID {bot_id}).")
+        print(f"Rotated TELEGRAM_BOT_TOKEN atomically in {target}; mode is 0600.")
+        print("Recreate only Hermes before changing its Telegram mode marker.")
+        return 0
+    finally:
+        os.close(dir_fd)
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except RotationError as exc:
+        print(f"Telegram token rotation error: {exc}", file=sys.stderr)
+        raise SystemExit(1)

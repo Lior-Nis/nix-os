@@ -122,6 +122,7 @@ mkdir -p "$restore_brain"
   printf 'POSTGRES_ENV_FILE=%s\n' "$restore_postgres_env"
   printf 'PAPERCLIP_ENV_FILE=%s\n' "$restore_paperclip_env"
   printf 'HERMES_ENV_FILE=%s\n' "$restore_hermes_env"
+  printf 'HERMES_TELEGRAM_BOT_USERNAME=the_nixos_bot\n'
   printf 'HERMES_TELEGRAM_MODE_FILE=%s\n' "$restore_hermes_mode"
   printf 'NIX_BRAIN_HOST_PATH=%s\n' "$restore_brain"
   printf 'PAPERCLIP_AUTH_DISABLE_SIGN_UP=true\n'

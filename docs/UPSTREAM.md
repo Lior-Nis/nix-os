@@ -72,6 +72,8 @@ Only official documentation and official repositories are authoritative for impl
 
 The [Telegram Bot API](https://core.telegram.org/bots/api) offers mutually exclusive polling and webhook delivery. Hermes owns polling and outbound messages. Paperclip's experimental connector instead requires a Telegram webhook and a publicly reachable webhook origin on a supported public port, is one-bot/one-agent oriented, and does not supply Hermes SOUL/memory/skills/profile routing. It therefore does not meet the tailnet-only persistent-employee requirement and remains disabled; Nix must not add a second Telegram receiver.
 
+The official [`getMe`](https://core.telegram.org/bots/api#getme) method is the no-parameter credential/identity check. Before installing a replacement production token, Nix requires `ok=true`, a positive bot ID, `is_bot=true`, and a username matching the configured non-secret bot identity; it does not call `getUpdates` for validation. Telegram permits only one active long poll for a given token: a competing `getUpdates` request terminates the prior poll with HTTP 409. Distinct validated bot tokens are independent, so the legacy `@the_lnx_bot` gateway on `pop` can coexist with the dedicated `@the_nixos_bot` gateway on the VPS. The rotation helper disables curl's implicit config loading so a local `.curlrc` cannot trace the token-bearing validation URL.
+
 ### Todoist
 
 The [Todoist developer platform](https://developer.todoist.com/) now presents one API, official SDKs/CLI/MCP, and webhooks. The [API v1 reference](https://developer.todoist.com/api/v1/) documents opaque string IDs, cursor pagination, JSON errors, webhook HMAC verification, and redelivery with the same delivery ID.

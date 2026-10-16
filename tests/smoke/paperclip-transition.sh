@@ -34,6 +34,7 @@ printf 'HERMES_TELEGRAM_MODE=disabled\n' >"$test_tmp_dir/hermes-telegram-mode.en
   printf 'POSTGRES_ENV_FILE=%s\n' "$test_tmp_dir/postgres.env"
   printf 'PAPERCLIP_ENV_FILE=%s\n' "$test_tmp_dir/paperclip.env"
   printf 'HERMES_ENV_FILE=%s\n' "$test_tmp_dir/hermes.env"
+  printf 'HERMES_TELEGRAM_BOT_USERNAME=the_nixos_bot\n'
   printf 'HERMES_TELEGRAM_MODE_FILE=%s\n' "$test_tmp_dir/hermes-telegram-mode.env"
   printf 'NIX_BRAIN_HOST_PATH=%s\n' "$test_tmp_dir/nix-brain"
   printf 'PAPERCLIP_AUTH_DISABLE_SIGN_UP=true\n'

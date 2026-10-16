@@ -190,6 +190,7 @@ Update the deployment `.env` from the reviewed example:
 
 ```text
 HERMES_ENV_FILE=/etc/nix-os/hermes.env
+HERMES_TELEGRAM_BOT_USERNAME=the_nixos_bot
 HERMES_TELEGRAM_MODE_FILE=/etc/nix-os/hermes-telegram-mode.env
 NIX_BRAIN_HOST_PATH=/opt/nix-brain
 ```
@@ -198,16 +199,19 @@ Create only the new Hermes external secret file without touching existing Slice 
 
 ```sh
 sudo -E CONFIG_FILE="$PWD/.env" ./scripts/init-hermes-secrets "$PWD/.env"
+sudo ./scripts/rotate-hermes-telegram-token "$PWD/.env"
 sudoedit /etc/nix-os/hermes.env
 ```
 
-Replace both Telegram placeholders directly in the editor. Keep the generated `API_SERVER_KEY`; do not reuse it as any other credential. The completed file contains exactly the API server key, Telegram token/user allowlist, and two explicit false allow-all flags. Keep mode `0600`. The Git-controlled Hermes config uses Lior's positive user ID as its non-empty `allowed_chats` value; because Telegram group/forum IDs are negative, this is the pinned release's hard DM-only gate in addition to `guest_mode: false` and `allow_bots: none`. `group_policy` is not a supported pinned-release setting and is intentionally absent.
+The rotation helper prompts for the BotFather token through `/dev/tty` with terminal echo disabled. It never accepts the token in an argument or environment variable. It verifies BotFather token shape and calls Telegram `getMe`; `ok`, `result.is_bot`, and the case-insensitive username must match the non-secret `HERMES_TELEGRAM_BOT_USERNAME` before the file can change. The helper then replaces exactly one `TELEGRAM_BOT_TOKEN` entry with an atomic, fsynced mode-`0600` rewrite while preserving every other byte. It rejects a relative, symlinked, non-regular, hard-linked, non-root-owned, or group/world-accessible production secret file. Only the validated non-secret bot ID and username are printed.
+
+For an operator pipeline that already receives the token securely on standard input, use `--stdin`; still never place the token in the command line, an environment variable, a file in the checkout, or chat. Edit only the remaining numeric user-ID placeholder with `sudoedit`. Keep the generated `API_SERVER_KEY`; do not reuse it as any other credential. The completed file contains exactly the API server key, Telegram token/user allowlist, and two explicit false allow-all flags. Keep mode `0600`. The Git-controlled Hermes config uses Lior's positive user ID as its non-empty `allowed_chats` value; because Telegram group/forum IDs are negative, this is the pinned release's hard DM-only gate in addition to `guest_mode: false` and `allow_bots: none`. `group_policy` is not a supported pinned-release setting and is intentionally absent.
 
 ### 2. Deploy and authorize the provider
 
 Secret initialization also creates a root-owned mode-`0600` marker at `/etc/nix-os/hermes-telegram-mode.env`, initially containing `HERMES_TELEGRAM_MODE=disabled`. Marker changes fsync the new file and parent directory before reporting success. The Compose-mounted entrypoint first removes any stale profile-level Telegram credential/admission variables from `/opt/data/.env` with an atomic, fsync-durable rewrite, then clears the external bot token unless the marker explicitly says `live`; unsafe profile metadata or a missing, malformed, or unsafe marker fails closed. This keeps the root-owned external secret file as Telegram's only credential source even after restoring older profile state.
 
-The persistent marker applies to deploy, restart, upgrade, backup restart, rollback, and recovery. Keep it disabled while the existing bot is still polled by another Hermes gateway:
+The persistent marker applies to deploy, restart, upgrade, backup restart, rollback, and recovery. Keep it disabled until the intended bot identity and polling ownership have been established:
 
 ```sh
 sudo -E ./scripts/check-config "$PWD/.env"
@@ -222,7 +226,7 @@ sudo -E ./scripts/configure-hermes verify-processes "$PWD/.env"
 
 The tracked Paperclip runtime configuration adds only the isolated Docker service name `paperclip` to the upstream private-host allowlist. On the existing Slice 0 deployment, `transition-paperclip` validates migrations and named-volume attachments, then recreates only Paperclip when it still lacks that hostname or the internal `agent` network; PostgreSQL, Hermes, unrelated services, and unrelated Docker networks are not targeted. It is a no-op after the topology is compliant. Hermes is deliberately force-recreated after the reviewed checkout changes: its Nix helpers are individual file bind mounts, and Git may replace their host inodes while a running container retains the old mounted inode. The named profile volume is preserved and the disabled mode marker keeps Telegram inert. As defense in depth, `converge` compares the reviewed and in-container claim-helper SHA-256 values before executing that helper or opening the browser approval. It performs this same bounded Hermes-only refresh once only when the hashes differ and the external marker is an operator-owned, mode-`0600` regular file set exactly to `disabled`; it verifies the hash again afterward. A matching helper that rejects `status`, a live/unsafe marker, or a post-refresh mismatch fails closed without another service change. The persistent marker keeps Telegram inert even though `hermes.env` contains the migrated token. `files-preflight` explicitly empties known Telegram, Runs API, Paperclip, and provider credential variables before exercising disposable protected-file fixtures as uid/gid `10000:10000`. The pre-claim `verify-processes` action checks the running process identity, singleton gateway, and Telegram token/admission state only; the full verifier additionally requires the claimed Paperclip credential and therefore runs after `converge`.
 
-Do not test the bot yet. The existing gateway remains its sole poller throughout pre-stage.
+Do not test the new bot yet. Telegram permits only one poller for a given bot token. A gateway using a different, independently validated bot token is not a competing poller and must not be stopped merely because it also uses Telegram.
 
 ### 3. Create the approved project and onboard Chief
 
@@ -268,35 +272,42 @@ The one-time claim secret is never blindly replayed. If the claim endpoint consu
 
 The verified Chief surface must be identical for `cli`, `telegram`, and `api_server`: `file`, `memory`, `session_search`, and bounded `paperclip`. The runtime validator expands these labels and fails if mutable skill management, terminal, process management, code execution, browser/web/connectors, delegation, cron, computer-use, an unexpected MCP operation, or any other tool appears. A second pinned-runtime check proves `.env`/`auth.json` cannot be read or found by broad search, file writes/patches stay under `/opt/data/memories` even across symlinks, and the built-in `grill-me` guidance is readable but not writable. The nine allowed Paperclip operations remain the only Paperclip write path.
 
-### 4. Single-poller Telegram cutover
+### 4. Telegram bot activation and per-token single-poller cutover
 
-Immediately before cutover, re-prove the VPS gateway is healthy and Telegram-disabled. Then stop the old gateway first, explicitly enable the external marker, and only afterward recreate the VPS Hermes service:
+Immediately before activation, re-prove the VPS gateway is healthy and Telegram-disabled. The configured production identity must already have passed the rotation helper's `getMe` check as `@the_nixos_bot`.
+
+If this is a migration of the **same bot token**, first stop and disable the gateway that currently polls that token, then enable and recreate VPS Hermes. If this is the dedicated `@the_nixos_bot` token and the `pop` gateway uses the distinct `@the_lnx_bot` token, preserve the `pop` gateway: it is unrelated and can coexist. For the dedicated-bot path, run only:
 
 ```sh
 sudo -E docker compose --env-file "$PWD/.env" exec -T --user 10000:10000 hermes curl -fsS http://127.0.0.1:8642/health >/dev/null
 sudo -E ./scripts/configure-hermes verify "$PWD/.env"
-ssh pop 'systemctl --user disable --now hermes-gateway.service && ! systemctl --user is-active --quiet hermes-gateway.service && ! systemctl --user is-enabled --quiet hermes-gateway.service'
 sudo -E ./scripts/configure-hermes telegram-enable "$PWD/.env"
 sudo -E docker compose --env-file "$PWD/.env" up -d --no-deps --wait --force-recreate hermes
 sudo -E ./scripts/configure-hermes verify "$PWD/.env"
 ```
 
-There must never be two active pollers. If the VPS Hermes health check, Telegram reply, or authorization check fails, make the disabled state durable before restarting the old gateway. Because the marker is an individual file bind mount, replacing it is not enough for an existing container: stop Hermes, write the disabled marker, force-recreate Hermes against that marker, and prove the new gateway process has no Telegram token. If any step fails, stop Hermes again and leave the old poller disabled until the failure is diagnosed:
+For a same-token migration only, insert this proof immediately before `telegram-enable`:
+
+```sh
+ssh <same-token-old-host> 'systemctl --user disable --now hermes-gateway.service && ! systemctl --user is-active --quiet hermes-gateway.service && ! systemctl --user is-enabled --quiet hermes-gateway.service'
+```
+
+There must never be two active pollers for the same token. If the VPS Hermes health check, Telegram reply, or authorization check fails, make the disabled state durable before restarting a same-token old gateway. Because the marker is an individual file bind mount, replacing it is not enough for an existing container: stop Hermes, write the disabled marker, force-recreate Hermes against that marker, and prove the new gateway process has no Telegram token. If any step fails, stop Hermes again. Restart an old gateway only when it owns the same token and was stopped for this migration; never alter an unrelated bot gateway as rollback:
 
 ```sh
 if sudo -E docker compose --env-file "$PWD/.env" stop hermes \
   && sudo -E ./scripts/configure-hermes telegram-disable "$PWD/.env" \
   && sudo -E docker compose --env-file "$PWD/.env" up -d --no-deps --wait --force-recreate hermes \
   && sudo -E ./scripts/configure-hermes verify-processes "$PWD/.env"; then
-  ssh pop 'systemctl --user enable --now hermes-gateway.service && systemctl --user is-active --quiet hermes-gateway.service && systemctl --user is-enabled --quiet hermes-gateway.service'
+  ssh <same-token-old-host> 'systemctl --user enable --now hermes-gateway.service && systemctl --user is-active --quiet hermes-gateway.service && systemctl --user is-enabled --quiet hermes-gateway.service'
 else
   sudo -E docker compose --env-file "$PWD/.env" stop hermes
-  printf 'VPS Hermes could not be proved Telegram-disabled; the old poller remains disabled.\n' >&2
+  printf 'VPS Hermes could not be proved Telegram-disabled; do not start any same-token poller.\n' >&2
   false
 fi
 ```
 
-Keep `/etc/nix-os/hermes-telegram-mode.env` root-owned and mode `0600`; routine operations and recovery all obey it. The old host's unit must be both inactive and disabled before the VPS marker becomes live, so an old-host reboot cannot silently recreate a second poller. Only after that proof should the new bot answer Lior's `ping`. Do not proceed if Telegram reports a polling conflict. From a different Telegram identity, send a message and verify it is silently ignored and causes no tool call; sanitize logs before recording evidence.
+Omit the `ssh <same-token-old-host>` rollback line entirely for the dedicated-bot path. Keep `/etc/nix-os/hermes-telegram-mode.env` root-owned and mode `0600`; routine operations and recovery all obey it. For a same-token migration, the previous host's unit must be both inactive and disabled before the VPS marker becomes live, so its reboot cannot silently recreate a competing poller. A validated distinct bot such as `@the_lnx_bot` on `pop` remains active. Only after these proofs should `@the_nixos_bot` answer Lior's `ping`. Do not proceed if Telegram reports a polling conflict for this bot. From a different Telegram identity, send a message and verify it is silently ignored and causes no tool call; sanitize logs before recording evidence.
 
 Inspect the agent in Paperclip and verify adapter type, URLs, issue session strategy, and responsible user. Confirm the Hermes Runs API has no host-published port:
 

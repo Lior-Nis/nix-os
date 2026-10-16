@@ -34,6 +34,7 @@ mkdir "$source_dir/nix-brain"
   printf 'POSTGRES_ENV_FILE=%s\n' "$source_dir/secrets/postgres.env"
   printf 'PAPERCLIP_ENV_FILE=%s\n' "$source_dir/secrets/paperclip.env"
   printf 'HERMES_ENV_FILE=%s\n' "$source_dir/secrets/hermes.env"
+  printf 'HERMES_TELEGRAM_BOT_USERNAME=the_nixos_bot\n'
   printf 'HERMES_TELEGRAM_MODE_FILE=%s\n' "$source_dir/secrets/hermes-telegram-mode.env"
   printf 'NIX_BRAIN_HOST_PATH=%s\n' "$source_dir/nix-brain"
   printf 'PAPERCLIP_AUTH_DISABLE_SIGN_UP=true\n'

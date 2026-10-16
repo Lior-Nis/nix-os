@@ -96,6 +96,7 @@ mkdir "$smoke_tmp_dir/nix-brain"
   printf 'PAPERCLIP_PUBLIC_URL=https://nix-os.test-tailnet.ts.net\nPAPERCLIP_LIOR_USER_ID=lior-test-user\nPAPERCLIP_HOST_PORT=0\n'
   printf 'POSTGRES_ENV_FILE=%s\nPAPERCLIP_ENV_FILE=%s\n' "$smoke_tmp_dir/postgres.env" "$smoke_tmp_dir/paperclip.env"
   printf 'HERMES_ENV_FILE=%s\nNIX_BRAIN_HOST_PATH=%s\n' "$smoke_tmp_dir/hermes.env" "$smoke_tmp_dir/nix-brain"
+  printf 'HERMES_TELEGRAM_BOT_USERNAME=the_nixos_bot\n'
   printf 'HERMES_TELEGRAM_MODE_FILE=%s\n' "$smoke_tmp_dir/hermes-telegram-mode.env"
   printf 'PAPERCLIP_AUTH_DISABLE_SIGN_UP=false\nBACKUP_OUTPUT_DIR=%s\n' "$smoke_tmp_dir/backups"
 } >"$config_file"
