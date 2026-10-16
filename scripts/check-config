@@ -174,6 +174,10 @@ telegram_users=$(secret_value "$hermes_env" TELEGRAM_ALLOWED_USERS)
 telegram_allow_all=$(secret_value "$hermes_env" TELEGRAM_ALLOW_ALL_USERS)
 gateway_allow_all=$(secret_value "$hermes_env" GATEWAY_ALLOW_ALL_USERS)
 
+if grep -Eq '^[[:space:]]*(export[[:space:]]+)?OPENCODE_GO_BASE_URL[[:space:]]*=' "$hermes_env"; then
+  fail "Hermes external environment must not override the reviewed OpenCode Go endpoint"
+fi
+
 (( ${#api_server_key} >= 64 )) || fail "API_SERVER_KEY must be at least 64 characters"
 (( ${#opencode_go_api_key} >= 20 )) || fail "OPENCODE_GO_API_KEY is missing or too short"
 [[ "$opencode_go_api_key" != REPLACE_WITH_OPENCODE_GO_API_KEY ]] || fail "OPENCODE_GO_API_KEY placeholder must be replaced"

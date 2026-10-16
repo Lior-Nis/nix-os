@@ -1,6 +1,6 @@
 # Nix Business OS V0 architecture
 
-Status: Slice 0 is accepted in production. The Slice 1 foundation is deployed at production commit `fc8dfc1929dbe593c9884d5dce5135eb600fc6ca`; final run-attribution remediation and live acceptance remain open as of 2026-10-16.
+Status: Slice 0 is accepted in production. Slice 1's functional, recovery, and post-reboot acceptance gates pass on production merge `ff770e393d9d64f9f08d4e8bd94e85e8a60977c5`, including native Telegram-to-Paperclip work creation. Final acceptance remains pending until the reviewed persistent Telegram model-route guard is merged, deployed, and live-verified.
 
 ## Purpose and scope
 

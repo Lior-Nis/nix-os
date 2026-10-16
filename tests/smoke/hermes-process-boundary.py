@@ -10,6 +10,7 @@ import io
 import json
 import os
 from pathlib import Path
+import sqlite3
 import sys
 import tempfile
 import types
@@ -22,7 +23,18 @@ VALIDATOR = REPO / "deploy/hermes/validate-tool-boundary.py"
 # so this narrow test remains runnable in the secret-free foundation job.
 dotenv = types.ModuleType("dotenv")
 dotenv_parser = types.ModuleType("dotenv.parser")
-dotenv_parser.parse_stream = lambda stream: ()
+
+
+def parse_stream(stream):
+    for line in stream:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        key = stripped.split("=", 1)[0].strip()
+        yield types.SimpleNamespace(error="=" not in stripped, key=key)
+
+
+dotenv_parser.parse_stream = parse_stream
 dotenv.parser = dotenv_parser
 sys.modules.setdefault("dotenv", dotenv)
 sys.modules.setdefault("dotenv.parser", dotenv_parser)
@@ -47,6 +59,41 @@ EXPECTATIONS = {
     "NIX_EXPECT_TELEGRAM_ALLOW_ALL_USERS": CONFIG["TELEGRAM_ALLOW_ALL_USERS"],
     "NIX_EXPECT_GATEWAY_ALLOW_ALL_USERS": CONFIG["GATEWAY_ALLOW_ALL_USERS"],
 }
+MODEL_ROUTE = {
+    "provider": "opencode-go",
+    "model": "gpt-5.6-luna",
+    "base_url": "https://opencode.ai/zen/go/v1",
+}
+
+
+def add_runtime_state(root: Path, model_override: object = MODEL_ROUTE) -> None:
+    (root / "config.yaml").write_text(
+        "model:\n  provider: opencode-go\n  default: gpt-5.6-luna\n",
+        encoding="utf-8",
+    )
+    entry = {
+        "session_key": "agent:main:telegram:dm:123456789",
+        "session_id": "telegram-session-fixture",
+        "platform": "telegram",
+        "model_override": model_override,
+    }
+    connection = sqlite3.connect(root / "state.db")
+    try:
+        connection.execute(
+            "CREATE TABLE gateway_routing (scope TEXT, session_key TEXT, entry_json TEXT, updated_at REAL)"
+        )
+        connection.execute(
+            "INSERT INTO gateway_routing VALUES (?, ?, ?, ?)",
+            (str(root.resolve()), entry["session_key"], json.dumps(entry), 1.0),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    # Deliberately non-authoritative. Drift tests overwrite this with a good
+    # route and prove validation still rejects bad state.db data.
+    (root / "sessions.json").write_text(
+        json.dumps({entry["session_key"]: entry}), encoding="utf-8"
+    )
 
 
 def add_process(
@@ -81,7 +128,9 @@ def fixture(
     transient_run_id: str | None = None,
     transient_parent_pid: int = 201,
     orphan_persistent: bool = False,
+    model_override: object = MODEL_ROUTE,
 ) -> None:
+    add_runtime_state(root, model_override)
     add_process(root, 101, "hermes gateway run --replace", gateway_environment)
     if duplicate_gateway:
         add_process(root, 102, "hermes gateway run --replace", gateway_environment)
@@ -131,8 +180,16 @@ def check(root: Path, mode: str) -> dict[str, list[dict[str, int]]]:
     os.environ["NIX_EXPECT_TELEGRAM_MODE"] = mode
     output = io.StringIO()
     with contextlib.redirect_stdout(output):
-        result = validator.process_check(proc_root=root, profile_env=root / "profile.env")
-    assert json.loads(output.getvalue()) == result
+        result = validator.process_check(
+            proc_root=root,
+            profile_env=root / "profile.env",
+            state_db=root / "state.db",
+            config_path=root / "config.yaml",
+            legacy_sessions=root / "sessions.json",
+        )
+    lines = output.getvalue().splitlines()
+    assert lines[0] == "Hermes Telegram model routing verified."
+    assert json.loads(lines[-1]) == result
     return result
 
 
@@ -143,6 +200,7 @@ def rejected(root: Path, mode: str, expected: str) -> None:
         message = str(exc)
         assert expected in message, message
         assert CONFIG["TELEGRAM_BOT_TOKEN"] not in message
+        assert CONFIG["TELEGRAM_ALLOWED_USERS"] not in message
     else:
         raise AssertionError(f"unsafe process fixture unexpectedly passed: {expected}")
 
@@ -161,6 +219,71 @@ def main() -> None:
             root = Path(directory)
             fixture(root, CONFIG)
             check(root, "live")
+
+        with tempfile.TemporaryDirectory(prefix="nix-hermes-process-inherited-model-") as directory:
+            root = Path(directory)
+            fixture(root, CONFIG, model_override=None)
+            check(root, "live")
+
+        for changed in (
+            {**MODEL_ROUTE, "provider": "opencode-free"},
+            {**MODEL_ROUTE, "model": "mimo-v2.6-flash-free"},
+            {**MODEL_ROUTE, "base_url": "https://opencode.ai/zen/v1"},
+            {"provider": "opencode-go", "model": "gpt-5.6-luna"},
+        ):
+            with tempfile.TemporaryDirectory(prefix="nix-hermes-process-model-drift-") as directory:
+                root = Path(directory)
+                fixture(root, CONFIG, model_override=changed)
+                # A good legacy mirror must not hide drift in authoritative state.db.
+                good_entry = {
+                    "session_key": "agent:main:telegram:dm:123456789",
+                    "session_id": "telegram-session-fixture",
+                    "platform": "telegram",
+                    "model_override": MODEL_ROUTE,
+                }
+                (root / "sessions.json").write_text(
+                    json.dumps({good_entry["session_key"]: good_entry}), encoding="utf-8"
+                )
+                rejected(root, "live", "Telegram session model override differs")
+
+        with tempfile.TemporaryDirectory(prefix="nix-hermes-process-legacy-model-drift-") as directory:
+            root = Path(directory)
+            fixture(root, CONFIG, model_override=None)
+            connection = sqlite3.connect(root / "state.db")
+            try:
+                connection.execute("DELETE FROM gateway_routing")
+                connection.commit()
+            finally:
+                connection.close()
+            legacy_entry = {
+                "session_key": "agent:main:telegram:dm:123456789",
+                "session_id": "legacy-telegram-session-fixture",
+                "platform": "telegram",
+                "model_override": {**MODEL_ROUTE, "provider": "opencode-free"},
+            }
+            (root / "sessions.json").write_text(
+                json.dumps({legacy_entry["session_key"]: legacy_entry}), encoding="utf-8"
+            )
+            rejected(root, "live", "Telegram session model override differs")
+
+        for model_config, expected in (
+            (
+                "model:\n  provider: opencode-go\n  default: gpt-5.6-luna\n"
+                "  base_url: https://unreviewed.invalid/v1\n",
+                "overrides the pinned endpoint",
+            ),
+            (
+                "model:\n  provider: opencode-go\n  default: gpt-5.6-luna\n"
+                "platforms:\n  telegram:\n    channel_overrides:\n"
+                "      123456789:\n        provider: opencode-free\n",
+                "contains forbidden channel overrides",
+            ),
+        ):
+            with tempfile.TemporaryDirectory(prefix="nix-hermes-process-config-route-") as directory:
+                root = Path(directory)
+                fixture(root, CONFIG)
+                (root / "config.yaml").write_text(model_config, encoding="utf-8")
+                rejected(root, "live", expected)
 
         with tempfile.TemporaryDirectory(prefix="nix-hermes-process-disabled-token-") as directory:
             root = Path(directory)
@@ -184,11 +307,21 @@ def main() -> None:
             ({"TELEGRAM_ALLOWED_USERS": "987654321"}, "TELEGRAM_ALLOWED_USERS differs"),
             ({"TELEGRAM_ALLOW_ALL_USERS": "true"}, "TELEGRAM_ALLOW_ALL_USERS differs"),
             ({"GATEWAY_ALLOW_ALL_USERS": "true"}, "GATEWAY_ALLOW_ALL_USERS differs"),
+            ({"OPENCODE_GO_BASE_URL": "https://unreviewed.invalid/v1"},
+             "overrides the reviewed OpenCode Go endpoint"),
         ):
             with tempfile.TemporaryDirectory(prefix="nix-hermes-process-stale-") as directory:
                 root = Path(directory)
                 fixture(root, CONFIG | changed)
                 rejected(root, "live", expected)
+
+        with tempfile.TemporaryDirectory(prefix="nix-hermes-process-profile-endpoint-") as directory:
+            root = Path(directory)
+            fixture(root, CONFIG)
+            (root / "profile.env").write_text(
+                "OPENCODE_GO_BASE_URL=https://unreviewed.invalid/v1\n", encoding="utf-8"
+            )
+            rejected(root, "live", "persistent profile retained a forbidden external runtime override")
 
         with tempfile.TemporaryDirectory(prefix="nix-hermes-process-duplicate-") as directory:
             root = Path(directory)
