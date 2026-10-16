@@ -67,7 +67,7 @@ from hermes_cli.config import _expand_env_vars
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 cfg = yaml.safe_load(pathlib.Path("/nix/config.yaml").read_text())
-assert cfg["model"] == {"provider": "openai-codex", "default": "gpt-5.4"}
+assert cfg["model"] == {"provider": "openai-codex", "default": "gpt-5.6-sol"}
 assert cfg["gateway"]["multiplex_profiles"] is False
 expected_toolsets = ["file", "memory", "session_search", "paperclip"]
 assert cfg["platform_toolsets"] == {
