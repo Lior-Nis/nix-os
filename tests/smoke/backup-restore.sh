@@ -8,6 +8,7 @@ smoke_suffix=$(openssl rand -hex 8)
 smoke_project="nix-os-smoke-$smoke_suffix"
 restore_project="nix-os-restore-smoke-$smoke_suffix"
 config_file="$smoke_tmp_dir/smoke.env"
+runtime_mode_file="$smoke_tmp_dir/hermes-runtime-mode.env"
 compose=(docker compose --env-file "$config_file")
 source_cookie=/tmp/nix-os-source-cookie.txt
 source_response=/tmp/nix-os-source-response.json
@@ -115,6 +116,15 @@ brain_gid=$(stat -c '%g' "$smoke_tmp_dir/nix-brain" 2>/dev/null || stat -f '%g' 
 chmod 0600 "$smoke_tmp_dir"/*.env
 
 NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$config_file"
+# Docker Desktop presents bind-mounted files as root-owned, while native Linux
+# preserves the host runner UID. Keep the config fixture readable for later
+# non-root host validation, but give every source Hermes lifecycle command a
+# separate root-owned runtime marker matching production.
+cp "$smoke_tmp_dir/hermes-telegram-mode.env" "$runtime_mode_file"
+docker run --rm --volume "$runtime_mode_file:/mode.env" "$archive_helper_image" sh -ec '
+  chown 0:0 /mode.env
+  chmod 0600 /mode.env
+'
 docker volume create "${smoke_project}_hermes_data" >/dev/null
 docker run --rm --volume "${smoke_project}_hermes_data:/state" "$archive_helper_image" sh -ec '
   install -d /state/memories /state/sessions /state/logs/gateways/default
@@ -373,7 +383,7 @@ with sqlite3.connect(delivery.OUTBOX_PATH) as database:
     ).fetchone() == ("unknown", 3, 502)
 PY
 
-"${compose[@]}" up -d --wait hermes
+HERMES_TELEGRAM_MODE_FILE="$runtime_mode_file" "${compose[@]}" up -d --wait hermes
 runs_idempotency_key=$(python3 -c 'import uuid; print(uuid.uuid4())')
 runs_session="paperclip:company:${company_id}:agent:${hermes_agent_id}:issue:${issue_id}"
 runs_body=$(jq -nc --arg session "$runs_session" \
@@ -458,7 +468,8 @@ health_status=$("${compose[@]}" exec -T paperclip sh -ec "curl --silent --output
 # boundary.
 source_issue_status_at_backup=$(source_get "/api/issues/${issue_id}" | jq -er '.status')
 
-artifact=$(NIX_ALLOW_TEST_CONFIG=1 BACKUP_OUTPUT_DIR="$smoke_tmp_dir/backups" BACKUP_AGE_RECIPIENT="$backup_recipient" \
+artifact=$(NIX_ALLOW_TEST_CONFIG=1 HERMES_TELEGRAM_MODE_FILE="$runtime_mode_file" \
+  BACKUP_OUTPUT_DIR="$smoke_tmp_dir/backups" BACKUP_AGE_RECIPIENT="$backup_recipient" \
   "$repo_root/scripts/backup" "$config_file" | tail -n 1)
 [[ -f "$artifact" ]] || fail "backup artifact missing: $artifact"
 download_dir="$smoke_tmp_dir/downloaded"
