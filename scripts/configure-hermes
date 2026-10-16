@@ -55,13 +55,15 @@ telegram_mode() {
 }
 
 verify_processes() {
-  local mode telegram_token token_digest telegram_users telegram_allow_all gateway_allow_all brain_gid
+  local mode telegram_token token_digest telegram_users telegram_home telegram_allow_all gateway_allow_all brain_gid lior_user_id
   mode=$(telegram_mode)
   telegram_token=$(read_hermes_secret TELEGRAM_BOT_TOKEN)
   telegram_users=$(read_hermes_secret TELEGRAM_ALLOWED_USERS)
+  telegram_home=$(read_hermes_secret TELEGRAM_HOME_CHANNEL)
   telegram_allow_all=$(read_hermes_secret TELEGRAM_ALLOW_ALL_USERS)
   gateway_allow_all=$(read_hermes_secret GATEWAY_ALLOW_ALL_USERS)
   brain_gid=$(read_config NIX_BRAIN_GID)
+  lior_user_id=$(read_config PAPERCLIP_LIOR_USER_ID)
   [[ -n "$telegram_token" ]] || fail "TELEGRAM_BOT_TOKEN is missing"
   token_digest=$(printf '%s' "$telegram_token" \
     | python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())')
@@ -70,9 +72,11 @@ verify_processes() {
     -e "NIX_EXPECT_TELEGRAM_MODE=$mode" \
     -e "NIX_EXPECT_TELEGRAM_TOKEN_SHA256=$token_digest" \
     -e "NIX_EXPECT_TELEGRAM_ALLOWED_USERS=$telegram_users" \
+    -e "NIX_EXPECT_TELEGRAM_HOME_CHANNEL=$telegram_home" \
     -e "NIX_EXPECT_TELEGRAM_ALLOW_ALL_USERS=$telegram_allow_all" \
     -e "NIX_EXPECT_GATEWAY_ALLOW_ALL_USERS=$gateway_allow_all" \
     -e "NIX_EXPECT_BRAIN_GID=$brain_gid" \
+    -e "NIX_EXPECT_PAPERCLIP_LIOR_USER_ID=$lior_user_id" \
     hermes \
     python3 /opt/nix/validate-tool-boundary.py processes >/dev/null
   printf '%s' "$mode"
@@ -92,7 +96,8 @@ case "$action" in
   files-preflight)
     "$repo_root/scripts/check-config" "$config_file" >/dev/null
     "${compose[@]}" run --rm --no-deps --user 10000:10000 --entrypoint python3 \
-      -e API_SERVER_KEY= -e TELEGRAM_BOT_TOKEN= -e TELEGRAM_ALLOWED_USERS= \
+      -e API_SERVER_KEY= -e HERMES_DECISION_WEBHOOK_SECRET= -e TELEGRAM_BOT_TOKEN= -e TELEGRAM_ALLOWED_USERS= \
+      -e TELEGRAM_HOME_CHANNEL= -e PAPERCLIP_LIOR_USER_ID= -e WEBHOOK_SECRET= \
       -e PAPERCLIP_API_KEY= -e PAPERCLIP_AGENT_ID= -e PAPERCLIP_COMPANY_ID= -e PAPERCLIP_API_URL= \
       -e OPENAI_API_KEY= -e ANTHROPIC_API_KEY= -e OPENROUTER_API_KEY= -e GOOGLE_API_KEY= \
       -e OPENCODE_GO_API_KEY= -e OPENCODE_GO_BASE_URL= -e OPENCODE_ZEN_API_KEY= \

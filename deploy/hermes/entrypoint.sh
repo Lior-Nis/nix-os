@@ -55,5 +55,6 @@ esac
 # compatibility patch before upstream gateway modules are imported. Unknown
 # source bytes fail closed.
 python3 /opt/nix/patch-run-attribution.py
+python3 /opt/nix/validate-tool-boundary.py webhook-config >/dev/null
 
 exec /opt/hermes/docker/entrypoint-dispatch.sh "$@"

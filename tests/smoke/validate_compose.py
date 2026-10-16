@@ -54,6 +54,7 @@ for helper in (
     "validate-tool-boundary.py",
     "patch-run-attribution.py",
     "run-scoped-paperclip-mcp.py",
+    "paperclip_question_delivery.py",
 ):
     require(
         any(mount.get("target") == f"/opt/nix/{helper}" and mount.get("read_only") for mount in hermes_mounts),
@@ -123,7 +124,12 @@ hermes_environment = services["hermes"].get("environment", {})
 require(hermes_environment.get("API_SERVER_ENABLED") == "true", "Hermes Runs API must be enabled")
 require(hermes_environment.get("API_SERVER_HOST") == "0.0.0.0", "Hermes must listen on the private Docker bridge")
 require(hermes_environment.get("HERMES_GATEWAY_BOOTSTRAP_STATE") == "running", "Hermes gateway restart persistence is missing")
+require(hermes_environment.get("WEBHOOK_ENABLED") == "true", "Hermes fixed webhook receiver must be enabled")
 require(hermes_environment.get("HERMES_WRITE_SAFE_ROOT") == "/opt/data/memories", "Hermes file writes must be confined to memories")
+require(
+    hermes_environment.get("PAPERCLIP_LIOR_USER_ID") == "lior-test-user",
+    "Hermes must receive the fixed founder Paperclip user ID",
+)
 require(
     str(hermes_environment.get("NIX_BRAIN_GID")) == hermes_supplemental_groups[0],
     "Hermes startup and Compose supplemental nix-brain groups must match",

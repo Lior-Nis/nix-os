@@ -110,6 +110,15 @@ check_backup_safety() {
       test "$(stat -c %u:%g /state/auth.json)" = 10000:10000
       test "$(stat -c %a /state/auth.json)" = 600
     fi
+    for path in runs_idempotency.db state/paperclip-question-delivery.db; do
+      test ! -L "/state/$path"
+      if test -e "/state/$path"; then
+        test -f "/state/$path"
+        test "$(stat -c %h "/state/$path")" = 1
+        test "$(stat -c %u:%g "/state/$path")" = 10000:10000
+        test "$(stat -c %a "/state/$path")" = 600
+      fi
+    done
     test "$(find /state -maxdepth 1 -name ".paperclip-claim-*.pending" | wc -l | tr -d " ")" = 0
     test ! -e /state/mcp-tokens/nix-os-paperclip-claim-stage.json
   ' || fail "Hermes credential metadata is unsafe or profile state contains external-only Telegram controls"

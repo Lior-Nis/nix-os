@@ -1,6 +1,6 @@
 # Nix Business OS V0 implementation plan
 
-Status: **SLICE 0: ACCEPTED. SLICE 1: ACCEPTED.** Production is at PR #14 merge commit `120083439dca52ba9c482664b1fc19acb7733bcf`. Hosted CI, run attribution, final Chief topology, native Telegram-to-Paperclip work creation, persistent Telegram model-route enforcement, encrypted downloaded-artifact recovery, and post-reboot runtime acceptance pass. Updated 2026-10-17.
+Status: **SLICE 0: ACCEPTED. SLICE 1: ACCEPTED.** Production is at PR #15 merge commit `ec83c9f28c941823b222dd5eb93d242d1ec5e443`; the accepted runtime implementation originated in PR #14 merge `120083439dca52ba9c482664b1fc19acb7733bcf`. Hosted CI, run attribution, final Chief topology, native Telegram-to-Paperclip work creation, persistent Telegram model-route enforcement, encrypted downloaded-artifact recovery, and post-reboot runtime acceptance pass. Updated 2026-10-17.
 
 ## How to use this plan
 
@@ -12,7 +12,7 @@ Each slice is vertical: it ends in a behavior Lior can observe and a failure Lio
 
 ### Repository facts
 
-The supplied directory was empty on 2026-09-22. The reviewed foundation and remediation were merged through PRs. The tailnet-only Slice 0 amendment was accepted at `a6205378c70048c76a8ad15c73da3c6777e6404f`; subsequent Slice 1 bootstrap, Telegram, run-attribution, final-topology, brain-permission, recovery, and verification remediations merged through PR #14 and production currently runs `120083439dca52ba9c482664b1fc19acb7733bcf`.
+The supplied directory was empty on 2026-09-22. The reviewed foundation and remediation were merged through PRs. The tailnet-only Slice 0 amendment was accepted at `a6205378c70048c76a8ad15c73da3c6777e6404f`; subsequent Slice 1 bootstrap, Telegram, run-attribution, final-topology, brain-permission, and recovery work merged through PR #14, and its acceptance-evidence update merged through PR #15. Production currently runs PR #15 merge `ec83c9f28c941823b222dd5eb93d242d1ec5e443`.
 
 ### Decisions already made
 
@@ -315,6 +315,8 @@ Lior assigns/wakes a bounded issue in Paperclip. The Chief checks it out, perfor
 
 - Exercise the existing Slice 1 `hermes_gateway` configuration for Paperclip-triggered execution; do not create a second Chief identity or gateway.
 - Chief operating instructions for checkout, status, child work, approval, and escalation.
+- Two additional bounded Paperclip tools for run-scoped checkout and structured founder questions; the arbitrary API tool remains hidden and is usable only by a fixed human-only interaction transform.
+- Hermes' official loopback-only HMAC `deliver_only` webhook plus a minimal durable notification outbox; no second Telegram receiver and no n8n.
 - `tests/e2e/paperclip-hermes-loop.*` and runbook diagnostics.
 
 ### Exact acceptance criteria
@@ -336,6 +338,9 @@ Lior assigns/wakes a bounded issue in Paperclip. The Chief checks it out, perfor
 - Issue lifecycle contract including checkout conflict, comment, child creation, and allowed terminal states.
 - Two-issue session-isolation test using unique canary text.
 - Duplicate run/correlation test and SSE disconnect/poll fallback test where practical.
+- Exact replay/conflict and restart-interruption tests for Hermes' durable Runs idempotency database.
+- Founder-question enforcement and delivery tests covering the fixed Lior addressee, human-only resolver policy, HMAC validation, single notification, safe definite retry, and ambiguous-delivery no-replay behavior.
+- Backup/restore round trip and mode checks for `runs_idempotency.db` and the Paperclip-question delivery outbox.
 - Secret-redaction assertions over captured diagnostics.
 
 ### Manual end-to-end verification
@@ -344,7 +349,7 @@ Create a harmless Paperclip issue asking Chief to inspect a known public fact or
 
 ### Failure modes
 
-Gateway auth mismatch, static Paperclip key not present after onboarding, run-lock conflict, session bleed, dropped SSE, model timeout, and a run that finishes in Hermes but not Paperclip. Each must map to a documented diagnostic and safe retry.
+Gateway auth mismatch, static Paperclip key not present after onboarding, run-lock conflict, session bleed, dropped SSE, model timeout, a run that finishes in Hermes but not Paperclip, non-human or wrong-addressee question creation, and ambiguous Telegram notification delivery. Each must map to a documented diagnostic and safe retry; ambiguous notification delivery must not be blindly replayed.
 
 ### Deliberately deferred
 

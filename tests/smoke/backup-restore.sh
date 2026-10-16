@@ -86,8 +86,11 @@ printf 'POSTGRES_PASSWORD=%s\nPAPERCLIP_DB_PASSWORD=%s\n' "$postgres_password" "
 } >"$smoke_tmp_dir/paperclip.env"
 {
   printf 'API_SERVER_KEY=%s\n' "$(openssl rand -hex 32)"
+  decision_webhook_secret=$(openssl rand -hex 32)
+  printf 'HERMES_DECISION_WEBHOOK_SECRET=%s\n' "$decision_webhook_secret"
+  printf 'WEBHOOK_SECRET=%s\n' "$decision_webhook_secret"
   printf 'OPENCODE_GO_API_KEY=test-opencode-go-key-12345678\n'
-  printf 'TELEGRAM_BOT_TOKEN=test-token\nTELEGRAM_ALLOWED_USERS=123456789\n'
+  printf 'TELEGRAM_BOT_TOKEN=test-token\nTELEGRAM_ALLOWED_USERS=123456789\nTELEGRAM_HOME_CHANNEL=123456789\n'
   printf 'TELEGRAM_ALLOW_ALL_USERS=false\nGATEWAY_ALLOW_ALL_USERS=false\n'
 } >"$smoke_tmp_dir/hermes.env"
 printf 'HERMES_TELEGRAM_MODE=disabled\n' >"$smoke_tmp_dir/hermes-telegram-mode.env"
@@ -114,7 +117,7 @@ chmod 0600 "$smoke_tmp_dir"/*.env
 NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$config_file"
 docker volume create "${smoke_project}_hermes_data" >/dev/null
 docker run --rm --volume "${smoke_project}_hermes_data:/state" "$archive_helper_image" sh -ec '
-  install -d /state/memories /state/sessions
+  install -d /state/memories /state/sessions /state/logs/gateways/default
   printf "chief-of-staff-continuity-v1\n" >/state/memories/slice-1-continuity.txt
   printf "telegram-session-fixture-v1\n" >/state/sessions/slice-1-session.json
   printf "%s\n" "{\"desired_state\":\"running\",\"fixture\":true}" >/state/gateway_state.json
@@ -215,7 +218,7 @@ source_patch "/api/agents/${hermes_agent_id}" \
   '{"adapterType":"process","adapterConfig":{"command":"sleep","args":["120"]},"replaceAdapterConfig":true}' \
   >/dev/null
 
-mcp_result=$("${compose[@]}" run --rm --no-deps -T --entrypoint python3 hermes \
+mcp_result=$("${compose[@]}" run --rm --no-deps -T --user 10000:10000 --entrypoint python3 hermes \
   /opt/nix/verify-paperclip-mcp.py --exercise-project "$project_id")
 issue_id=$(jq -er '.issueId' <<<"$mcp_result")
 issue_json=$(source_get "/api/issues/${issue_id}")
@@ -241,13 +244,55 @@ if [[ ! "$wake_status" =~ ^2 ]]; then
 fi
 mcp_run_id=$(jq -er '.id // .runId // .executionRunId // empty' <<<"$wake_json") \
   || fail "source agent wakeup did not create a run: $(jq -c '{status,reason,message}' <<<"$wake_json")"
-mcp_run_result=$("${compose[@]}" run --rm --no-deps -T --entrypoint python3 \
+mcp_run_result=$("${compose[@]}" run --rm --no-deps -T --user 10000:10000 --entrypoint python3 \
   -e PAPERCLIP_RUN_ID="$mcp_run_id" hermes \
-  /opt/nix/verify-paperclip-mcp.py --exercise-run "$issue_id")
+  /opt/nix/verify-paperclip-mcp.py --exercise-run "$issue_id" --exercise-project-id "$project_id")
 mcp_comment_id=$(jq -er '.commentId' <<<"$mcp_run_result")
+mcp_child_id=$(jq -er '.childId' <<<"$mcp_run_result")
+question_interaction_id=$(jq -er '.interactionId' <<<"$mcp_run_result")
 issue_json=$(source_get "/api/issues/${issue_id}")
 [[ $(jq -r '.description' <<<"$issue_json") == 'Updated through the approved Chief tool boundary.' ]] \
   || fail "bounded MCP issue update did not persist"
+child_json=$(source_get "/api/issues/${mcp_child_id}")
+[[ $(jq -r '.parentId' <<<"$child_json") == "$issue_id" ]] \
+  || fail "bounded MCP child issue did not retain its parent"
+source_get "/api/issues/${issue_id}/interactions" \
+  | jq -e --arg id "$question_interaction_id" --arg user "$board_user_id" --arg run "$mcp_run_id" \
+    '.[] | select(.id == $id and .kind == "ask_user_questions" and .status == "pending" and .requestedResolverPolicy == "human_only" and .effectiveResolverPolicy == "human_only" and .addresseeUserId == $user and .sourceRunId == $run)' \
+    >/dev/null || fail "bounded MCP question policy or run attribution did not persist"
+
+# A second real run for the same Chief may not steal the parent issue's
+# checkout while the first run owns it.
+conflict_wake_body=$(jq -nc --arg issue_id "$mcp_child_id" '{
+  source:"on_demand",
+  reason:"slice_2_checkout_conflict_smoke",
+  payload:{issueId:$issue_id}
+}')
+conflict_wake_status=$(printf '%s' "$conflict_wake_body" | "${compose[@]}" exec -T paperclip curl -sS \
+  -o "$source_response" -w '%{http_code}' -c "$source_cookie" -b "$source_cookie" \
+  -H 'Content-Type: application/json' -H 'Origin: https://nix-os.test-tailnet.ts.net' \
+  -X POST "http://127.0.0.1:3100/api/agents/${hermes_agent_id}/wakeup" --data-binary @-)
+conflict_wake_json=$("${compose[@]}" exec -T paperclip cat "$source_response")
+[[ "$conflict_wake_status" =~ ^2 ]] \
+  || fail "competing checkout wakeup returned HTTP $conflict_wake_status"
+conflict_run_id=$(jq -er '.id // .runId // .executionRunId // empty' <<<"$conflict_wake_json") \
+  || fail "competing checkout wakeup did not create a run"
+[[ "$conflict_run_id" != "$mcp_run_id" ]] \
+  || fail "competing checkout fixture reused the owning run"
+conflict_result=$("${compose[@]}" run --rm --no-deps -T --user 10000:10000 --entrypoint python3 \
+  -e PAPERCLIP_RUN_ID="$conflict_run_id" hermes \
+  /opt/nix/verify-paperclip-mcp.py --expect-checkout-conflict "$issue_id")
+jq -e '.conflict == true' >/dev/null <<<"$conflict_result" \
+  || fail "competing Paperclip checkout was not rejected"
+source_post "/api/heartbeat-runs/${conflict_run_id}/cancel" '{}' >/dev/null
+waiting_result=$("${compose[@]}" run --rm --no-deps -T --user 10000:10000 --entrypoint python3 \
+  -e PAPERCLIP_RUN_ID="$mcp_run_id" hermes \
+  /opt/nix/verify-paperclip-mcp.py --mark-in-review "$issue_id")
+jq -e '.inReview == true' >/dev/null <<<"$waiting_result" \
+  || fail "bounded MCP question did not enter its waiting state"
+issue_json=$(source_get "/api/issues/${issue_id}")
+[[ $(jq -r '.status' <<<"$issue_json") == 'in_review' ]] \
+  || fail "bounded MCP question did not leave its issue waiting in review"
 source_post "/api/heartbeat-runs/${mcp_run_id}/cancel" '{}' >/dev/null
 hermes_adapter_patch=$(jq -nc --arg api_key "$hermes_api_key" '{
   adapterType:"hermes_gateway",
@@ -269,8 +314,110 @@ source_patch "/api/agents/${temp_agent_id}" \
   "$(jq -nc --arg chief_id "$hermes_agent_id" '{role:"general",reportsTo:$chief_id}')" >/dev/null
 source_post "/api/agents/${temp_agent_id}/pause" '{}' >/dev/null
 
+# Create the two real Slice 2 SQLite artifacts in the source volume before the
+# coordinated backup. The question fixture records an outcome-unknown delivery
+# without opening a socket; recovery must preserve that terminal safety state
+# and must never turn its replay into another send attempt.
+"${compose[@]}" run --rm --no-deps -T --user 10000:10000 \
+  -e "NIX_FIXTURE_ISSUE_ID=$issue_id" \
+  -e "NIX_FIXTURE_INTERACTION_ID=$question_interaction_id" \
+  --entrypoint python3 hermes - <<'PY'
+import json
+import os
+import sqlite3
+import sys
+
+sys.path.insert(0, "/opt/nix")
+import paperclip_question_delivery as delivery
+
+issue_id = os.environ["NIX_FIXTURE_ISSUE_ID"]
+interaction_id = os.environ["NIX_FIXTURE_INTERACTION_ID"]
+payload = {
+    "version": 1,
+    "title": "Recovery decision fixture",
+    "questions": [{
+        "id": "direction",
+        "prompt": "Choose the recovery fixture direction",
+        "selectionMode": "single",
+        "required": True,
+        "options": [{"id": "continue", "label": "Continue"}],
+    }],
+}
+request = {
+    "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+    "params": {"name": "paperclipAskUserQuestions", "arguments": {
+        "issueId": issue_id, "idempotencyKey": "recovery-question-v1",
+        "payload": payload,
+    }},
+}
+interaction = {
+    "id": interaction_id, "issueId": issue_id,
+    "kind": "ask_user_questions", "status": "pending",
+    "requestedResolverPolicy": "human_only",
+    "effectiveResolverPolicy": "human_only",
+    "addresseeUserId": os.environ["PAPERCLIP_LIOR_USER_ID"],
+    "payload": payload,
+}
+response = {"jsonrpc": "2.0", "id": 1, "result": {
+    "content": [{"type": "text", "text": json.dumps(interaction)}],
+}}
+delivery._post = lambda *_args, **_kwargs: ("unknown", 502)
+assert delivery.notify_question_created(response, request) == "unknown"
+with sqlite3.connect(delivery.OUTBOX_PATH) as database:
+    assert database.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    columns = {row[1] for row in database.execute("PRAGMA table_info(deliveries)")}
+    assert {"interaction_id", "payload_digest", "state", "attempt_count", "http_status"} <= columns
+    assert database.execute(
+        "SELECT state, attempt_count, http_status FROM deliveries WHERE interaction_id = ?",
+        (interaction_id,),
+    ).fetchone() == ("unknown", 3, 502)
+PY
+
+"${compose[@]}" up -d --wait hermes
+runs_idempotency_key=$(python3 -c 'import uuid; print(uuid.uuid4())')
+runs_session="paperclip:company:${company_id}:agent:${hermes_agent_id}:issue:${issue_id}"
+runs_body=$(jq -nc --arg session "$runs_session" \
+  '{input:"Return the recovery fixture marker.",session_id:$session}')
+# shellcheck disable=SC2016
+runs_first=$(printf '%s' "$runs_body" | "${compose[@]}" exec -T --user 10000:10000 \
+  -e "NIX_FIXTURE_RUN_KEY=$runs_idempotency_key" \
+  -e "NIX_FIXTURE_RUN_SESSION=$runs_session" hermes sh -ec '
+    curl -fsS -H "Authorization: Bearer $API_SERVER_KEY" \
+      -H "Idempotency-Key: $NIX_FIXTURE_RUN_KEY" \
+      -H "X-Hermes-Session-Key: $NIX_FIXTURE_RUN_SESSION" \
+      -H "Content-Type: application/json" --data-binary @- \
+      http://127.0.0.1:8642/v1/runs
+  ')
+runs_hermes_id=$(jq -er '.run_id | select(test("^run_[0-9a-f]{32}$"))' <<<"$runs_first") \
+  || fail "source Hermes Runs API did not return a valid run identity"
+[[ $(jq -r '.replayed' <<<"$runs_first") == false ]] \
+  || fail "source Hermes Runs API unexpectedly replayed the first request"
+"${compose[@]}" exec -T --user 10000:10000 \
+  -e "NIX_FIXTURE_RUN_KEY=$runs_idempotency_key" \
+  -e "NIX_FIXTURE_HERMES_RUN_ID=$runs_hermes_id" hermes python3 - <<'PY'
+import os
+import sqlite3
+
+path = "/opt/data/runs_idempotency.db"
+with sqlite3.connect(path) as database:
+    assert database.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    columns = {row[1] for row in database.execute("PRAGMA table_info(run_idempotency)")}
+    assert {"scope", "idempotency_key", "fingerprint", "run_id", "status_json"} <= columns
+    assert database.execute(
+        "SELECT run_id FROM run_idempotency WHERE idempotency_key = ?",
+        (os.environ["NIX_FIXTURE_RUN_KEY"],),
+    ).fetchone() == (os.environ["NIX_FIXTURE_HERMES_RUN_ID"],)
+PY
+
 docker run --rm --volume "${smoke_project}_hermes_data:/state:ro" "$archive_helper_image" sh -ec '
   for path in .env .paperclip-claim-receipt.json; do
+    test "$(stat -c %u:%g "/state/$path")" = 10000:10000
+    test "$(stat -c %a "/state/$path")" = 600
+  done
+  for path in runs_idempotency.db state/paperclip-question-delivery.db; do
+    test -f "/state/$path"
+    test ! -L "/state/$path"
+    test "$(stat -c %h "/state/$path")" = 1
     test "$(stat -c %u:%g "/state/$path")" = 10000:10000
     test "$(stat -c %a "/state/$path")" = 600
   done
@@ -304,6 +451,12 @@ health_status=$("${compose[@]}" exec -T paperclip sh -ec "curl --silent --output
 [[ "$health_status" == 503 ]] || fail "expected health HTTP 503 with PostgreSQL stopped, got $health_status"
 "${compose[@]}" exec -T paperclip grep -q 'database_unreachable' /tmp/database-down-health.json
 "${compose[@]}" up -d --wait postgres paperclip
+
+# Cancelling the disposable process-adapter heartbeat may move an issue out of
+# its transient in_review state. Record the authoritative status immediately
+# before backup so recovery proves exact state preservation at the backup
+# boundary.
+source_issue_status_at_backup=$(source_get "/api/issues/${issue_id}" | jq -er '.status')
 
 artifact=$(NIX_ALLOW_TEST_CONFIG=1 BACKUP_OUTPUT_DIR="$smoke_tmp_dir/backups" BACKUP_AGE_RECIPIENT="$backup_recipient" \
   "$repo_root/scripts/backup" "$config_file" | tail -n 1)
@@ -348,6 +501,17 @@ restored_issue=$(restore_get "/api/issues/${issue_id}")
 [[ $(jq -r '.title' <<<"$restored_issue") == 'Slice 1 bounded MCP recovery issue' ]] || fail "issue did not survive restore"
 [[ $(jq -r '.companyId' <<<"$restored_issue") == "$company_id" ]] || fail "issue/company relationship did not survive restore"
 [[ $(jq -r '.projectId' <<<"$restored_issue") == "$project_id" ]] || fail "issue/project relationship did not survive restore"
+[[ $(jq -r '.status' <<<"$restored_issue") == "$source_issue_status_at_backup" ]] \
+  || fail "issue lifecycle state did not survive restore"
+restored_child=$(restore_get "/api/issues/${mcp_child_id}")
+[[ $(jq -r '.parentId' <<<"$restored_child") == "$issue_id" ]] \
+  || fail "bounded MCP child/parent relationship did not survive restore"
+[[ $(jq -r '.projectId' <<<"$restored_child") == "$project_id" ]] \
+  || fail "bounded MCP child/project relationship did not survive restore"
+restore_get "/api/issues/${issue_id}/interactions" \
+  | jq -e --arg id "$question_interaction_id" --arg user "$board_user_id" --arg run "$mcp_run_id" \
+    '.[] | select(.id == $id and .kind == "ask_user_questions" and .status == "pending" and .requestedResolverPolicy == "human_only" and .effectiveResolverPolicy == "human_only" and .addresseeUserId == $user and .sourceRunId == $run)' \
+    >/dev/null || fail "bounded MCP question policy or run attribution did not survive restore"
 restore_get "/api/issues/${issue_id}/comments" \
   | jq -e --arg id "$mcp_comment_id" '.[] | select(.id == $id and .body == "Slice 1 bounded MCP comment fixture.")' >/dev/null \
   || fail "bounded MCP comment did not survive restore"
@@ -367,6 +531,82 @@ jq -e --arg environment_id "$environment_id" '.[0] | select(.outcome == "success
   >/dev/null <<<"$restored_access_events" || fail "restored canary could not be decrypted with the recovered master key"
 restored_health=$("${restore_compose[@]}" exec -T paperclip curl -fsS http://127.0.0.1:3100/api/health)
 grep -q '"status":"ok"' <<<"$restored_health" || fail "restored Paperclip health did not report ok"
+# shellcheck disable=SC2016
+restored_runs_replay=$(printf '%s' "$runs_body" | "${restore_compose[@]}" exec -T --user 10000:10000 \
+  -e "NIX_FIXTURE_RUN_KEY=$runs_idempotency_key" \
+  -e "NIX_FIXTURE_RUN_SESSION=$runs_session" hermes sh -ec '
+    curl -fsS -H "Authorization: Bearer $API_SERVER_KEY" \
+      -H "Idempotency-Key: $NIX_FIXTURE_RUN_KEY" \
+      -H "X-Hermes-Session-Key: $NIX_FIXTURE_RUN_SESSION" \
+      -H "Content-Type: application/json" --data-binary @- \
+      http://127.0.0.1:8642/v1/runs
+  ')
+jq -e --arg run_id "$runs_hermes_id" \
+  '.run_id == $run_id and .replayed == true' >/dev/null <<<"$restored_runs_replay" \
+  || fail "restored Runs idempotency record did not replay the original Hermes run"
+"${restore_compose[@]}" exec -T --user 10000:10000 \
+  -e "NIX_FIXTURE_RUN_KEY=$runs_idempotency_key" \
+  -e "NIX_FIXTURE_HERMES_RUN_ID=$runs_hermes_id" \
+  -e "NIX_FIXTURE_ISSUE_ID=$issue_id" \
+  -e "NIX_FIXTURE_INTERACTION_ID=$question_interaction_id" hermes python3 - <<'PY'
+import json
+import os
+import sqlite3
+import sys
+
+sys.path.insert(0, "/opt/nix")
+import paperclip_question_delivery as delivery
+
+with sqlite3.connect("/opt/data/runs_idempotency.db") as database:
+    assert database.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    assert database.execute(
+        "SELECT run_id FROM run_idempotency WHERE idempotency_key = ?",
+        (os.environ["NIX_FIXTURE_RUN_KEY"],),
+    ).fetchone() == (os.environ["NIX_FIXTURE_HERMES_RUN_ID"],)
+
+issue_id = os.environ["NIX_FIXTURE_ISSUE_ID"]
+interaction_id = os.environ["NIX_FIXTURE_INTERACTION_ID"]
+payload = {
+    "version": 1,
+    "title": "Recovery decision fixture",
+    "questions": [{
+        "id": "direction",
+        "prompt": "Choose the recovery fixture direction",
+        "selectionMode": "single", "required": True,
+        "options": [{"id": "continue", "label": "Continue"}],
+    }],
+}
+request = {
+    "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+    "params": {"name": "paperclipAskUserQuestions", "arguments": {
+        "issueId": issue_id, "idempotencyKey": "recovery-question-v1",
+        "payload": payload,
+    }},
+}
+interaction = {
+    "id": interaction_id, "issueId": issue_id,
+    "kind": "ask_user_questions", "status": "pending",
+    "requestedResolverPolicy": "human_only",
+    "effectiveResolverPolicy": "human_only",
+    "addresseeUserId": os.environ["PAPERCLIP_LIOR_USER_ID"],
+    "payload": payload,
+}
+response = {"jsonrpc": "2.0", "id": 1, "result": {
+    "content": [{"type": "text", "text": json.dumps(interaction)}],
+}}
+def forbidden_send(*_args, **_kwargs):
+    raise AssertionError("restored unknown notification attempted a replay")
+delivery._post = forbidden_send
+assert delivery.notify_question_created(response, request) == "unknown"
+with sqlite3.connect(delivery.OUTBOX_PATH) as database:
+    assert database.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    columns = {row[1] for row in database.execute("PRAGMA table_info(deliveries)")}
+    assert {"interaction_id", "payload_digest", "state", "attempt_count", "http_status"} <= columns
+    assert database.execute(
+        "SELECT state, attempt_count, http_status FROM deliveries WHERE interaction_id = ?",
+        (interaction_id,),
+    ).fetchone() == ("unknown", 3, 502)
+PY
 docker run --rm --volume "${restore_project}_hermes_data:/state:ro" "$archive_helper_image" sh -ec '
   grep -qx chief-of-staff-continuity-v1 /state/memories/slice-1-continuity.txt
   grep -qx telegram-session-fixture-v1 /state/sessions/slice-1-session.json
@@ -380,7 +620,14 @@ docker run --rm --volume "${restore_project}_hermes_data:/state:ro" "$archive_he
   test -s /state/.paperclip-claim-receipt.json
   test "$(stat -c %a /state/.paperclip-claim-receipt.json)" = 600
   test "$(stat -c %u:%g /state/.paperclip-claim-receipt.json)" = 10000:10000
-  ! grep -Eq "^[[:space:]]*(export[[:space:]]+)?(TELEGRAM_BOT_TOKEN|TELEGRAM_ALLOWED_USERS|TELEGRAM_ALLOW_ALL_USERS|GATEWAY_ALLOW_ALL_USERS)[[:space:]]*=" /state/.env
+  for path in runs_idempotency.db state/paperclip-question-delivery.db; do
+    test -f "/state/$path"
+    test ! -L "/state/$path"
+    test "$(stat -c %h "/state/$path")" = 1
+    test "$(stat -c %u:%g "/state/$path")" = 10000:10000
+    test "$(stat -c %a "/state/$path")" = 600
+  done
+  ! grep -Eq "^[[:space:]]*(export[[:space:]]+)?(HERMES_DECISION_WEBHOOK_SECRET|PAPERCLIP_LIOR_USER_ID|TELEGRAM_BOT_TOKEN|TELEGRAM_HOME_CHANNEL|TELEGRAM_ALLOWED_USERS|TELEGRAM_ALLOW_ALL_USERS|GATEWAY_ALLOW_ALL_USERS|WEBHOOK_SECRET)[[:space:]]*=" /state/.env
 ' || fail "restored Hermes identity/session/skill fixtures are incomplete"
 # shellcheck disable=SC2016
 "${restore_compose[@]}" exec -T -e EXPECTED_AGENT_ID="$hermes_agent_id" hermes sh -ec \

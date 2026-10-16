@@ -73,7 +73,7 @@ command -v docker >/dev/null 2>&1 || fail "docker is required"
 docker compose version >/dev/null 2>&1 || fail "Docker Compose v2 is required"
 [[ -f "$config_file" ]] || fail "$config_file does not exist; copy .env.example and replace placeholders"
 
-if grep -Eq '^(POSTGRES_PASSWORD|PAPERCLIP_DB_PASSWORD|DATABASE_URL|BETTER_AUTH_SECRET|PAPERCLIP_TOOL_ACTION_SIGNING_SECRET|API_SERVER_KEY|TELEGRAM_BOT_TOKEN|PAPERCLIP_API_KEY|OPENCODE_GO_API_KEY|OPENCODE_ZEN_API_KEY)=' "$config_file"; then
+if grep -Eq '^(POSTGRES_PASSWORD|PAPERCLIP_DB_PASSWORD|DATABASE_URL|BETTER_AUTH_SECRET|PAPERCLIP_TOOL_ACTION_SIGNING_SECRET|API_SERVER_KEY|HERMES_DECISION_WEBHOOK_SECRET|WEBHOOK_SECRET|TELEGRAM_BOT_TOKEN|PAPERCLIP_API_KEY|OPENCODE_GO_API_KEY|OPENCODE_ZEN_API_KEY)=' "$config_file"; then
   fail "$config_file contains a secret key; put secrets only in the external secret files"
 fi
 
@@ -168,9 +168,12 @@ tool_action_secret=$(secret_value "$paperclip_env" PAPERCLIP_TOOL_ACTION_SIGNING
 [[ "$database_url" == "postgresql://paperclip:${paperclip_db_password}@postgres:5432/paperclip" ]] || fail "DATABASE_URL must use PAPERCLIP_DB_PASSWORD and target paperclip@postgres:5432/paperclip"
 
 api_server_key=$(secret_value "$hermes_env" API_SERVER_KEY)
+decision_webhook_secret=$(secret_value "$hermes_env" HERMES_DECISION_WEBHOOK_SECRET)
+upstream_webhook_secret=$(secret_value "$hermes_env" WEBHOOK_SECRET)
 opencode_go_api_key=$(secret_value "$hermes_env" OPENCODE_GO_API_KEY)
 telegram_token=$(secret_value "$hermes_env" TELEGRAM_BOT_TOKEN)
 telegram_users=$(secret_value "$hermes_env" TELEGRAM_ALLOWED_USERS)
+telegram_home=$(secret_value "$hermes_env" TELEGRAM_HOME_CHANNEL)
 telegram_allow_all=$(secret_value "$hermes_env" TELEGRAM_ALLOW_ALL_USERS)
 gateway_allow_all=$(secret_value "$hermes_env" GATEWAY_ALLOW_ALL_USERS)
 
@@ -179,10 +182,18 @@ if grep -Eq '^[[:space:]]*(export[[:space:]]+)?OPENCODE_GO_BASE_URL[[:space:]]*=
 fi
 
 (( ${#api_server_key} >= 64 )) || fail "API_SERVER_KEY must be at least 64 characters"
+[[ "$decision_webhook_secret" =~ ^[0-9a-f]{64}$ ]] \
+  || fail "HERMES_DECISION_WEBHOOK_SECRET must be exactly 256 bits encoded as lowercase hex"
+[[ "$decision_webhook_secret" != "$api_server_key" ]] \
+  || fail "Hermes Runs API and decision webhook secrets must be distinct"
+[[ "$upstream_webhook_secret" == "$decision_webhook_secret" ]] \
+  || fail "WEBHOOK_SECRET must exactly match HERMES_DECISION_WEBHOOK_SECRET"
 (( ${#opencode_go_api_key} >= 20 )) || fail "OPENCODE_GO_API_KEY is missing or too short"
 [[ "$opencode_go_api_key" != REPLACE_WITH_OPENCODE_GO_API_KEY ]] || fail "OPENCODE_GO_API_KEY placeholder must be replaced"
 [[ "$telegram_allow_all" == false && "$gateway_allow_all" == false ]] || fail "Hermes allow-all access must remain false"
 [[ "$telegram_users" =~ ^[0-9]+$ ]] || fail "TELEGRAM_ALLOWED_USERS must contain exactly Lior's numeric user ID in Slice 1"
+[[ "$telegram_home" == "$telegram_users" ]] \
+  || fail "TELEGRAM_HOME_CHANNEL must exactly match the sole allowed Telegram user"
 if [[ ${NIX_ALLOW_TEST_CONFIG:-0} != 1 ]]; then
   [[ "$telegram_token" =~ ^[0-9]{6,}:[A-Za-z0-9_-]{30,}$ ]] || fail "TELEGRAM_BOT_TOKEN does not match the BotFather token shape"
 else

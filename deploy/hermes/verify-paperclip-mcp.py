@@ -69,15 +69,17 @@ class McpProbe:
         result = self.request("tools/call", params)
         if result.get("isError") is True:
             raise RuntimeError(f"approved MCP tool failed: {name}")
-        text = "".join(
-            str(item.get("text", ""))
-            for item in result.get("content", [])
-            if item.get("type") == "text"
-        )
-        try:
-            parsed = json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(f"approved MCP tool returned invalid JSON: {name}") from exc
+        parsed = None
+        for item in result.get("content", []):
+            if item.get("type") != "text":
+                continue
+            try:
+                parsed = json.loads(str(item.get("text", "")))
+            except json.JSONDecodeError:
+                continue
+            break
+        if parsed is None:
+            raise RuntimeError(f"approved MCP tool returned invalid JSON: {name}")
         if (
             isinstance(parsed, dict)
             and isinstance(parsed.get("status"), int)
@@ -88,6 +90,29 @@ class McpProbe:
                 f"approved MCP tool returned HTTP {parsed['status']}: {name}: {detail}"
             )
         return parsed
+
+    def call_expect_http_error(
+        self,
+        name: str,
+        arguments: dict,
+        *,
+        metadata: dict,
+        expected_status: int,
+    ) -> None:
+        params = {"name": name, "arguments": arguments, "_meta": metadata}
+        result = self.request("tools/call", params)
+        for item in result.get("content", []):
+            if item.get("type") != "text":
+                continue
+            try:
+                parsed = json.loads(str(item.get("text", "")))
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict) and parsed.get("status") == expected_status:
+                return
+        raise RuntimeError(
+            f"approved MCP tool did not return HTTP {expected_status}: {name}"
+        )
 
     def close(self) -> None:
         if self.process.stdin:
@@ -115,9 +140,18 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--exercise-project", help="existing project UUID used for safe bounded write checks")
     parser.add_argument("--exercise-run", help="existing issue UUID used for run-scoped update/comment checks")
+    parser.add_argument("--exercise-project-id", help="project UUID for run-scoped child creation")
+    parser.add_argument("--expect-checkout-conflict", help="issue UUID already checked out by another run")
+    parser.add_argument("--mark-in-review", help="issue UUID to leave waiting on its pending interaction")
     args = parser.parse_args()
-    if args.exercise_project and args.exercise_run:
+    selected = sum(bool(value) for value in (
+        args.exercise_project, args.exercise_run, args.expect_checkout_conflict,
+        args.mark_in_review,
+    ))
+    if selected > 1:
         parser.error("choose only one exercise mode")
+    if bool(args.exercise_project_id) != bool(args.exercise_run):
+        parser.error("--exercise-project-id is required exactly with --exercise-run")
 
     load_dotenv("/opt/data/.env", override=True)
     company_id = os.environ.get("PAPERCLIP_COMPANY_ID", "")
@@ -132,14 +166,46 @@ def main() -> None:
         if not contains_id(identity, company_id) or not contains_id(identity, agent_id):
             raise RuntimeError("bounded Paperclip MCP returned an unexpected identity")
 
+        if args.expect_checkout_conflict:
+            if not os.environ.get("PAPERCLIP_RUN_ID"):
+                raise RuntimeError("checkout-conflict check requires PAPERCLIP_RUN_ID")
+            probe.call_expect_http_error(
+                "paperclipCheckoutIssue",
+                {"issueId": args.expect_checkout_conflict},
+                metadata={"com.paperclip/run-id": os.environ["PAPERCLIP_RUN_ID"]},
+                expected_status=409,
+            )
+            print(json.dumps({"conflict": True}, separators=(",", ":")))
+            return
+
+        if args.mark_in_review:
+            if not os.environ.get("PAPERCLIP_RUN_ID"):
+                raise RuntimeError("waiting-state check requires PAPERCLIP_RUN_ID")
+            waiting_issue = probe.call(
+                "paperclipUpdateIssue",
+                {"issueId": args.mark_in_review, "status": "in_review"},
+                metadata={"com.paperclip/run-id": os.environ["PAPERCLIP_RUN_ID"]},
+            )
+            if not contains_id(waiting_issue, args.mark_in_review):
+                raise RuntimeError("bounded Paperclip waiting-state update failed")
+            print(json.dumps({"inReview": True}, separators=(",", ":")))
+            return
+
         if args.exercise_run:
             if not os.environ.get("PAPERCLIP_RUN_ID"):
                 raise RuntimeError("run-scoped mutation check requires PAPERCLIP_RUN_ID")
             issue_id = args.exercise_run
+            run_id = os.environ["PAPERCLIP_RUN_ID"]
+            metadata = {"com.paperclip/run-id": run_id}
+            checked_out = probe.call(
+                "paperclipCheckoutIssue", {"issueId": issue_id}, metadata=metadata
+            )
+            if not contains_id(checked_out, issue_id):
+                raise RuntimeError("bounded Paperclip MCP checkout returned an unexpected issue")
             updated = probe.call(
                 "paperclipUpdateIssue",
                 {"issueId": issue_id, "description": "Updated through the approved Chief tool boundary."},
-                metadata={"com.paperclip/run-id": os.environ["PAPERCLIP_RUN_ID"]},
+                metadata=metadata,
             )
             if not contains_id(updated, issue_id):
                 raise RuntimeError("bounded Paperclip MCP returned an unexpected updated issue")
@@ -148,7 +214,7 @@ def main() -> None:
                 probe.call(
                     "paperclipAddComment",
                     {"issueId": issue_id, "body": marker},
-                    metadata={"com.paperclip/run-id": os.environ["PAPERCLIP_RUN_ID"]},
+                    metadata=metadata,
                 ),
                 "paperclipAddComment",
             )
@@ -160,7 +226,72 @@ def main() -> None:
                 or marker not in json.dumps(comments, separators=(",", ":"))
             ):
                 raise RuntimeError("bounded Paperclip MCP comment round trip failed")
-            print(json.dumps({"issueId": issue_id, "commentId": comment_id}, separators=(",", ":")))
+            child = require_mapping(
+                probe.call(
+                    "paperclipCreateIssue",
+                    {
+                        "title": "Slice 2 run-scoped child fixture",
+                        "description": "Child created by the attributed Chief run.",
+                        "priority": "low",
+                        "projectId": args.exercise_project_id,
+                        "parentId": issue_id,
+                        "idempotencyKey": f"slice-2-child:{issue_id}",
+                    },
+                    metadata=metadata,
+                ),
+                "paperclipCreateIssue",
+            )
+            child_id = str(child.get("id") or "")
+            if not child_id or child.get("parentId") != issue_id:
+                raise RuntimeError("bounded Paperclip MCP child relationship is wrong")
+            question_arguments = {
+                "issueId": issue_id,
+                "idempotencyKey": f"slice-2-question:{issue_id}",
+                "continuationPolicy": "wake_assignee",
+                "payload": {
+                    "version": 1,
+                    "title": "Recovery decision fixture",
+                    "questions": [{
+                        "id": "direction",
+                        "prompt": "Choose the recovery fixture direction",
+                        "selectionMode": "single",
+                        "required": True,
+                        "options": [{"id": "continue", "label": "Continue"}],
+                    }],
+                },
+            }
+            interaction = require_mapping(
+                probe.call(
+                    "paperclipAskUserQuestions", question_arguments, metadata=metadata
+                ),
+                "paperclipAskUserQuestions",
+            )
+            interaction_id = str(interaction.get("id") or "")
+            if (
+                not interaction_id
+                or interaction.get("issueId") != issue_id
+                or interaction.get("kind") != "ask_user_questions"
+                or interaction.get("status") != "pending"
+                or interaction.get("requestedResolverPolicy") != "human_only"
+                or interaction.get("effectiveResolverPolicy") != "human_only"
+                or interaction.get("addresseeUserId") != os.environ.get("PAPERCLIP_LIOR_USER_ID")
+                or interaction.get("sourceRunId") != run_id
+            ):
+                raise RuntimeError("bounded Paperclip question policy or attribution is wrong")
+            replayed_interaction = require_mapping(
+                probe.call(
+                    "paperclipAskUserQuestions", question_arguments, metadata=metadata
+                ),
+                "paperclipAskUserQuestions replay",
+            )
+            if replayed_interaction.get("id") != interaction_id:
+                raise RuntimeError("bounded Paperclip question replay was not idempotent")
+            print(json.dumps({
+                "issueId": issue_id,
+                "commentId": comment_id,
+                "childId": child_id,
+                "interactionId": interaction_id,
+            }, separators=(",", ":")))
             return
 
         if not args.exercise_project:

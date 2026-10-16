@@ -26,8 +26,10 @@ printf 'POSTGRES_PASSWORD=%s\nPAPERCLIP_DB_PASSWORD=%s\n' \
 } >"$test_tmp_dir/paperclip.env"
 {
   printf 'API_SERVER_KEY=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\n'
+  printf 'HERMES_DECISION_WEBHOOK_SECRET=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\n'
+  printf 'WEBHOOK_SECRET=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\n'
   printf 'OPENCODE_GO_API_KEY=test-opencode-go-key-12345678\n'
-  printf 'TELEGRAM_BOT_TOKEN=test-token\nTELEGRAM_ALLOWED_USERS=123456789\n'
+  printf 'TELEGRAM_BOT_TOKEN=test-token\nTELEGRAM_ALLOWED_USERS=123456789\nTELEGRAM_HOME_CHANNEL=123456789\n'
   printf 'TELEGRAM_ALLOW_ALL_USERS=false\nGATEWAY_ALLOW_ALL_USERS=false\n'
 } >"$test_tmp_dir/hermes.env"
 printf 'HERMES_TELEGRAM_MODE=disabled\n' >"$test_tmp_dir/hermes-telegram-mode.env"

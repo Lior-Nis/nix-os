@@ -65,14 +65,22 @@ required = {
     "paperclipListProjects",
     "paperclipGetProject",
     "paperclipCreateIssue",
+    "paperclipCheckoutIssue",
     "paperclipUpdateIssue",
     "paperclipAddComment",
+    "paperclipAskUserQuestions",
 }
 missing = sorted(required - names)
 if missing:
     raise SystemExit(f"Pinned Paperclip MCP package is missing required tools: {missing}")
 schemas = {tool["name"]: tool["inputSchema"] for tool in tools_response["result"]["tools"]}
-for name in ("paperclipUpdateIssue", "paperclipAddComment"):
+for name in (
+    "paperclipCreateIssue",
+    "paperclipCheckoutIssue",
+    "paperclipUpdateIssue",
+    "paperclipAddComment",
+    "paperclipAskUserQuestions",
+):
     if "runId" in schemas[name].get("properties", {}) or "runId" in schemas[name].get("required", []):
         raise SystemExit(f"Run attribution became model-visible in the official schema: {name}")
 mutation_result = mutation_response.get("result", {})
