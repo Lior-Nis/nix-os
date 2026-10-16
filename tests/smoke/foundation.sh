@@ -17,6 +17,7 @@ printf 'PAPERCLIP_DB_PASSWORD=%s\n' "$paperclip_db_password" >>"$test_tmp_dir/po
 } >"$test_tmp_dir/paperclip.env"
 {
   printf 'API_SERVER_KEY=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\n'
+  printf 'OPENCODE_GO_API_KEY=test-opencode-go-key-12345678\n'
   printf 'TELEGRAM_BOT_TOKEN=test-token\nTELEGRAM_ALLOWED_USERS=123456789\n'
   printf 'TELEGRAM_ALLOW_ALL_USERS=false\nGATEWAY_ALLOW_ALL_USERS=false\n'
 } >"$test_tmp_dir/hermes.env"
@@ -48,6 +49,15 @@ if NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$test_tmp_dir/miss
   exit 1
 fi
 
+for provider_secret in OPENCODE_GO_API_KEY OPENCODE_ZEN_API_KEY; do
+  cp "$test_tmp_dir/test.env" "$test_tmp_dir/provider-secret.env"
+  printf '%s=test-secret-must-stay-external\n' "$provider_secret" >>"$test_tmp_dir/provider-secret.env"
+  if NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$test_tmp_dir/provider-secret.env" >/dev/null 2>&1; then
+    printf '%s in the deployment environment unexpectedly passed\n' "$provider_secret" >&2
+    exit 1
+  fi
+done
+
 cp "$test_tmp_dir/hermes.env" "$test_tmp_dir/hermes-safe.env"
 sed 's/^TELEGRAM_ALLOW_ALL_USERS=false$/TELEGRAM_ALLOW_ALL_USERS=true/' \
   "$test_tmp_dir/hermes-safe.env" >"$test_tmp_dir/hermes.env"
@@ -67,7 +77,7 @@ if NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$test_tmp_dir/inva
 fi
 
 age_private_pattern='AGE-SECRET-KEY-(PQ-)?1[[:alnum:]]{20,}|AGE-PLUGIN-[A-Z0-9-]+-1[[:alnum:]]{20,}'
-public_secret_pattern='[0-9]{8,}:[A-Za-z0-9_-]{30,}|pcp_(api|claim|invite|bootstrap)?[_-]?[A-Za-z0-9_-]{30,}|ya29\.[A-Za-z0-9._-]{20,}|"refresh_token"[[:space:]]*:[[:space:]]*"[A-Za-z0-9._/-]{20,}"|^API_SERVER_KEY=[A-Za-z0-9_-]{32,}'
+public_secret_pattern='[0-9]{8,}:[A-Za-z0-9_-]{30,}|pcp_(api|claim|invite|bootstrap)?[_-]?[A-Za-z0-9_-]{30,}|ya29\.[A-Za-z0-9._-]{20,}|"refresh_token"[[:space:]]*:[[:space:]]*"[A-Za-z0-9._/-]{20,}"|^API_SERVER_KEY=[A-Za-z0-9_-]{32,}|^OPENCODE_GO_API_KEY=[A-Za-z0-9_-]{40,}'
 
 if grep -RIlE --exclude-dir=.git --exclude='*.md' --exclude='.env.example' \
   '(ghp_[[:alnum:]]{20,}|github_pat_[[:alnum:]_]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|[0-9]{8,}:[A-Za-z0-9_-]{30,})' \

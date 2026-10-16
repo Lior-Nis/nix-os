@@ -108,6 +108,7 @@ else
   } >"$restore_paperclip_env"
   {
     printf 'API_SERVER_KEY=%s\n' "$(openssl rand -hex 32)"
+    printf 'OPENCODE_GO_API_KEY=test-opencode-go-key-12345678\n'
     printf 'TELEGRAM_BOT_TOKEN=test-token\n'
     printf 'TELEGRAM_ALLOWED_USERS=123456789\n'
     printf 'TELEGRAM_ALLOW_ALL_USERS=false\nGATEWAY_ALLOW_ALL_USERS=false\n'
@@ -152,11 +153,16 @@ docker run --rm \
   --volume "$payload_dir:/backup:ro" \
   "$archive_helper_image" sh -ec 'find /target -mindepth 1 -delete && cd /target && tar -xzf /backup/hermes-data.tar.gz'
 docker run --rm --volume "$restore_hermes_volume:/state:ro" "$archive_helper_image" sh -ec '
-  for path in .env auth.json .paperclip-claim-receipt.json; do
+  for path in .env .paperclip-claim-receipt.json; do
     test -f "/state/$path"
     test "$(stat -c %u:%g "/state/$path")" = 10000:10000
     test "$(stat -c %a "/state/$path")" = 600
   done
+  if test -e /state/auth.json; then
+    test -f /state/auth.json
+    test "$(stat -c %u:%g /state/auth.json)" = 10000:10000
+    test "$(stat -c %a /state/auth.json)" = 600
+  fi
   test "$(find /state -maxdepth 1 -name ".paperclip-claim-*.pending" | wc -l | tr -d " ")" = 0
   test ! -e /state/mcp-tokens/nix-os-paperclip-claim-stage.json
 ' || fail "restored Hermes credentials/auth/claim receipt metadata is unsafe"
@@ -217,6 +223,9 @@ printf '%s' "$toolsets_json" \
   | "${compose_restore[@]}" exec -T --user 10000:10000 hermes python3 /opt/nix/validate-tool-boundary.py api >/dev/null
 "${compose_restore[@]}" exec -T --user 10000:10000 hermes python3 /opt/nix/validate-tool-boundary.py runtime >/dev/null
 "${compose_restore[@]}" exec -T --user 10000:10000 hermes python3 /opt/nix/validate-tool-boundary.py files >/dev/null
+"${compose_restore[@]}" exec -T --user 10000:10000 hermes \
+  python3 /opt/nix/patch-run-attribution.py --verify >/dev/null \
+  || fail "restored Hermes runtime attribution patch failed exact-hash verification"
 telegram_token=$(grep -E '^TELEGRAM_BOT_TOKEN=' "$restore_hermes_env" | tail -n 1 | cut -d= -f2-)
 telegram_token_digest=$(printf '%s' "$telegram_token" \
   | python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())')
@@ -239,8 +248,10 @@ gateway_allow_all=$(grep -E '^GATEWAY_ALLOW_ALL_USERS=' "$restore_hermes_env" | 
   test -r /opt/data/.env
   test "$(stat -c %a /opt/data/.env)" = 600
   test "$(stat -c %u:%g /opt/data/.env)" = 10000:10000
-  test "$(stat -c %a /opt/data/auth.json)" = 600
-  test "$(stat -c %u:%g /opt/data/auth.json)" = 10000:10000
+  if test -e /opt/data/auth.json; then
+    test "$(stat -c %a /opt/data/auth.json)" = 600
+    test "$(stat -c %u:%g /opt/data/auth.json)" = 10000:10000
+  fi
   test -s /opt/data/.paperclip-claim-receipt.json
   test "$(stat -c %a /opt/data/.paperclip-claim-receipt.json)" = 600
   test "$(stat -c %u:%g /opt/data/.paperclip-claim-receipt.json)" = 10000:10000

@@ -86,6 +86,7 @@ printf 'POSTGRES_PASSWORD=%s\nPAPERCLIP_DB_PASSWORD=%s\n' "$postgres_password" "
 } >"$smoke_tmp_dir/paperclip.env"
 {
   printf 'API_SERVER_KEY=%s\n' "$(openssl rand -hex 32)"
+  printf 'OPENCODE_GO_API_KEY=test-opencode-go-key-12345678\n'
   printf 'TELEGRAM_BOT_TOKEN=test-token\nTELEGRAM_ALLOWED_USERS=123456789\n'
   printf 'TELEGRAM_ALLOW_ALL_USERS=false\nGATEWAY_ALLOW_ALL_USERS=false\n'
 } >"$smoke_tmp_dir/hermes.env"
@@ -108,9 +109,7 @@ docker run --rm --volume "${smoke_project}_hermes_data:/state" "$archive_helper_
   install -d /state/memories /state/sessions
   printf "chief-of-staff-continuity-v1\n" >/state/memories/slice-1-continuity.txt
   printf "telegram-session-fixture-v1\n" >/state/sessions/slice-1-session.json
-  printf "%s\n" "{\"provider\":\"openai-codex\",\"fixture\":true}" >/state/auth.json
   printf "%s\n" "{\"desired_state\":\"running\",\"fixture\":true}" >/state/gateway_state.json
-  chmod 0600 /state/auth.json
   chown -R 10000:10000 /state
 '
 "${compose[@]}" up -d --wait postgres
@@ -250,7 +249,7 @@ source_patch "/api/agents/${hermes_agent_id}" "$hermes_adapter_patch" >/dev/null
 unset hermes_adapter_patch
 
 docker run --rm --volume "${smoke_project}_hermes_data:/state:ro" "$archive_helper_image" sh -ec '
-  for path in .env auth.json .paperclip-claim-receipt.json; do
+  for path in .env .paperclip-claim-receipt.json; do
     test "$(stat -c %u:%g "/state/$path")" = 10000:10000
     test "$(stat -c %a "/state/$path")" = 600
   done
@@ -350,12 +349,13 @@ grep -q '"status":"ok"' <<<"$restored_health" || fail "restored Paperclip health
 docker run --rm --volume "${restore_project}_hermes_data:/state:ro" "$archive_helper_image" sh -ec '
   grep -qx chief-of-staff-continuity-v1 /state/memories/slice-1-continuity.txt
   grep -qx telegram-session-fixture-v1 /state/sessions/slice-1-session.json
-  grep -q "openai-codex" /state/auth.json
+  if test -e /state/auth.json; then
+    test "$(stat -c %a /state/auth.json)" = 600
+    test "$(stat -c %u:%g /state/auth.json)" = 10000:10000
+  fi
   grep -q "desired_state" /state/gateway_state.json
   test "$(stat -c %a /state/.env)" = 600
   test "$(stat -c %u:%g /state/.env)" = 10000:10000
-  test "$(stat -c %a /state/auth.json)" = 600
-  test "$(stat -c %u:%g /state/auth.json)" = 10000:10000
   test -s /state/.paperclip-claim-receipt.json
   test "$(stat -c %a /state/.paperclip-claim-receipt.json)" = 600
   test "$(stat -c %u:%g /state/.paperclip-claim-receipt.json)" = 10000:10000

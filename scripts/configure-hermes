@@ -92,6 +92,7 @@ case "$action" in
       -e API_SERVER_KEY= -e TELEGRAM_BOT_TOKEN= -e TELEGRAM_ALLOWED_USERS= \
       -e PAPERCLIP_API_KEY= -e PAPERCLIP_AGENT_ID= -e PAPERCLIP_COMPANY_ID= -e PAPERCLIP_API_URL= \
       -e OPENAI_API_KEY= -e ANTHROPIC_API_KEY= -e OPENROUTER_API_KEY= -e GOOGLE_API_KEY= \
+      -e OPENCODE_GO_API_KEY= -e OPENCODE_ZEN_API_KEY= \
       -e GEMINI_API_KEY= -e XAI_API_KEY= -e DEEPSEEK_API_KEY= -e GROQ_API_KEY= \
       -e TOGETHER_API_KEY= -e HF_TOKEN= -e HUGGINGFACE_TOKEN= hermes \
       /opt/nix/validate-tool-boundary.py files-preflight >/dev/null
@@ -99,10 +100,10 @@ case "$action" in
     ;;
   auth)
     "$repo_root/scripts/check-config" "$config_file" >/dev/null
-    printf 'Complete the OpenAI device authorization in your browser. Tokens stay in the Hermes volume.\n'
-    "${compose[@]}" exec --user 10000:10000 hermes hermes auth add openai-codex --type oauth --priority 0
-    "${compose[@]}" exec -T --user 10000:10000 hermes hermes auth status openai-codex >/dev/null
-    printf 'Hermes reports an openai-codex credential.\n'
+    "${compose[@]}" exec -T --user 10000:10000 hermes \
+      python3 -c 'import os; assert os.environ.get("OPENCODE_GO_API_KEY")'
+    "${compose[@]}" exec -T --user 10000:10000 hermes hermes auth status opencode-go >/dev/null
+    printf 'Hermes reports an OpenCode Go API credential.\n'
     ;;
   verify-processes)
     "$repo_root/scripts/check-config" "$config_file" >/dev/null
@@ -126,7 +127,7 @@ case "$action" in
     "${compose[@]}" exec -T --user 10000:10000 hermes python3 /opt/nix/validate-tool-boundary.py runtime >/dev/null
     "${compose[@]}" exec -T --user 10000:10000 hermes python3 /opt/nix/validate-tool-boundary.py files >/dev/null
     "${compose[@]}" exec -T --user 10000:10000 hermes curl -fsS http://paperclip:3100/api/health >/dev/null
-    "${compose[@]}" exec -T --user 10000:10000 hermes hermes auth status openai-codex >/dev/null
+    "${compose[@]}" exec -T --user 10000:10000 hermes hermes auth status opencode-go >/dev/null
     "${compose[@]}" exec -T --user 10000:10000 hermes python3 /opt/nix/verify-paperclip-mcp.py >/dev/null
     printf 'Hermes API auth, restricted tool/file/process boundary, %s Telegram process mode, bounded Paperclip MCP, provider auth, and read-only grilling guidance are ready.\n' "$telegram_mode"
     ;;
