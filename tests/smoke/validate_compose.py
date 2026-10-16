@@ -37,7 +37,16 @@ require(any(mount.get("target") == "/paperclip" for mount in paperclip_mounts), 
 require(any(mount.get("target") == "/var/lib/postgresql/data" for mount in postgres_mounts), "PostgreSQL state is not persistent")
 hermes_mounts = services["hermes"].get("volumes", [])
 require(any(mount.get("target") == "/opt/data" for mount in hermes_mounts), "Hermes state is not persistent")
-require(any(mount.get("target") == "/workspace/nix-brain" and mount.get("read_only") for mount in hermes_mounts), "nix-brain must be mounted read-only")
+brain_mount = next(
+    (mount for mount in hermes_mounts if mount.get("target") == "/workspace/nix-brain"),
+    None,
+)
+require(brain_mount is not None and brain_mount.get("read_only"), "nix-brain must be mounted read-only")
+hermes_supplemental_groups = [str(group) for group in services["hermes"].get("group_add", [])]
+require(
+    hermes_supplemental_groups == [str(pathlib.Path(brain_mount["source"]).stat().st_gid)],
+    "Hermes must receive exactly the configured nix-brain supplemental group",
+)
 for helper in (
     "entrypoint.sh",
     "claim-agent.py",
@@ -115,9 +124,16 @@ require(hermes_environment.get("API_SERVER_ENABLED") == "true", "Hermes Runs API
 require(hermes_environment.get("API_SERVER_HOST") == "0.0.0.0", "Hermes must listen on the private Docker bridge")
 require(hermes_environment.get("HERMES_GATEWAY_BOOTSTRAP_STATE") == "running", "Hermes gateway restart persistence is missing")
 require(hermes_environment.get("HERMES_WRITE_SAFE_ROOT") == "/opt/data/memories", "Hermes file writes must be confined to memories")
-require(services["hermes"].get("entrypoint") == ["/bin/sh", "/opt/nix/entrypoint.sh"], "Hermes must enforce its Telegram mode before upstream startup")
 require(
-    "python3 /opt/nix/patch-run-attribution.py" in (repo_root / "deploy/hermes/entrypoint.sh").read_text(),
+    str(hermes_environment.get("NIX_BRAIN_GID")) == hermes_supplemental_groups[0],
+    "Hermes startup and Compose supplemental nix-brain groups must match",
+)
+require(services["hermes"].get("entrypoint") == ["/bin/sh", "/opt/nix/entrypoint.sh"], "Hermes must enforce its Telegram mode before upstream startup")
+entrypoint = (repo_root / "deploy/hermes/entrypoint.sh").read_text()
+for marker in ("NIX_BRAIN_GID", "groupadd --gid", "usermod --append --groups", "id -G hermes"):
+    require(marker in entrypoint, f"Hermes startup brain-group enforcement is missing: {marker}")
+require(
+    "python3 /opt/nix/patch-run-attribution.py" in entrypoint,
     "Hermes must install the version-locked run-attribution patch before upstream startup",
 )
 require("@sha256:99641e57" in services["hermes"].get("image", ""), "Hermes image digest is not the reviewed pin")
@@ -194,6 +210,7 @@ for key in (
     "HERMES_ENV_FILE",
     "HERMES_TELEGRAM_MODE_FILE",
     "NIX_BRAIN_HOST_PATH",
+    "NIX_BRAIN_GID",
     "PAPERCLIP_AUTH_DISABLE_SIGN_UP",
     "BACKUP_OUTPUT_DIR",
 ):

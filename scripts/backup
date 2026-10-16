@@ -75,6 +75,7 @@ esac
 
 "$repo_root/scripts/check-config" "$config_file"
 project_name=$(read_config COMPOSE_PROJECT_NAME)
+lior_paperclip_user_id=$(read_config PAPERCLIP_LIOR_USER_ID)
 output_dir=${BACKUP_OUTPUT_DIR:-$(read_config BACKUP_OUTPUT_DIR)}
 [[ -n "$output_dir" ]] || fail "BACKUP_OUTPUT_DIR is not configured"
 mkdir -p "$output_dir"
@@ -86,9 +87,18 @@ docker volume inspect "$paperclip_volume" >/dev/null 2>&1 || fail "Paperclip vol
 docker volume inspect "$hermes_volume" >/dev/null 2>&1 || fail "Hermes volume does not exist: $hermes_volume"
 "${compose[@]}" exec -T postgres pg_isready -U paperclip -d paperclip >/dev/null || fail "PostgreSQL is not ready"
 
+hermes_image=''
 if [[ $test_only_unencrypted == 0 ]]; then
   hermes_image=$("${compose[@]}" config --format json | jq -er '.services.hermes.image') \
     || fail "could not resolve the pinned Hermes image"
+fi
+
+check_backup_safety() {
+  "$repo_root/scripts/check-paperclip-chief-topology" "$config_file" >/dev/null \
+    || fail "Paperclip Chief topology is unsafe; refusing to capture a backup"
+  if [[ $test_only_unencrypted == 1 ]]; then
+    return
+  fi
   docker run --rm --volume "$hermes_volume:/state:ro" "$archive_helper_image" sh -ec '
     for path in .env .paperclip-claim-receipt.json; do
       test -f "/state/$path"
@@ -108,7 +118,9 @@ if [[ $test_only_unencrypted == 0 ]]; then
     --volume "$repo_root/deploy/hermes/startup-boundary.py:/opt/nix/startup-boundary.py:ro" \
     "$hermes_image" /opt/nix/startup-boundary.py --check-profile-only \
     || fail "Hermes profile state contains invalid or external-only Telegram controls"
-fi
+}
+
+check_backup_safety
 
 if "${compose[@]}" ps --status running --services | grep -qx hermes; then
   hermes_was_running=1
@@ -118,6 +130,10 @@ if "${compose[@]}" ps --status running --services | grep -qx paperclip; then
   paperclip_was_running=1
   "${compose[@]}" stop paperclip
 fi
+
+# Re-check only after both application writers are quiesced. The early check
+# avoids unnecessary downtime; this second gate is authoritative for capture.
+check_backup_safety
 
 timestamp=$(date -u +%Y%m%dT%H%M%SZ)
 backup_name="nix-os-${project_name}-${timestamp}"
@@ -174,9 +190,10 @@ git_commit=$(git -C "$repo_root" rev-parse HEAD 2>/dev/null || printf 'uncommitt
 file_count=$(wc -l <"$payload_dir/paperclip-files.sha256" | tr -d ' ')
 hermes_file_count=$(wc -l <"$payload_dir/hermes-files.sha256" | tr -d ' ')
 {
-  printf 'BACKUP_FORMAT_VERSION=2\n'
+  printf 'BACKUP_FORMAT_VERSION=3\n'
   printf 'CREATED_AT=%s\n' "$timestamp"
   printf 'SOURCE_PROJECT=%s\n' "$project_name"
+  printf 'PAPERCLIP_LIOR_USER_ID=%s\n' "$lior_paperclip_user_id"
   printf 'GIT_COMMIT=%s\n' "$git_commit"
   printf 'PAPERCLIP_VOLUME=%s\n' "$paperclip_volume"
   printf 'PAPERCLIP_FILE_COUNT=%s\n' "$file_count"

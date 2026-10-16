@@ -92,11 +92,19 @@ printf 'POSTGRES_PASSWORD=%s\nPAPERCLIP_DB_PASSWORD=%s\n' "$postgres_password" "
 } >"$smoke_tmp_dir/hermes.env"
 printf 'HERMES_TELEGRAM_MODE=disabled\n' >"$smoke_tmp_dir/hermes-telegram-mode.env"
 mkdir "$smoke_tmp_dir/nix-brain"
+printf '# Recovery brain fixture\n' >"$smoke_tmp_dir/nix-brain/README.md"
+git -C "$smoke_tmp_dir/nix-brain" init -q
+git -C "$smoke_tmp_dir/nix-brain" add README.md
+brain_gid=$("$repo_root/tests/fixtures/select-brain-gid")
+chgrp -R "$brain_gid" "$smoke_tmp_dir/nix-brain"
+chmod -R g+rX,o-rwx "$smoke_tmp_dir/nix-brain"
+brain_gid=$(stat -c '%g' "$smoke_tmp_dir/nix-brain" 2>/dev/null || stat -f '%g' "$smoke_tmp_dir/nix-brain")
 {
   printf 'COMPOSE_PROJECT_NAME=%s\n' "$smoke_project"
   printf 'PAPERCLIP_PUBLIC_URL=https://nix-os.test-tailnet.ts.net\nPAPERCLIP_LIOR_USER_ID=lior-test-user\nPAPERCLIP_HOST_PORT=0\n'
   printf 'POSTGRES_ENV_FILE=%s\nPAPERCLIP_ENV_FILE=%s\n' "$smoke_tmp_dir/postgres.env" "$smoke_tmp_dir/paperclip.env"
   printf 'HERMES_ENV_FILE=%s\nNIX_BRAIN_HOST_PATH=%s\n' "$smoke_tmp_dir/hermes.env" "$smoke_tmp_dir/nix-brain"
+  printf 'NIX_BRAIN_GID=%s\n' "$brain_gid"
   printf 'HERMES_TELEGRAM_BOT_USERNAME=the_nixos_bot\n'
   printf 'HERMES_TELEGRAM_MODE_FILE=%s\n' "$smoke_tmp_dir/hermes-telegram-mode.env"
   printf 'PAPERCLIP_AUTH_DISABLE_SIGN_UP=false\nBACKUP_OUTPUT_DIR=%s\n' "$smoke_tmp_dir/backups"
@@ -134,7 +142,12 @@ signup_body=$(jq -nc --arg password "$admin_password" '{name:"Slice Zero Admin",
 source_post '/api/auth/sign-up/email' "$signup_body" >/dev/null
 source_post '/api/bootstrap/claim' '{}' >/dev/null
 session_json=$(source_get '/api/auth/get-session')
-jq -e '.user.id != null or .session.userId != null or .userId != null' >/dev/null <<<"$session_json" || fail "CEO session was not established"
+board_user_id=$(jq -er '.user.id // .session.userId // .userId' <<<"$session_json") \
+  || fail "CEO session was not established"
+sed "s/^PAPERCLIP_LIOR_USER_ID=.*/PAPERCLIP_LIOR_USER_ID=$board_user_id/" "$config_file" \
+  >"$smoke_tmp_dir/smoke-board-user.env"
+mv "$smoke_tmp_dir/smoke-board-user.env" "$config_file"
+chmod 0600 "$config_file"
 health_json=$("${compose[@]}" exec -T paperclip curl -fsS http://127.0.0.1:3100/api/health)
 grep -q '"bootstrapStatus":"ready"' <<<"$health_json" || fail "instance did not become bootstrap ready"
 if NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/bootstrap-ceo" "$config_file" >/dev/null 2>&1; then
@@ -160,9 +173,11 @@ company_id=$(jq -er '.id' <<<"$company_json")
 project_json=$(source_post "/api/companies/${company_id}/projects" \
   '{"name":"Nix MCP Boundary Fixture","description":"Existing approved project for bounded Chief operations."}')
 project_id=$(jq -er '.id' <<<"$project_json")
-source_post "/api/companies/${company_id}/agents" \
-  '{"name":"Recovery Fixture CEO","role":"ceo","capabilities":"Approves the disposable Hermes recovery join.","adapterType":"process","adapterConfig":{"command":"true","args":[]}}' \
-  >/dev/null
+temp_json=$(source_post "/api/companies/${company_id}/agents" \
+  '{"name":"Nix Bootstrap CEO","role":"ceo","capabilities":"Temporary inert manager for the disposable Hermes recovery join.","adapterType":"process","adapterConfig":{"command":"/bin/false","args":[]},"runtimeConfig":{"heartbeat":{"enabled":false}},"budgetMonthlyCents":0,"permissions":{"canCreateAgents":false,"canCreateSkills":false,"canAssignTasks":false},"metadata":{"nixBootstrap":{"kind":"temporary-chief-manager","version":1}}}')
+temp_agent_id=$(jq -er '.id' <<<"$temp_json")
+source_patch "/api/agents/${temp_agent_id}/permissions" \
+  '{"canCreateAgents":false,"canCreateSkills":false,"canAssignTasks":false}' >/dev/null
 
 # Exercise the supported invite -> approval -> one-time claim flow and persist
 # the resulting key inside the same Hermes volume that the backup will capture.
@@ -171,7 +186,7 @@ invite_token=$(jq -er '.token' <<<"$invite_json")
 hermes_api_key=$(grep -E '^API_SERVER_KEY=' "$smoke_tmp_dir/hermes.env" | cut -d= -f2-)
 accept_body=$(jq -nc --arg api_key "$hermes_api_key" '{
   requestType:"agent",
-  agentName:"Chief of Staff Recovery Fixture",
+  agentName:"Chief of Staff",
   adapterType:"hermes_gateway",
   capabilities:"Bounded Paperclip recovery fixture",
   agentDefaultsPayload:{
@@ -247,6 +262,12 @@ hermes_adapter_patch=$(jq -nc --arg api_key "$hermes_api_key" '{
 }')
 source_patch "/api/agents/${hermes_agent_id}" "$hermes_adapter_patch" >/dev/null
 unset hermes_adapter_patch
+source_patch "/api/agents/${hermes_agent_id}/permissions" \
+  '{"canCreateAgents":false,"canCreateSkills":false,"canAssignTasks":true}' >/dev/null
+source_patch "/api/agents/${hermes_agent_id}" '{"role":"ceo","reportsTo":null}' >/dev/null
+source_patch "/api/agents/${temp_agent_id}" \
+  "$(jq -nc --arg chief_id "$hermes_agent_id" '{role:"general",reportsTo:$chief_id}')" >/dev/null
+source_post "/api/agents/${temp_agent_id}/pause" '{}' >/dev/null
 
 docker run --rm --volume "${smoke_project}_hermes_data:/state:ro" "$archive_helper_image" sh -ec '
   for path in .env .paperclip-claim-receipt.json; do

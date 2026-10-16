@@ -27,6 +27,10 @@ printf 'POSTGRES_PASSWORD=%s\nPAPERCLIP_DB_PASSWORD=%s\n' "$postgres_password" "
 } >"$source_dir/secrets/hermes.env"
 printf 'HERMES_TELEGRAM_MODE=disabled\n' >"$source_dir/secrets/hermes-telegram-mode.env"
 mkdir "$source_dir/nix-brain"
+brain_gid=$("$repo_root/tests/fixtures/select-brain-gid")
+chgrp "$brain_gid" "$source_dir/nix-brain"
+chmod 0750 "$source_dir/nix-brain"
+brain_gid=$(stat -c '%g' "$source_dir/nix-brain" 2>/dev/null || stat -f '%g' "$source_dir/nix-brain")
 {
   printf 'COMPOSE_PROJECT_NAME=nix-os-config-pack-test\n'
   printf 'PAPERCLIP_PUBLIC_URL=https://nix-os.test-tailnet.ts.net\n'
@@ -38,6 +42,7 @@ mkdir "$source_dir/nix-brain"
   printf 'HERMES_TELEGRAM_BOT_USERNAME=the_nixos_bot\n'
   printf 'HERMES_TELEGRAM_MODE_FILE=%s\n' "$source_dir/secrets/hermes-telegram-mode.env"
   printf 'NIX_BRAIN_HOST_PATH=%s\n' "$source_dir/nix-brain"
+  printf 'NIX_BRAIN_GID=%s\n' "$brain_gid"
   printf 'PAPERCLIP_AUTH_DISABLE_SIGN_UP=true\n'
   printf 'BACKUP_OUTPUT_DIR=%s\n' "$source_dir/backups"
 } >"$source_dir/deployment.env"

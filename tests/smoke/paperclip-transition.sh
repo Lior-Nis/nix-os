@@ -9,6 +9,10 @@ trap 'rm -rf "$test_tmp_dir"' EXIT
 fixture_bin="$test_tmp_dir/bin"
 fixture_state="$test_tmp_dir/state"
 mkdir -p "$fixture_bin" "$fixture_state" "$test_tmp_dir/nix-brain"
+brain_gid=$("$repo_root/tests/fixtures/select-brain-gid")
+chgrp "$brain_gid" "$test_tmp_dir/nix-brain"
+chmod 0750 "$test_tmp_dir/nix-brain"
+brain_gid=$(stat -c '%g' "$test_tmp_dir/nix-brain" 2>/dev/null || stat -f '%g' "$test_tmp_dir/nix-brain")
 ln -s "$repo_root/tests/fixtures/paperclip-transition/docker" "$fixture_bin/docker"
 
 postgres_password='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
@@ -38,6 +42,7 @@ printf 'HERMES_TELEGRAM_MODE=disabled\n' >"$test_tmp_dir/hermes-telegram-mode.en
   printf 'HERMES_TELEGRAM_BOT_USERNAME=the_nixos_bot\n'
   printf 'HERMES_TELEGRAM_MODE_FILE=%s\n' "$test_tmp_dir/hermes-telegram-mode.env"
   printf 'NIX_BRAIN_HOST_PATH=%s\n' "$test_tmp_dir/nix-brain"
+  printf 'NIX_BRAIN_GID=%s\n' "$brain_gid"
   printf 'PAPERCLIP_AUTH_DISABLE_SIGN_UP=true\n'
   printf 'BACKUP_OUTPUT_DIR=%s\n' "$test_tmp_dir/backups"
 } >"$test_tmp_dir/test.env"

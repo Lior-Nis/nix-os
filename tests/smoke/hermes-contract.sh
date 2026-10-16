@@ -7,11 +7,13 @@ image='nousresearch/hermes-agent:v2026.9.14@sha256:99641e57ec762c59e54cb44aa6746
 suffix=$(openssl rand -hex 8)
 container="nix-hermes-contract-$suffix"
 volume="nix-hermes-contract-$suffix"
+brain_volume="nix-hermes-brain-contract-$suffix"
 api_key=$(openssl rand -hex 32)
 telegram_token='nix-disabled-token-canary'
 telegram_token_digest=$(printf '%s' "$telegram_token" | sha256sum | cut -d' ' -f1)
 mode_dir="/tmp/${container}-telegram-mode"
 mode_file="$mode_dir/mode.env"
+brain_gid=12345
 mkdir -m 0700 "$mode_dir"
 docker run --rm --volume "$mode_dir:/out" --entrypoint sh "$image" -ec '
   printf "HERMES_TELEGRAM_MODE=disabled\n" > /out/mode.env
@@ -21,11 +23,34 @@ docker run --rm --volume "$mode_dir:/out" --entrypoint sh "$image" -ec '
 cleanup() {
   docker rm -f "$container" >/dev/null 2>&1 || true
   docker volume rm "$volume" >/dev/null 2>&1 || true
+  docker volume rm "$brain_volume" >/dev/null 2>&1 || true
   rm -rf "$mode_dir"
+  rm -f "/tmp/${container}-collision.out" "/tmp/${container}-collision.err"
 }
 trap cleanup EXIT
 
 docker volume create "$volume" >/dev/null
+docker volume create "$brain_volume" >/dev/null
+docker run --rm --volume "$brain_volume:/brain" --entrypoint sh "$image" -ec '
+  git -C /brain init -q
+  printf "# Restricted brain fixture\n" > /brain/README.md
+  git -C /brain add README.md
+  chgrp -R 12345 /brain
+  chmod -R g+rX,o-rwx /brain
+'
+
+expected_system_gids=$(grep -E '^[0-9]+$' "$repo_root/deploy/hermes/pinned-system-gids.txt" | tr '\n' ' ')
+actual_system_gids=$(docker run --rm --entrypoint sh "$image" -ec 'cut -d: -f3 /etc/group | sort -n | tr "\n" " "')
+[[ "$actual_system_gids" == "$expected_system_gids" ]] \
+  || { printf 'pinned Hermes system-group inventory drifted\n' >&2; exit 1; }
+if docker run --rm --env NIX_BRAIN_GID=42 --entrypoint /bin/sh \
+  --volume "$repo_root/deploy/hermes/entrypoint.sh:/opt/nix/entrypoint.sh:ro" \
+  "$image" /opt/nix/entrypoint.sh gateway run \
+  >"/tmp/${container}-collision.out" 2>"/tmp/${container}-collision.err"; then
+  printf 'Hermes startup accepted a colliding brain group\n' >&2
+  exit 1
+fi
+grep -q 'collides with an image system group' "/tmp/${container}-collision.err"
 
 startup_boundary=(docker run --rm --entrypoint python3
   --volume "$volume:/opt/data"
@@ -172,10 +197,13 @@ docker run --rm --entrypoint python3 \
   "$image" /nix/probe-paperclip-mcp.py
 
 docker run --rm --user 10000:10000 --entrypoint python3 \
+  --group-add "$brain_gid" \
   --volume "$volume:/opt/data" \
   --volume "$repo_root/deploy/hermes/config.yaml:/opt/data/config.yaml:ro" \
   --volume "$repo_root/deploy/hermes/validate-tool-boundary.py:/opt/nix/validate-tool-boundary.py:ro" \
+  --volume "$brain_volume:/workspace/nix-brain:ro" \
   --env HERMES_WRITE_SAFE_ROOT=/opt/data/memories \
+  --env "NIX_BRAIN_GID=$brain_gid" \
   --env NIX_HERMES_PROC_CANARY=nix-proc-canary-4a6b \
   --env API_SERVER_KEY= --env TELEGRAM_BOT_TOKEN= --env TELEGRAM_ALLOWED_USERS= \
   --env PAPERCLIP_API_KEY= --env PAPERCLIP_AGENT_ID= --env PAPERCLIP_COMPANY_ID= --env PAPERCLIP_API_URL= \
@@ -195,7 +223,7 @@ docker run --rm --user 10000:10000 --entrypoint sh --volume "$volume:/opt/data" 
     "GATEWAY_ALLOW_ALL_USERS=true" >> /opt/data/.env
 '
 
-docker run -d --name "$container" --entrypoint /bin/sh --volume "$volume:/opt/data" \
+docker run -d --name "$container" --entrypoint /bin/sh --group-add "$brain_gid" --volume "$volume:/opt/data" \
   --volume "$repo_root/deploy/hermes/entrypoint.sh:/opt/nix/entrypoint.sh:ro" \
   --volume "$repo_root/deploy/hermes/startup-boundary.py:/opt/nix/startup-boundary.py:ro" \
   --volume "$repo_root/deploy/hermes/patch-run-attribution.py:/opt/nix/patch-run-attribution.py:ro" \
@@ -204,13 +232,14 @@ docker run -d --name "$container" --entrypoint /bin/sh --volume "$volume:/opt/da
   --volume "$repo_root/deploy/hermes/SOUL.md:/opt/data/SOUL.md:ro" \
   --volume "$repo_root/deploy/hermes/validate-tool-boundary.py:/opt/nix/validate-tool-boundary.py:ro" \
   --volume "$repo_root/deploy/hermes/run-scoped-paperclip-mcp.py:/opt/nix/run-scoped-paperclip-mcp.py:ro" \
-  --volume "$repo_root:/workspace/nix-brain:ro" \
+  --volume "$brain_volume:/workspace/nix-brain:ro" \
   --env API_SERVER_ENABLED=true --env API_SERVER_HOST=0.0.0.0 --env API_SERVER_PORT=8642 \
   --env API_SERVER_KEY="$api_key" --env HERMES_GATEWAY_BOOTSTRAP_STATE=running \
   --env TELEGRAM_BOT_TOKEN="$telegram_token" \
   --env TELEGRAM_ALLOWED_USERS=123456789 \
   --env TELEGRAM_ALLOW_ALL_USERS=false --env GATEWAY_ALLOW_ALL_USERS=false \
   --env HERMES_WRITE_SAFE_ROOT=/opt/data/memories \
+  --env "NIX_BRAIN_GID=$brain_gid" \
   --env NIX_HERMES_PROC_CANARY=nix-proc-canary-4a6b \
   --env PAPERCLIP_API_KEY=pcp_contract_fixture --env PAPERCLIP_COMPANY_ID=contract-company \
   --env PAPERCLIP_AGENT_ID=contract-agent \
@@ -223,6 +252,7 @@ done
 docker exec --user 10000:10000 "$container" curl -fsS http://127.0.0.1:8642/health >/dev/null
 docker exec --user 10000:10000 "$container" sh -ec '
   test "$(id -u):$(id -g)" = 10000:10000
+  id -G | tr " " "\n" | grep -qx '"$brain_gid"'
   mkdir -p /opt/data/memories /opt/data/sessions
   printf "%s\n" "restart-continuity-v1" > /opt/data/memories/contract.txt
   test ! -e /opt/data/auth.json
@@ -250,6 +280,7 @@ docker exec --user 10000:10000 \
   -e "NIX_EXPECT_TELEGRAM_TOKEN_SHA256=$telegram_token_digest" \
   -e NIX_EXPECT_TELEGRAM_ALLOWED_USERS=123456789 \
   -e NIX_EXPECT_TELEGRAM_ALLOW_ALL_USERS=false \
+  -e "NIX_EXPECT_BRAIN_GID=$brain_gid" \
   -e NIX_EXPECT_GATEWAY_ALLOW_ALL_USERS=false "$container" \
   python3 /opt/nix/validate-tool-boundary.py processes >/dev/null
 python3 - "$container" <<'PY'
@@ -272,7 +303,7 @@ docker exec --user 10000:10000 "$container" curl -fsS http://127.0.0.1:8642/heal
 docker exec --user 10000:10000 "$container" grep -qx restart-continuity-v1 /opt/data/memories/contract.txt
 docker exec --user 10000:10000 "$container" test ! -w /opt/data/config.yaml
 docker exec --user 10000:10000 "$container" test ! -w /opt/data/SOUL.md
-docker exec --user 10000:10000 "$container" test ! -w /workspace/nix-brain/AGENTS.md
+docker exec --user 10000:10000 "$container" test ! -w /workspace/nix-brain/README.md
 docker exec --user 10000:10000 "$container" sh -ec 'test "$(stat -c %a /opt/data/.env)" = 600'
 docker exec --user 10000:10000 "$container" python3 -c 'import json; json.load(open("/opt/data/auth.json"))'
 docker exec --user 10000:10000 "$container" curl -fsS -H "Authorization: Bearer $api_key" http://127.0.0.1:8642/v1/capabilities >/dev/null

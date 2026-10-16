@@ -1,0 +1,418 @@
+#!/usr/bin/env python3
+"""Reject backup or restore of an unsafe Paperclip Chief control-plane topology."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import hmac
+import json
+import os
+import pathlib
+import re
+import stat
+import subprocess
+import sys
+from typing import Any
+
+
+TEMP_NAME = "Nix Bootstrap CEO"
+TEMP_MARKER = {"kind": "temporary-chief-manager", "version": 1}
+MANAGED_IDENTITY_KEYS = {
+    "PAPERCLIP_API_KEY",
+    "PAPERCLIP_COMPANY_ID",
+    "PAPERCLIP_AGENT_ID",
+}
+UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}")
+
+
+class TopologyError(RuntimeError):
+    pass
+
+
+def read_config(path: pathlib.Path, key: str) -> str:
+    if not path.is_file():
+        raise TopologyError(f"configuration file does not exist: {path}")
+    value = ""
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith(f"{key}="):
+            value = line.split("=", 1)[1].strip()
+    if len(value) >= 2 and value[:1] == value[-1:] and value[0] in "\"'":
+        value = value[1:-1]
+    if not value:
+        raise TopologyError(f"{key} is missing from {path}")
+    return value
+
+
+def read_secret_binding(path: pathlib.Path, key: str) -> str:
+    if not path.is_file():
+        raise TopologyError(f"external secret file does not exist: {path}")
+    values: list[str] = []
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        candidate, value = line.split("=", 1)
+        if candidate != key:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[:1] == value[-1:] and value[0] in "\"'":
+            value = value[1:-1]
+        values.append(value)
+    if len(values) != 1 or not values[0]:
+        raise TopologyError(f"external secret file must contain exactly one nonempty {key}")
+    return values[0]
+
+
+def read_identity_bindings(path: pathlib.Path) -> dict[str, str]:
+    bindings: dict[str, str] = {}
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key not in MANAGED_IDENTITY_KEYS:
+            continue
+        if key in bindings:
+            raise TopologyError(f"persisted Hermes identity contains duplicate {key}")
+        value = value.strip()
+        if len(value) >= 2 and value[:1] == value[-1:] and value[0] in "\"'":
+            value = value[1:-1]
+        bindings[key] = value
+    return bindings
+
+
+def require_secret_file(
+    path: pathlib.Path, label: str, expected_uid: int, expected_gid: int
+) -> None:
+    try:
+        metadata = path.lstat()
+    except OSError:
+        raise TopologyError(f"{label} is missing") from None
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) != 0o600:
+        raise TopologyError(f"{label} is not a mode-0600 regular file")
+    if metadata.st_uid != expected_uid or metadata.st_gid != expected_gid:
+        raise TopologyError(f"{label} has unexpected ownership")
+
+
+def read_claim_metadata(
+    profile_dir: pathlib.Path, expected_uid: int = 10000, expected_gid: int = 10000
+) -> dict[str, Any]:
+    env_path = profile_dir / ".env"
+    receipt_path = profile_dir / ".paperclip-claim-receipt.json"
+    require_secret_file(env_path, "persisted Hermes credential file", expected_uid, expected_gid)
+    require_secret_file(receipt_path, "Paperclip claim receipt", expected_uid, expected_gid)
+    if list(profile_dir.glob(".paperclip-claim-*.pending")):
+        raise TopologyError("Paperclip claim recovery marker exists")
+    if os.path.lexists(profile_dir / "mcp-tokens/nix-os-paperclip-claim-stage.json"):
+        raise TopologyError("Paperclip staged claim exists")
+
+    bindings = read_identity_bindings(env_path)
+    company_id = bindings.get("PAPERCLIP_COMPANY_ID", "")
+    agent_id = bindings.get("PAPERCLIP_AGENT_ID", "")
+    credential = bindings.get("PAPERCLIP_API_KEY", "")
+    if not credential or not UUID_RE.fullmatch(company_id) or not UUID_RE.fullmatch(agent_id):
+        raise TopologyError("persisted Hermes credential identity is incomplete")
+    try:
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        raise TopologyError("Paperclip claim receipt is invalid") from None
+    if not isinstance(receipt, dict):
+        raise TopologyError("Paperclip claim receipt is invalid")
+    if receipt.get("companyId") != company_id or receipt.get("agentId") != agent_id:
+        raise TopologyError("Paperclip claim receipt does not match the persisted identity")
+    if not UUID_RE.fullmatch(str(receipt.get("requestId") or "")) or not UUID_RE.fullmatch(
+        str(receipt.get("keyId") or "")
+    ):
+        raise TopologyError("Paperclip claim receipt lacks durable request/key identity")
+    return {
+        "credentialPresent": True,
+        "credentialSha256": hashlib.sha256(credential.encode()).hexdigest(),
+        "companyId": company_id,
+        "agentId": agent_id,
+        "receipt": {
+            "requestId": receipt["requestId"],
+            "companyId": company_id,
+            "agentId": agent_id,
+            "keyId": receipt["keyId"],
+        },
+    }
+
+
+def require_permissions(value: object, *, assign: bool, label: str) -> None:
+    if not isinstance(value, dict) or any(
+        value.get(key) is not expected
+        for key, expected in (
+            ("canCreateAgents", False),
+            ("canCreateSkills", False),
+            ("canAssignTasks", assign),
+        )
+    ):
+        raise TopologyError(f"{label} permissions are unsafe")
+
+
+def validate_topology(metadata: dict[str, Any], snapshot: dict[str, Any], board_user_id: str) -> None:
+    company_id = str(metadata.get("companyId") or "")
+    chief_id = str(metadata.get("agentId") or "")
+    receipt = metadata.get("receipt")
+    if metadata.get("credentialPresent") is not True or not isinstance(receipt, dict):
+        raise TopologyError("Hermes claimed identity metadata is incomplete")
+    credential_sha256 = str(metadata.get("credentialSha256") or "")
+    if not re.fullmatch(r"[0-9a-f]{64}", credential_sha256):
+        raise TopologyError("Hermes claimed credential fingerprint is invalid")
+    gateway_key_sha256 = str(metadata.get("gatewayKeySha256") or "")
+    if not re.fullmatch(r"[0-9a-f]{64}", gateway_key_sha256):
+        raise TopologyError("Hermes Runs API credential fingerprint is invalid")
+    if receipt.get("companyId") != company_id or receipt.get("agentId") != chief_id:
+        raise TopologyError("Hermes claim receipt identity is inconsistent")
+    agents = snapshot.get("agents")
+    keys = snapshot.get("keys")
+    if not isinstance(agents, list) or not isinstance(keys, list):
+        raise TopologyError("Paperclip topology snapshot is invalid")
+
+    chiefs = [row for row in agents if isinstance(row, dict) and row.get("id") == chief_id]
+    if len(chiefs) != 1:
+        raise TopologyError("claimed Chief is not unique in its company")
+    chief = chiefs[0]
+    roots = [
+        row
+        for row in agents
+        if isinstance(row, dict)
+        and row.get("status") != "terminated"
+        and row.get("role") == "ceo"
+        and row.get("reportsTo") is None
+    ]
+    if len(roots) != 1 or roots[0].get("id") != chief_id:
+        raise TopologyError("claimed Chief is not the sole root CEO")
+    if (
+        chief.get("name") != "Chief of Staff"
+        or chief.get("status") in ("pending_approval", "terminated")
+        or chief.get("chiefGatewaySafe") is not True
+        or chief.get("chiefHasApiKey") is not True
+    ):
+        raise TopologyError("claimed Chief identity or gateway configuration is unsafe")
+    require_permissions(chief.get("permissions"), assign=True, label="claimed Chief")
+    if not hmac.compare_digest(str(chief.get("chiefGatewayKeyHash") or ""), gateway_key_sha256):
+        raise TopologyError("claimed Chief gateway key does not match external Hermes configuration")
+
+    marked = [row for row in agents if isinstance(row, dict) and row.get("hasNixBootstrap") is True]
+    if len(marked) != 1 or marked[0].get("marker") != TEMP_MARKER:
+        raise TopologyError("temporary bootstrap manager marker is not unique")
+    temp = marked[0]
+    if (
+        temp.get("name") != TEMP_NAME
+        or temp.get("role") != "general"
+        or temp.get("reportsTo") != chief_id
+        or temp.get("status") != "paused"
+        or temp.get("budgetMonthlyCents") != 0
+        or temp.get("tempAdapterSafe") is not True
+        or temp.get("tempRuntimeSafe") is not True
+    ):
+        raise TopologyError("temporary bootstrap manager is not inert and subordinate")
+    require_permissions(temp.get("permissions"), assign=False, label="temporary bootstrap manager")
+
+    active_chief_keys = [
+        row
+        for row in keys
+        if isinstance(row, dict) and row.get("agentId") == chief_id and row.get("revoked") is False
+    ]
+    if len(active_chief_keys) != 1:
+        raise TopologyError("claimed Chief must have exactly one active API key")
+    key = active_chief_keys[0]
+    if (
+        key.get("id") != receipt.get("keyId")
+        or key.get("scopeKind") != "standard"
+        or key.get("responsibleUserId") != board_user_id
+    ):
+        raise TopologyError("claimed Chief active API key ownership/scope is unsafe")
+    if not hmac.compare_digest(str(key.get("keyHash") or ""), credential_sha256):
+        raise TopologyError("claimed Chief credential does not match its active API key")
+    if any(
+        isinstance(row, dict) and row.get("agentId") == temp.get("id") and row.get("revoked") is False
+        for row in keys
+    ):
+        raise TopologyError("temporary bootstrap manager has an active API key")
+
+
+def run(command: list[str], *, label: str) -> str:
+    try:
+        result = subprocess.run(command, text=True, capture_output=True, check=False)
+    except OSError:
+        raise TopologyError(f"{label} could not be started") from None
+    if result.returncode != 0:
+        raise TopologyError(f"{label} failed")
+    return result.stdout
+
+
+def build_topology_query(company_id: str, chief_id: str) -> str:
+    if not UUID_RE.fullmatch(company_id) or not UUID_RE.fullmatch(chief_id):
+        raise TopologyError("cannot build a topology query for invalid identifiers")
+    return f"""
+SELECT json_build_object(
+  'agents', COALESCE((
+    SELECT json_agg(json_build_object(
+      'id', id::text,
+      'name', name,
+      'role', role,
+      'status', status,
+      'reportsTo', reports_to::text,
+      'hasNixBootstrap', metadata ? 'nixBootstrap',
+      'marker', metadata->'nixBootstrap',
+      'budgetMonthlyCents', budget_monthly_cents,
+      'permissions', permissions,
+      'tempAdapterSafe', CASE WHEN metadata->'nixBootstrap' = '{{"kind":"temporary-chief-manager","version":1}}'::jsonb THEN
+        adapter_type = 'process'
+        AND adapter_config->>'command' = '/bin/false'
+        AND COALESCE(adapter_config->'args', '[]'::jsonb) = '[]'::jsonb
+        AND COALESCE(adapter_config->'env', '{{}}'::jsonb) IN ('{{}}'::jsonb, 'null'::jsonb)
+      ELSE NULL END,
+      'tempRuntimeSafe', CASE WHEN metadata->'nixBootstrap' = '{{"kind":"temporary-chief-manager","version":1}}'::jsonb THEN
+        runtime_config#>>'{{heartbeat,enabled}}' = 'false'
+      ELSE NULL END,
+      'chiefGatewaySafe', CASE WHEN id = '{chief_id}'::uuid THEN
+        adapter_type = 'hermes_gateway'
+        AND adapter_config->>'apiBaseUrl' IN ('http://hermes:8642', 'http://hermes:8642/')
+        AND adapter_config->>'paperclipApiUrl' = 'http://paperclip:3100'
+        AND adapter_config->>'sessionKeyStrategy' = 'issue'
+        AND adapter_config->'dangerouslyAllowInsecureRemoteHttp' = 'true'::jsonb
+      ELSE NULL END,
+      'chiefHasApiKey', CASE WHEN id = '{chief_id}'::uuid THEN COALESCE(adapter_config->>'apiKey', '') <> '' ELSE NULL END,
+      'chiefGatewayKeyHash', CASE WHEN id = '{chief_id}'::uuid THEN
+        CASE
+          WHEN jsonb_typeof(adapter_config->'apiKey') = 'string' THEN
+            encode(sha256(convert_to(adapter_config->>'apiKey', 'UTF8')), 'hex')
+          WHEN jsonb_typeof(adapter_config->'apiKey') = 'object'
+            AND adapter_config->'apiKey'->>'type' = 'secret_ref'
+            AND adapter_config->'apiKey'->>'secretId' ~ '^[0-9a-fA-F]{{8}}-[0-9a-fA-F]{{4}}-[1-5][0-9a-fA-F]{{3}}-[89abAB][0-9a-fA-F]{{3}}-[0-9a-fA-F]{{12}}$'
+          THEN (
+            SELECT versions.value_sha256
+            FROM company_secrets secrets
+            JOIN company_secret_versions versions ON versions.secret_id = secrets.id
+            WHERE secrets.id = (adapter_config->'apiKey'->>'secretId')::uuid
+              AND secrets.company_id = agents.company_id
+              AND versions.version = CASE
+                WHEN COALESCE(adapter_config->'apiKey'->>'version', 'latest') = 'latest'
+                  THEN secrets.latest_version
+                WHEN adapter_config->'apiKey'->>'version' ~ '^[1-9][0-9]*$'
+                  THEN (adapter_config->'apiKey'->>'version')::integer
+                ELSE -1
+              END
+              AND versions.revoked_at IS NULL
+          )
+          ELSE NULL
+        END
+      ELSE NULL END
+    ) ORDER BY created_at)
+    FROM agents WHERE company_id = '{company_id}'::uuid
+  ), '[]'::json),
+  'keys', COALESCE((
+    SELECT json_agg(json_build_object(
+      'id', id::text,
+      'agentId', agent_id::text,
+      'revoked', revoked_at IS NOT NULL,
+      'scopeKind', CASE WHEN scope_config IS NULL THEN 'standard' ELSE scope_config->>'kind' END,
+      'responsibleUserId', responsible_user_id,
+      'keyHash', key_hash
+    ) ORDER BY created_at)
+    FROM agent_api_keys WHERE company_id = '{company_id}'::uuid
+  ), '[]'::json)
+)::text;
+"""
+
+
+def production_check(config_path: pathlib.Path) -> None:
+    project_name = read_config(config_path, "COMPOSE_PROJECT_NAME")
+    board_user_id = read_config(config_path, "PAPERCLIP_LIOR_USER_ID")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", project_name):
+        raise TopologyError("COMPOSE_PROJECT_NAME has an invalid shape")
+    compose = ["docker", "compose", "--env-file", str(config_path)]
+    config_json = json.loads(run([*compose, "config", "--format", "json"], label="Compose config"))
+    try:
+        hermes_image = config_json["services"]["hermes"]["image"]
+    except (KeyError, TypeError):
+        raise TopologyError("Compose config does not identify the Hermes image") from None
+    if not isinstance(hermes_image, str) or not hermes_image:
+        raise TopologyError("Compose config does not identify the Hermes image")
+    hermes_volume = f"{project_name}_hermes_data"
+    run(["docker", "volume", "inspect", hermes_volume], label="Hermes volume inspection")
+    metadata_output = run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--entrypoint",
+            "python3",
+            "--volume",
+            f"{hermes_volume}:/opt/data:ro",
+            "--volume",
+            f"{pathlib.Path(__file__).resolve()}:/opt/nix/check-paperclip-chief-topology:ro",
+            hermes_image,
+            "/opt/nix/check-paperclip-chief-topology",
+            "--read-claim",
+            "/opt/data",
+        ],
+        label="Hermes claimed-identity inspection",
+    )
+    try:
+        metadata = json.loads(metadata_output)
+    except json.JSONDecodeError:
+        raise TopologyError("Hermes claimed-identity inspection returned invalid JSON") from None
+    company_id = str(metadata.get("companyId") or "")
+    chief_id = str(metadata.get("agentId") or "")
+    if not UUID_RE.fullmatch(company_id) or not UUID_RE.fullmatch(chief_id):
+        raise TopologyError("Hermes claimed identity has invalid identifiers")
+    hermes_env = pathlib.Path(read_config(config_path, "HERMES_ENV_FILE"))
+    gateway_key = read_secret_binding(hermes_env, "API_SERVER_KEY")
+    metadata["gatewayKeySha256"] = hashlib.sha256(gateway_key.encode()).hexdigest()
+    gateway_key = ""
+
+    sql = build_topology_query(company_id, chief_id)
+    snapshot_output = run(
+        [
+            *compose,
+            "exec",
+            "-T",
+            "postgres",
+            "psql",
+            "--username",
+            "paperclip",
+            "--dbname",
+            "paperclip",
+            "--no-psqlrc",
+            "--tuples-only",
+            "--no-align",
+            "--command",
+            sql,
+        ],
+        label="Paperclip topology query",
+    ).strip()
+    try:
+        snapshot = json.loads(snapshot_output)
+    except json.JSONDecodeError:
+        raise TopologyError("Paperclip topology query returned invalid JSON") from None
+    validate_topology(metadata, snapshot, board_user_id)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("config", nargs="?")
+    parser.add_argument("--read-claim", type=pathlib.Path)
+    args = parser.parse_args()
+    try:
+        if args.read_claim is not None:
+            if args.config is not None:
+                raise TopologyError("--read-claim does not accept a configuration path")
+            print(json.dumps(read_claim_metadata(args.read_claim), separators=(",", ":")))
+        else:
+            if args.config is None:
+                raise TopologyError("a deployment configuration path is required")
+            production_check(pathlib.Path(args.config).resolve())
+            print("Paperclip Chief topology is safe.")
+        return 0
+    except (TopologyError, json.JSONDecodeError) as exc:
+        print(f"Paperclip Chief topology error: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
