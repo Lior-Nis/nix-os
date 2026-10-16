@@ -3,15 +3,21 @@
 
 from __future__ import annotations
 
+import errno
+import fcntl
 import http.server
 import json
 import os
 from pathlib import Path
+import pty
+import select
 import shutil
 import stat
 import subprocess
 import tempfile
+import termios
 import threading
+import time
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -104,6 +110,66 @@ def invoke(
     )
 
 
+def invoke_interactively(config: Path, audit: Path, token: str = NEW_TOKEN) -> tuple[int, bytes]:
+    env = os.environ.copy()
+    env.update(
+        {
+            "NIX_ALLOW_TEST_CONFIG": "1",
+            "NIX_TELEGRAM_API_BASE": "https://telegram.invalid",
+            "MOCK_CURL_AUDIT": str(audit),
+            "MOCK_GETME_MODE": "ok",
+        }
+    )
+    master_fd, slave_fd = pty.openpty()
+
+    def make_controlling_tty() -> None:
+        os.setsid()
+        fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+
+    process = subprocess.Popen(
+        [str(ROTATE), str(config)],
+        stdin=slave_fd,
+        stdout=slave_fd,
+        stderr=slave_fd,
+        env=env,
+        close_fds=True,
+        preexec_fn=make_controlling_tty,
+    )
+    os.close(slave_fd)
+    output = bytearray()
+    token_sent = False
+    deadline = time.monotonic() + 15
+    try:
+        while True:
+            if time.monotonic() >= deadline:
+                process.kill()
+                raise AssertionError("interactive token rotation timed out")
+            readable, _, _ = select.select([master_fd], [], [], 0.1)
+            if readable:
+                try:
+                    chunk = os.read(master_fd, 4096)
+                except OSError as exc:
+                    if exc.errno == errno.EIO and process.poll() is not None:
+                        break
+                    raise
+                if not chunk:
+                    break
+                output.extend(chunk)
+            if not token_sent and b"Paste the replacement BotFather token: " in output:
+                os.write(master_fd, token.encode("ascii") + b"\n")
+                token_sent = True
+            if process.poll() is not None and not readable:
+                break
+        return_code = process.wait(timeout=5)
+    finally:
+        os.close(master_fd)
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+    assert token_sent, bytes(output)
+    return return_code, bytes(output)
+
+
 def assert_failed_unchanged(config: Path, env_file: Path, audit: Path, *, token: str = NEW_TOKEN, mode: str = "ok") -> str:
     before = env_file.read_bytes()
     result = invoke(config, audit, token, mode)
@@ -141,6 +207,50 @@ def main() -> None:
             "received_via_stdin": True,
         }
         assert "@The_NixOS_Bot" in result.stdout
+
+        config, env_file, audit = fixture(root / "interactive-pty")
+        original = env_file.read_bytes()
+        return_code, terminal_output = invoke_interactively(config, audit)
+        assert return_code == 0, terminal_output.decode("utf-8", errors="replace")
+        assert b"Paste the replacement BotFather token: " in terminal_output
+        assert NEW_TOKEN.encode("ascii") not in terminal_output
+        assert env_file.read_bytes() == original.replace(
+            OLD_TOKEN.encode("ascii"), NEW_TOKEN.encode("ascii")
+        )
+        curl_audit = json.loads(audit.read_text(encoding="utf-8"))
+        assert curl_audit == {
+            "argv_has_token": False,
+            "env_has_token": False,
+            "received_via_stdin": True,
+        }
+
+        config, env_file, audit = fixture(root / "interactive-no-tty")
+        original = env_file.read_bytes()
+        env = os.environ.copy()
+        env.update(
+            {
+                "NIX_ALLOW_TEST_CONFIG": "1",
+                "NIX_TELEGRAM_API_BASE": "https://telegram.invalid",
+                "MOCK_CURL_AUDIT": str(audit),
+                "MOCK_GETME_MODE": "ok",
+            }
+        )
+        result = subprocess.run(
+            [str(ROTATE), str(config)],
+            input=NEW_TOKEN + "\n",
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            start_new_session=True,
+            timeout=10,
+            check=False,
+        )
+        assert result.returncode != 0
+        assert "cannot read a hidden token from /dev/tty" in result.stderr
+        assert NEW_TOKEN not in result.stdout and NEW_TOKEN not in result.stderr
+        assert env_file.read_bytes() == original
+        assert not audit.exists(), "non-TTY input unexpectedly reached curl"
 
         class GetMeHandler(http.server.BaseHTTPRequestHandler):
             def do_GET(self) -> None:  # noqa: N802 - inherited API name

@@ -13,6 +13,7 @@ import secrets
 import stat
 import subprocess
 import sys
+import warnings
 
 
 TOKEN_PATTERN = re.compile(r"^[0-9]{6,}:[A-Za-z0-9_-]{30,}$")
@@ -59,9 +60,15 @@ def read_token_from_stdin() -> str:
 
 def read_token_interactively() -> str:
     try:
-        with open("/dev/tty", "r+", encoding="utf-8") as tty:
-            return getpass.getpass("Paste the replacement BotFather token: ", stream=tty)
-    except (EOFError, OSError) as exc:
+        # Let getpass open and manage /dev/tty itself. Passing a separately
+        # opened TextIOWrapper as its output stream breaks on Python 3.12
+        # builds where the wrapper is not seekable, before a token is read.
+        # A warning means getpass could not disable echo and would otherwise
+        # fall back to an exposed input stream, so treat that as a hard error.
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", getpass.GetPassWarning)
+            return getpass.getpass("Paste the replacement BotFather token: ")
+    except (EOFError, OSError, getpass.GetPassWarning) as exc:
         fail(f"cannot read a hidden token from /dev/tty; use --stdin: {exc}")
 
 
