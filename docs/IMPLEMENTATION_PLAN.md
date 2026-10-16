@@ -1,6 +1,6 @@
 # Nix Business OS V0 implementation plan
 
-Status: **SLICE 0: ACCEPTED. SLICE 1: FUNCTIONAL ACCEPTANCE PASSED; FINAL HARDENING DEPLOYMENT OPEN.** Production is at PR #13 merge commit `ff770e393d9d64f9f08d4e8bd94e85e8a60977c5`. Hosted CI, run attribution, final Chief topology, native Telegram-to-Paperclip work creation, encrypted downloaded-artifact recovery, and post-reboot runtime acceptance pass. The reviewed persistent Telegram model-route guard must still merge, deploy, and pass the live verifier before Slice 1 is accepted. Updated 2026-10-17.
+Status: **SLICE 0: ACCEPTED. SLICE 1: ACCEPTED.** Production is at PR #14 merge commit `120083439dca52ba9c482664b1fc19acb7733bcf`. Hosted CI, run attribution, final Chief topology, native Telegram-to-Paperclip work creation, persistent Telegram model-route enforcement, encrypted downloaded-artifact recovery, and post-reboot runtime acceptance pass. Updated 2026-10-17.
 
 ## How to use this plan
 
@@ -12,7 +12,7 @@ Each slice is vertical: it ends in a behavior Lior can observe and a failure Lio
 
 ### Repository facts
 
-The supplied directory was empty on 2026-09-22. The reviewed foundation and remediation were merged through PRs. The tailnet-only Slice 0 amendment was accepted at `a6205378c70048c76a8ad15c73da3c6777e6404f`; subsequent Slice 1 bootstrap, Telegram, run-attribution, final-topology, brain-permission, recovery, and verification remediations merged through PR #13 and production currently runs `ff770e393d9d64f9f08d4e8bd94e85e8a60977c5`.
+The supplied directory was empty on 2026-09-22. The reviewed foundation and remediation were merged through PRs. The tailnet-only Slice 0 amendment was accepted at `a6205378c70048c76a8ad15c73da3c6777e6404f`; subsequent Slice 1 bootstrap, Telegram, run-attribution, final-topology, brain-permission, recovery, and verification remediations merged through PR #14 and production currently runs `120083439dca52ba9c482664b1fc19acb7733bcf`.
 
 ### Decisions already made
 
@@ -261,7 +261,7 @@ In the private Chief of Staff Telegram context, Lior can say “Create a work it
 | Google Drive recovery | Fresh consecutive format-3 config/state ciphertexts were uploaded, downloaded as new Drive copies, and checked again on the isolated recovery host. Outer SHA-256 values are `f513691bc0b44afd92deab71f20c546ca54a8b84e13c467c63e02b76fcc408eb` for `nix-os-config-20261016T184600Z.tar.gz.age` and `61f65805a7e32924d6675a397b352be4619576077ed89d18e93abd4d07c8dd5b` for `nix-os-nix-os-20261016T184615Z.tar.gz.age`. The restored stack booted from fresh volumes, passed topology/API/tool/brain checks, completed real OpenCode inference, recalled the canary, and read `NIX-1`; only the isolated stack and decrypted temporary files were then destroyed. | Passed |
 | Full VPS reboot and routing preservation | After an actual reboot, `docker` and `tailscaled` became active; PostgreSQL, Paperclip, and Hermes became healthy without manual repair. Tailnet-only Paperclip `:443 -> 127.0.0.1:3100` returned with Funnel absent, while independently owned `:8443` and `:10000` routes were unchanged. Provider, memory, Paperclip, brain, topology, migration, and API gates passed again. | Passed |
 | Native Telegram user path | The dedicated bot received Lior's post-reboot DM through the native adapter after the persistent chat route was switched to the reviewed OpenCode Go model. Lior confirmed the Telegram commitment succeeded; direct Paperclip verification found exactly one new issue, `NIX-2` (`Telegram Slice 1 acceptance`, `backlog`), while the project count remained one. Pinned fixtures reject unauthorized/group/forum/bot senders. | Passed |
-| Persistent Telegram model-route guard | The reviewed branch verifies primary SQLite and legacy-import routing state and rejects stale provider/model/endpoint overrides without exposing identifiers or credentials. Local secret-free, pinned-image, and full Docker recovery suites pass; merge, hosted CI, production deployment, and live verification remain. | Pending |
+| Persistent Telegram model-route guard | PR #14 passed independent review/re-review and both hosted `foundation` and `recovery` jobs, then merged as `120083439dca52ba9c482664b1fc19acb7733bcf`. Production was fast-forwarded to that exact commit and only Hermes was recreated. The full live verifier accepted primary SQLite plus legacy-import routing state and rejected no reviewed invariant; topology and health passed, followed by successful OpenCode inference, continuity recall, and readback of Telegram-created `NIX-2`. | Passed |
 
 ### Failure modes
 
@@ -769,4 +769,4 @@ Every locked requirement is implemented or explicitly delayed to a named slice.
 
 ## Exact next implementation task
 
-Merge the reviewed persistent Telegram model-route guard through hosted CI, deploy the exact merge, and run the live full verifier. Then record that deployed merge in a follow-up evidence PR and mark Slice 1 accepted before beginning Slice 2.
+Implement Slice 2's Paperclip-to-Chief execution loop against the exact pinned upstreams. Reuse the one existing Chief identity and `hermes_gateway`; add no specialist or second persistent gateway yet. Preserve the reviewed run-attribution bridge and prove checkout, progress, retry-safe completion, explicit blocking, transcript visibility, and wakeup deduplication before beginning Slice 3.

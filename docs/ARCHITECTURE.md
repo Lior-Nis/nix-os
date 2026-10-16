@@ -1,6 +1,6 @@
 # Nix Business OS V0 architecture
 
-Status: Slice 0 is accepted in production. Slice 1's functional, recovery, and post-reboot acceptance gates pass on production merge `ff770e393d9d64f9f08d4e8bd94e85e8a60977c5`, including native Telegram-to-Paperclip work creation. Final acceptance remains pending until the reviewed persistent Telegram model-route guard is merged, deployed, and live-verified.
+Status: Slices 0 and 1 are accepted in production. Slice 1 runs at merge `120083439dca52ba9c482664b1fc19acb7733bcf`; hosted CI, run attribution, final Chief topology, native Telegram-to-Paperclip work creation, persistent Telegram model-route enforcement, downloaded-artifact recovery, and post-reboot acceptance all pass as of 2026-10-17.
 
 ## Purpose and scope
 
