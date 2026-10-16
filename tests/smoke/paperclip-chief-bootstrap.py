@@ -626,6 +626,7 @@ def write_config(tmp: pathlib.Path, port: int, lior_user_id: str = "lior-user") 
         f"PAPERCLIP_PUBLIC_URL=http://127.0.0.1:{port}\n"
         f"PAPERCLIP_LIOR_USER_ID={lior_user_id}\n"
         f"HERMES_ENV_FILE={hermes_env}\n"
+        "HERMES_TELEGRAM_BOT_USERNAME=the_nixos_bot\n"
         f"HERMES_TELEGRAM_MODE_FILE={telegram_mode}\n",
         encoding="utf-8",
     )

@@ -53,6 +53,7 @@ tests/smoke/paperclip-transition.sh
 PYTHONDONTWRITEBYTECODE=1 python3 tests/smoke/claim-agent.py
 PYTHONDONTWRITEBYTECODE=1 python3 tests/smoke/paperclip-chief-bootstrap.py
 PYTHONDONTWRITEBYTECODE=1 python3 tests/smoke/hermes-process-boundary.py
+PYTHONDONTWRITEBYTECODE=1 python3 tests/smoke/telegram-token-rotation.py
 
 if [[ ${RUN_DOCKER_SMOKE:-0} == 1 ]]; then
   tests/smoke/hermes-contract.sh
