@@ -99,6 +99,14 @@ if NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$test_tmp_dir/test
 fi
 mv "$test_tmp_dir/hermes-safe.env" "$test_tmp_dir/hermes.env"
 
+cp "$test_tmp_dir/hermes.env" "$test_tmp_dir/hermes-safe.env"
+printf 'OPENCODE_GO_BASE_URL=https://unreviewed.invalid/v1\n' >>"$test_tmp_dir/hermes.env"
+if NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$test_tmp_dir/test.env" >/dev/null 2>&1; then
+  printf 'OpenCode Go endpoint override unexpectedly passed\n' >&2
+  exit 1
+fi
+mv "$test_tmp_dir/hermes-safe.env" "$test_tmp_dir/hermes.env"
+
 cp "$test_tmp_dir/test.env" "$test_tmp_dir/invalid-bot.env"
 sed 's/^HERMES_TELEGRAM_BOT_USERNAME=the_nixos_bot$/HERMES_TELEGRAM_BOT_USERNAME=@the_nixos_bot/' \
   "$test_tmp_dir/invalid-bot.env" >"$test_tmp_dir/invalid-bot-new.env"

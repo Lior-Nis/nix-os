@@ -28,9 +28,11 @@ sudo -E CONFIG_FILE="$PWD/.env" \
   BACKUP_AGE_RECIPIENT='<PUBLIC_AGE_RECIPIENT>' \
   ./scripts/backup-config "$PWD/.env"
 
-rclone copyto --immutable /var/backups/nix-os/<config-artifact>.tar.gz.age \
+sudo rclone --config /home/nix/.config/rclone/rclone.conf copyto --immutable \
+  /var/backups/nix-os/<config-artifact>.tar.gz.age \
   gdrive:Nix/backups/config/<config-artifact>.tar.gz.age
-rclone copyto --immutable /var/backups/nix-os/<config-artifact>.tar.gz.age.sha256 \
+sudo rclone --config /home/nix/.config/rclone/rclone.conf copyto --immutable \
+  /var/backups/nix-os/<config-artifact>.tar.gz.age.sha256 \
   gdrive:Nix/backups/config/<config-artifact>.tar.gz.age.sha256
 ```
 
@@ -45,11 +47,15 @@ sudo -E CONFIG_FILE="$PWD/.env" \
   BACKUP_AGE_RECIPIENT='<PUBLIC_AGE_RECIPIENT>' \
   ./scripts/backup "$PWD/.env"
 
-rclone copyto --immutable /var/backups/nix-os/<state-artifact>.tar.gz.age \
+sudo rclone --config /home/nix/.config/rclone/rclone.conf copyto --immutable \
+  /var/backups/nix-os/<state-artifact>.tar.gz.age \
   gdrive:Nix/backups/state/<state-artifact>.tar.gz.age
-rclone copyto --immutable /var/backups/nix-os/<state-artifact>.tar.gz.age.sha256 \
+sudo rclone --config /home/nix/.config/rclone/rclone.conf copyto --immutable \
+  /var/backups/nix-os/<state-artifact>.tar.gz.age.sha256 \
   gdrive:Nix/backups/state/<state-artifact>.tar.gz.age.sha256
 ```
+
+Create the configuration and state artifacts consecutively without changing configuration or deploying between them. Record the production Git SHA, both artifact basenames, and both outer SHA-256 values together in the acceptance evidence. The two artifact formats validate their own contents but are not cryptographically cross-linked to each other.
 
 State backups fail before touching services or the output directory unless
 `BACKUP_AGE_RECIPIENT` is set and `age` is available. The archive is streamed
@@ -75,10 +81,10 @@ chmod 0600 /secure/recovery/rclone.conf
 scp /secure/recovery/rclone.conf nix@<REPLACEMENT_VPS>:/tmp/nix-rclone.conf
 
 ssh nix@<REPLACEMENT_VPS> \
-  'sudo install -d -o nix -g nix -m 0700 /home/nix/.config/rclone && sudo install -o nix -g nix -m 0600 /tmp/nix-rclone.conf /home/nix/.config/rclone/rclone.conf && rm -f /tmp/nix-rclone.conf && rclone lsf gdrive: --max-depth 1 >/dev/null'
+  'sudo install -d -o root -g root -m 0700 /home/nix/.config/rclone && sudo install -o root -g root -m 0600 /tmp/nix-rclone.conf /home/nix/.config/rclone/rclone.conf && rm -f /tmp/nix-rclone.conf && sudo rclone --config /home/nix/.config/rclone/rclone.conf lsf gdrive: --max-depth 1 >/dev/null'
 ```
 
-Confirm `rclone config file` resolves to `/home/nix/.config/rclone/rclone.conf`. A new OAuth flow or a different client is not an equivalent substitute for this recovery step: under `drive.file`, it may not see the existing backup objects. Securely remove `/secure/recovery/rclone.conf` after the replacement copy and the downloaded-artifact checks below succeed.
+Confirm `sudo rclone --config /home/nix/.config/rclone/rclone.conf config file` resolves to `/home/nix/.config/rclone/rclone.conf`. The production copy is root-owned and mode `0600`, so every backup and recovery transfer names it explicitly and runs `rclone` through `sudo`; do not relax its ownership so the operator can invoke plain `rclone`. A new OAuth flow or a different client is not an equivalent substitute for this recovery step: under `drive.file`, it may not see the existing backup objects. Securely remove `/secure/recovery/rclone.conf` after the replacement copy and the downloaded-artifact checks below succeed.
 
 ## Download and prove the remote copy
 
@@ -86,10 +92,10 @@ Do not use original local artifacts for recovery evidence:
 
 ```sh
 mkdir -m 0700 /secure/recovery
-rclone copyto gdrive:Nix/backups/config/<config-artifact>.tar.gz.age /secure/recovery/<config-artifact>.tar.gz.age
-rclone copyto gdrive:Nix/backups/config/<config-artifact>.tar.gz.age.sha256 /secure/recovery/<config-artifact>.tar.gz.age.sha256
-rclone copyto gdrive:Nix/backups/state/<state-artifact>.tar.gz.age /secure/recovery/<state-artifact>.tar.gz.age
-rclone copyto gdrive:Nix/backups/state/<state-artifact>.tar.gz.age.sha256 /secure/recovery/<state-artifact>.tar.gz.age.sha256
+sudo rclone --config /home/nix/.config/rclone/rclone.conf copyto gdrive:Nix/backups/config/<config-artifact>.tar.gz.age /secure/recovery/<config-artifact>.tar.gz.age
+sudo rclone --config /home/nix/.config/rclone/rclone.conf copyto gdrive:Nix/backups/config/<config-artifact>.tar.gz.age.sha256 /secure/recovery/<config-artifact>.tar.gz.age.sha256
+sudo rclone --config /home/nix/.config/rclone/rclone.conf copyto gdrive:Nix/backups/state/<state-artifact>.tar.gz.age /secure/recovery/<state-artifact>.tar.gz.age
+sudo rclone --config /home/nix/.config/rclone/rclone.conf copyto gdrive:Nix/backups/state/<state-artifact>.tar.gz.age.sha256 /secure/recovery/<state-artifact>.tar.gz.age.sha256
 (cd /secure/recovery && sha256sum --check <config-artifact>.tar.gz.age.sha256)
 (cd /secure/recovery && sha256sum --check <state-artifact>.tar.gz.age.sha256)
 ```
@@ -99,11 +105,15 @@ Transfer the downloaded encrypted files to the Mac or another isolated recovery 
 Restore configuration first:
 
 ```sh
-sudo -E AGE_IDENTITY_FILE="$HOME/.config/nix/age/identity.txt" \
-  ./scripts/restore-config /secure/recovery/<config-artifact>.tar.gz.age "$PWD/.env"
+mkdir -m 0700 /secure/recovery/config-root
+AGE_IDENTITY_FILE="$HOME/.config/nix/age/identity.txt" \
+CONFIG_RESTORE_ROOT=/secure/recovery/config-root \
+  ./scripts/restore-config \
+    /secure/recovery/<config-artifact>.tar.gz.age \
+    /secure/recovery/restored-deployment.env
 ```
 
-The tool validates outer and inner checksums, restores mode `0600`, and prints only fingerprints. It refuses overwrites unless `CONFIG_RESTORE_FORCE=true` is explicit.
+The tool validates outer and inner checksums, restores mode `0600`, and prints only fingerprints. The acceptance drill always targets a new isolated root; never point this step at production `.env` or `/etc/nix-os`. It refuses overwrites unless `CONFIG_RESTORE_FORCE=true` is explicit.
 
 ## Isolated recovery proof
 

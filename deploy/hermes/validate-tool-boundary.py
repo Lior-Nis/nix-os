@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import re
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -61,12 +62,20 @@ PREFLIGHT_CREDENTIAL_ENV = {
     "API_SERVER_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS",
     "PAPERCLIP_API_KEY", "PAPERCLIP_AGENT_ID", "PAPERCLIP_COMPANY_ID", "PAPERCLIP_API_URL",
     "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "GOOGLE_API_KEY",
-    "OPENCODE_GO_API_KEY", "OPENCODE_ZEN_API_KEY",
+    "OPENCODE_GO_API_KEY", "OPENCODE_GO_BASE_URL", "OPENCODE_ZEN_API_KEY",
     "GEMINI_API_KEY", "XAI_API_KEY", "DEEPSEEK_API_KEY", "GROQ_API_KEY",
     "TOGETHER_API_KEY", "HF_TOKEN", "HUGGINGFACE_TOKEN",
 }
 GRILL_GUIDANCE = Path("/opt/hermes/optional-skills/software-development/grill-me/SKILL.md")
 BRAIN_ROOT = Path("/workspace/nix-brain")
+HERMES_STATE_DB = Path("/opt/data/state.db")
+HERMES_CONFIG = Path("/opt/data/config.yaml")
+HERMES_LEGACY_SESSIONS = Path("/opt/data/sessions/sessions.json")
+EXPECTED_MODEL_ROUTE = {
+    "provider": "opencode-go",
+    "model": "gpt-5.6-luna",
+    "base_url": "https://opencode.ai/zen/go/v1",
+}
 
 
 def fail(message: str) -> None:
@@ -454,8 +463,106 @@ def _one_process_value(environment: dict[str, list[bytes]], key: str) -> bytes:
     return values[0]
 
 
+def telegram_model_route_check(
+    *, state_db: Path = HERMES_STATE_DB, config_path: Path = HERMES_CONFIG,
+    legacy_sessions: Path = HERMES_LEGACY_SESSIONS,
+) -> None:
+    """Reject Telegram session overrides that bypass the reviewed model route.
+
+    ``gateway_routing`` in state.db is the pinned runtime's primary routing
+    index. The adjacent sessions.json file is also inspected because the
+    pinned runtime imports legacy-only keys that SQLite lacks. Diagnostics
+    intentionally disclose neither session identifiers nor stored state.
+    """
+    try:
+        import yaml
+    except ImportError as exc:
+        fail(f"could not inspect the reviewed Hermes model configuration ({type(exc).__name__})")
+    try:
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, yaml.YAMLError) as exc:
+        fail(f"could not inspect the reviewed Hermes model configuration ({type(exc).__name__})")
+    model = config.get("model") if isinstance(config, dict) else None
+    if not isinstance(model, dict) or {
+        "provider": model.get("provider"),
+        "model": model.get("default"),
+    } != {
+        "provider": EXPECTED_MODEL_ROUTE["provider"],
+        "model": EXPECTED_MODEL_ROUTE["model"],
+    }:
+        fail("reviewed Hermes model configuration differs from the pinned route")
+    configured_base_url = model.get("base_url")
+    if configured_base_url not in (None, "", EXPECTED_MODEL_ROUTE["base_url"]):
+        fail("reviewed Hermes model configuration overrides the pinned endpoint")
+    platforms = config.get("platforms") if isinstance(config, dict) else None
+    telegram = platforms.get("telegram") if isinstance(platforms, dict) else None
+    channel_overrides = telegram.get("channel_overrides") if isinstance(telegram, dict) else None
+    if channel_overrides not in (None, {}):
+        fail("reviewed Hermes Telegram configuration contains forbidden channel overrides")
+
+    try:
+        connection = sqlite3.connect(f"file:{state_db}?mode=ro", uri=True, timeout=5)
+        try:
+            rows = connection.execute(
+                "SELECT session_key, entry_json FROM gateway_routing WHERE scope = ?",
+                (str(legacy_sessions.parent.resolve()),),
+            ).fetchall()
+        finally:
+            connection.close()
+    except (OSError, sqlite3.Error) as exc:
+        fail(f"could not inspect authoritative Hermes routing state ({type(exc).__name__})")
+
+    try:
+        if legacy_sessions.exists():
+            legacy = json.loads(legacy_sessions.read_text(encoding="utf-8"))
+            if not isinstance(legacy, dict):
+                fail("legacy Hermes routing state has an unexpected shape")
+        else:
+            legacy = {}
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        fail(f"could not inspect legacy Hermes routing state ({type(exc).__name__})")
+
+    encoded_routes = list(rows)
+    encoded_routes.extend(
+        (session_key, entry)
+        for session_key, entry in legacy.items()
+        if isinstance(session_key, str) and not session_key.startswith("_")
+    )
+    mismatched_routes = 0
+    malformed_routes = 0
+    for session_key, encoded_entry in encoded_routes:
+        try:
+            entry = json.loads(encoded_entry) if isinstance(encoded_entry, (str, bytes)) else encoded_entry
+        except (TypeError, UnicodeDecodeError, json.JSONDecodeError):
+            # Only classify a malformed entry as Telegram when its non-secret
+            # routing key says so. Never include the key in diagnostics.
+            if isinstance(session_key, str) and ":telegram:" in session_key:
+                malformed_routes += 1
+            continue
+        if not isinstance(entry, dict):
+            if isinstance(session_key, str) and ":telegram:" in session_key:
+                malformed_routes += 1
+            continue
+        if entry.get("platform") != "telegram" and not (
+            isinstance(session_key, str) and ":telegram:" in session_key
+        ):
+            continue
+        override = entry.get("model_override")
+        if override is None:
+            continue
+        if not isinstance(override, dict) or override != EXPECTED_MODEL_ROUTE:
+            mismatched_routes += 1
+    if malformed_routes:
+        fail("authoritative Hermes routing state contains malformed Telegram entries")
+    if mismatched_routes:
+        fail("Telegram session model override differs from the reviewed model route")
+    print("Hermes Telegram model routing verified.")
+
+
 def process_check(
-    *, proc_root: Path = Path("/proc"), profile_env: Path = HERMES_ENV
+    *, proc_root: Path = Path("/proc"), profile_env: Path = HERMES_ENV,
+    state_db: Path = HERMES_STATE_DB, config_path: Path = HERMES_CONFIG,
+    legacy_sessions: Path = HERMES_LEGACY_SESSIONS,
 ) -> dict[str, list[dict[str, int]]]:
     """Prove the model-facing gateway, MCP child, and logger run as Hermes."""
     expected = {
@@ -529,6 +636,7 @@ def process_check(
             fail("live gateway lacks the validated nix-brain supplemental group")
     if profile_env.exists():
         forbidden_profile_keys = {
+            "OPENCODE_GO_BASE_URL",
             "TELEGRAM_BOT_TOKEN",
             "TELEGRAM_ALLOWED_USERS",
             "TELEGRAM_ALLOW_ALL_USERS",
@@ -540,7 +648,10 @@ def process_check(
             fail("persistent profile environment contains invalid dotenv syntax")
         for binding in bindings:
             if binding.key in forbidden_profile_keys:
-                fail("persistent profile retained an external-only Telegram control")
+                fail("persistent profile retained a forbidden external runtime override")
+    telegram_model_route_check(
+        state_db=state_db, config_path=config_path, legacy_sessions=legacy_sessions
+    )
     expected_telegram_mode = os.getenv("NIX_EXPECT_TELEGRAM_MODE", "")
     if expected_telegram_mode:
         if expected_telegram_mode not in ("disabled", "live"):
@@ -560,6 +671,9 @@ def process_check(
 
         gateway_pid = found["gateway"][0][0]
         environment = _process_environment(proc_root / str(gateway_pid))
+        opencode_go_base_urls = environment.get("OPENCODE_GO_BASE_URL", [])
+        if len(opencode_go_base_urls) > 1 or any(opencode_go_base_urls):
+            fail("live gateway overrides the reviewed OpenCode Go endpoint")
         live_token = _one_process_value(environment, "TELEGRAM_BOT_TOKEN")
         live_user = _one_process_value(environment, "TELEGRAM_ALLOWED_USERS")
         live_telegram_allow_all = _one_process_value(environment, "TELEGRAM_ALLOW_ALL_USERS")
