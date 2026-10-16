@@ -34,7 +34,7 @@ rclone copyto --immutable /var/backups/nix-os/<config-artifact>.tar.gz.age.sha25
   gdrive:Nix/backups/config/<config-artifact>.tar.gz.age.sha256
 ```
 
-The script reads exactly the four external files, creates no plaintext pack, uses mode `0600`, and logs only non-secret checksums/paths. `hermes.env` contains the Telegram and Runs API credentials. The separately claimed Paperclip agent key and provider OAuth state live in the Hermes volume. The rclone config is intentionally excluded because it is the credential used to fetch these packs. Preserve the exact config in a separate age-encrypted escrow outside this Drive; a new or different OAuth client cannot assume visibility of the `drive.file` objects.
+The script reads exactly the four external files, creates no plaintext pack, uses mode `0600`, and logs only non-secret checksums/paths. `hermes.env` contains the Telegram, Runs API, and OpenCode Go credentials. The separately claimed Paperclip agent key lives in the Hermes volume. A legacy or additional provider `auth.json` is preserved and permission-checked when present, but OpenCode Go recovery does not require synthetic OAuth state. The rclone config is intentionally excluded because it is the credential used to fetch these packs. Preserve the exact config in a separate age-encrypted escrow outside this Drive; a new or different OAuth client cannot assume visibility of the `drive.file` objects.
 
 ## Back up Paperclip and Hermes data
 
@@ -142,7 +142,7 @@ recovery-labelled company + related issue + known-byte attachment + harmless loc
 -> Paperclip has exactly one root CEO (Chief); the retained bootstrap manager is `general`, reports to Chief, remains paused and credentialless, and has `/bin/false`, disabled heartbeat, zero budget, and stripped permissions
 -> Hermes has no staged claim or pending claim marker; backups are accepted only after the verified claim receipt and credential are fully converged
 -> after the isolated runtime is destroyed, production Telegram resumes and Chief answers only Lior
--> openai-codex auth still works, or the documented device-code reauthentication is completed and recorded
+-> OpenCode Go authentication and a live model probe succeed from restored Hermes
 -> Chief reads the restored Paperclip issue and read-only nix-brain checkout
 -> application and database health pass
 -> isolated environment is destroyed

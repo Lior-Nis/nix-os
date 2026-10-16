@@ -49,13 +49,19 @@ EXPECTATIONS = {
 
 
 def add_process(
-    root: Path, pid: int, command: str, environment: dict[str, str] | list[tuple[str, str]]
+    root: Path,
+    pid: int,
+    command: str,
+    environment: dict[str, str] | list[tuple[str, str]],
+    *,
+    parent_pid: int = 1,
 ) -> None:
     process = root / str(pid)
     process.mkdir()
     (process / "cmdline").write_bytes(command.replace(" ", "\0").encode() + b"\0")
     (process / "status").write_text(
-        "Name:\tfixture\nUid:\t10000\t10000\t10000\t10000\nGid:\t10000\t10000\t10000\t10000\n",
+        f"Name:\tfixture\nPPid:\t{parent_pid}\n"
+        "Uid:\t10000\t10000\t10000\t10000\nGid:\t10000\t10000\t10000\t10000\n",
         encoding="utf-8",
     )
     items = environment.items() if isinstance(environment, dict) else environment
@@ -68,12 +74,37 @@ def fixture(
     gateway_environment: dict[str, str] | list[tuple[str, str]],
     *,
     duplicate_gateway: bool = False,
+    wrapper_environment: dict[str, str] | None = None,
+    upstream_environment: dict[str, str] | None = None,
+    transient_run_id: str | None = None,
+    transient_parent_pid: int = 201,
+    orphan_persistent: bool = False,
 ) -> None:
     add_process(root, 101, "hermes gateway run --replace", gateway_environment)
     if duplicate_gateway:
         add_process(root, 102, "hermes gateway run --replace", gateway_environment)
-    add_process(root, 201, "npm exec @paperclipai/mcp-server@2026.916.1", {})
-    add_process(root, 202, "npm exec @paperclipai/mcp-server@2026.916.1", {})
+    wrapper_env = wrapper_environment or {}
+    upstream_env = upstream_environment or {}
+    add_process(root, 201, "python3 /opt/nix/run-scoped-paperclip-mcp.py", wrapper_env)
+    add_process(root, 202, "python3 /opt/nix/run-scoped-paperclip-mcp.py", wrapper_env)
+    add_process(root, 211, "npm exec @paperclipai/mcp-server@2026.916.1", upstream_env, parent_pid=201)
+    add_process(root, 212, "npm exec @paperclipai/mcp-server@2026.916.1", upstream_env, parent_pid=202)
+    if transient_run_id is not None:
+        add_process(
+            root,
+            213,
+            "npm exec @paperclipai/mcp-server@2026.916.1",
+            {"PAPERCLIP_RUN_ID": transient_run_id},
+            parent_pid=transient_parent_pid,
+        )
+    if orphan_persistent:
+        add_process(
+            root,
+            214,
+            "npm exec @paperclipai/mcp-server@2026.916.1",
+            {},
+            parent_pid=999,
+        )
     add_process(root, 301, "s6-log /opt/data/logs/gateways/default", {})
 
 
@@ -121,7 +152,8 @@ def main() -> None:
             fixture(root, CONFIG | {"TELEGRAM_BOT_TOKEN": ""})
             summary = check(root, "disabled")
             assert len(summary["gateway"]) == 1
-            assert len(summary["mcp"]) == 2  # Preserve all non-gateway process evidence.
+            assert len(summary["mcp_wrapper"]) == 2
+            assert len(summary["mcp_upstream"]) == 2
 
         with tempfile.TemporaryDirectory(prefix="nix-hermes-process-live-") as directory:
             root = Path(directory)
@@ -160,6 +192,54 @@ def main() -> None:
             root = Path(directory)
             fixture(root, CONFIG, duplicate_gateway=True)
             rejected(root, "live", "exactly one Hermes gateway process")
+
+        with tempfile.TemporaryDirectory(prefix="nix-hermes-process-static-run-") as directory:
+            root = Path(directory)
+            fixture(
+                root,
+                CONFIG,
+                upstream_environment={"PAPERCLIP_RUN_ID": "11111111-1111-4111-8111-111111111111"},
+            )
+            rejected(root, "live", "no unattributed persistent Paperclip MCP upstream")
+
+        with tempfile.TemporaryDirectory(prefix="nix-hermes-process-wrapper-run-") as directory:
+            root = Path(directory)
+            fixture(
+                root,
+                CONFIG,
+                wrapper_environment={"PAPERCLIP_RUN_ID": "11111111-1111-4111-8111-111111111111"},
+            )
+            rejected(root, "live", "MCP wrapper retained a static Paperclip run ID")
+
+        with tempfile.TemporaryDirectory(prefix="nix-hermes-process-transient-run-") as directory:
+            root = Path(directory)
+            fixture(
+                root,
+                CONFIG,
+                transient_run_id="11111111-1111-4111-8111-111111111111",
+            )
+            summary = check(root, "live")
+            assert len(summary["mcp_upstream"]) == 3
+
+        with tempfile.TemporaryDirectory(prefix="nix-hermes-process-malformed-run-") as directory:
+            root = Path(directory)
+            fixture(root, CONFIG, transient_run_id="not-a-uuid")
+            rejected(root, "live", "malformed Paperclip run attribution")
+
+        with tempfile.TemporaryDirectory(prefix="nix-hermes-process-orphan-run-") as directory:
+            root = Path(directory)
+            fixture(
+                root,
+                CONFIG,
+                transient_run_id="11111111-1111-4111-8111-111111111111",
+                transient_parent_pid=999,
+            )
+            rejected(root, "live", "not owned by a discovered wrapper")
+
+        with tempfile.TemporaryDirectory(prefix="nix-hermes-process-orphan-persistent-") as directory:
+            root = Path(directory)
+            fixture(root, CONFIG, orphan_persistent=True)
+            rejected(root, "live", "persistent MCP upstream is not owned by a discovered wrapper")
 
         with tempfile.TemporaryDirectory(prefix="nix-hermes-process-missing-") as directory:
             root = Path(directory)

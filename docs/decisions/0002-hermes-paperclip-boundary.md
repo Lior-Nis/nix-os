@@ -2,10 +2,11 @@
 
 - Status: Accepted
 - Date: 2026-09-22
+- Superseded in part: ADR 0008 replaces the multi-employee persistence and Telegram-routing clauses; this ADR remains authoritative for the persistent Chief boundary.
 
 ## Context
 
-Each employee needs one persistent Hermes identity reachable from Telegram and callable by Paperclip. Hermes warns that two agent processes writing one profile corrupt its state. Paperclip offers both `hermes_local`, which spawns a CLI process, and `hermes_gateway`, which calls an already-running Hermes Runs API.
+The Chief of Staff needs one persistent Hermes identity reachable from Telegram and callable by Paperclip. Hermes warns that two agent processes writing one profile corrupt its state. Paperclip offers both `hermes_local`, which spawns a CLI process, and `hermes_gateway`, which calls an already-running Hermes Runs API.
 
 ## Decision
 
@@ -17,7 +18,7 @@ Each employee needs one persistent Hermes identity reachable from Telegram and c
 - Do not run `hermes_local` against a profile whose messaging gateway is active.
 - Do not build a Telegram relay, custom agent runtime, or custom Paperclip client service.
 
-Slice 1 starts with one Chief of Staff profile. Slice 3 may enable Hermes' supported profile multiplexer for Telegram topic routing only after proving the pinned release routes both Telegram sessions and prefixed Runs API calls correctly. If that test fails, use upstream-supported independently supervised profile gateways; do not patch around it with a custom router.
+Slice 1 starts with one Chief of Staff profile. Per ADR 0008, initial V0 keeps Chief as the only persistent/human-facing profile; Product, Growth, and Operations are task-scoped workers and do not require Hermes profile multiplexing or new Telegram routes.
 
 ## Consequences
 

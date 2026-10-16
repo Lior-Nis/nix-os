@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-09-28
+- Superseded in part: ADR 0008 removes the planned persistent specialist profiles and Telegram routes; the private Chief gateway network decision remains accepted.
 
 ## Context
 
@@ -22,4 +23,4 @@ Publishing Hermes on the VPS loopback or tailnet would widen the boundary withou
 
 The insecure-HTTP escape hatch is narrowly scoped to a non-published, same-host Docker bridge, while application authentication remains mandatory. Anyone with control of the Docker host is already inside the accepted V0 failure boundary. The setting must not be reused for a LAN, tailnet, or Internet URL. If Hermes moves off-host, use authenticated HTTPS and revisit this decision.
 
-The default Hermes profile is the Chief of Staff in Slice 1. The pinned release's supported multiplexer can later add isolated profiles and Telegram topic routes without adding another Telegram ingress, but multiplexing stays disabled until the employee-expansion slice.
+The default Hermes profile is the Chief of Staff. ADR 0008 keeps it as the only persistent/human-facing Hermes profile in initial V0. Task-scoped specialists do not add Telegram ingress or persistent Hermes profiles; multiplexing remains disabled unless a later, separately accepted requirement supersedes that decision.

@@ -23,4 +23,10 @@ case "$mode" in
     ;;
 esac
 
+# The pinned Hermes release does not carry Paperclip's heartbeat identity from
+# /v1/runs into long-lived MCP calls. Apply the exact-hash-locked, request-local
+# compatibility patch before upstream gateway modules are imported. Unknown
+# source bytes fail closed.
+python3 /opt/nix/patch-run-attribution.py
+
 exec /opt/hermes/docker/entrypoint-dispatch.sh "$@"

@@ -90,11 +90,16 @@ if [[ $test_only_unencrypted == 0 ]]; then
   hermes_image=$("${compose[@]}" config --format json | jq -er '.services.hermes.image') \
     || fail "could not resolve the pinned Hermes image"
   docker run --rm --volume "$hermes_volume:/state:ro" "$archive_helper_image" sh -ec '
-    for path in .env auth.json .paperclip-claim-receipt.json; do
+    for path in .env .paperclip-claim-receipt.json; do
       test -f "/state/$path"
       test "$(stat -c %u:%g "/state/$path")" = 10000:10000
       test "$(stat -c %a "/state/$path")" = 600
     done
+    if test -e /state/auth.json; then
+      test -f /state/auth.json
+      test "$(stat -c %u:%g /state/auth.json)" = 10000:10000
+      test "$(stat -c %a /state/auth.json)" = 600
+    fi
     test "$(find /state -maxdepth 1 -name ".paperclip-claim-*.pending" | wc -l | tr -d " ")" = 0
     test ! -e /state/mcp-tokens/nix-os-paperclip-claim-stage.json
   ' || fail "Hermes credential metadata is unsafe or profile state contains external-only Telegram controls"

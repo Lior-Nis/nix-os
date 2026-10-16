@@ -1,6 +1,6 @@
 # Nix Business OS V0 architecture
 
-Status: Slice 0 is accepted in production. Slice 1 Chief of Staff integration is implemented for review as of 2026-09-28 and is not yet deployed.
+Status: Slice 0 is accepted in production. The Slice 1 foundation is deployed at production commit `fc8dfc1929dbe593c9884d5dce5135eb600fc6ca`; final run-attribution remediation and live acceptance remain open as of 2026-10-16.
 
 ## Purpose and scope
 
@@ -15,18 +15,16 @@ Lior
 ├── ChatGPT (strategy and research outside the execution loop)
 └── Telegram (conversation, grilling, decisions)
       └── Hermes gateway
-          ├── Chief of Staff profile
-          ├── Product profile
-          ├── Growth profile (marketing + sales)
-          └── Operations profile
-                    │ official Paperclip MCP/API
+          └── persistent Chief of Staff profile
+                    │ bounded official Paperclip MCP/API
                     ▼
                 Paperclip
           authoritative work graph
-              │        │        │
-              │        │        └── human-action projection ── n8n ── Todoist
-              │        └── opencode_local ── OpenCode Engineer ── GitHub PR
-              └── hermes_gateway ── persistent employee execution
+              │        │        │        │
+              │        │        │        └── human-action projection ── n8n ── Todoist
+              │        │        └── opencode_local ── OpenCode Engineer ── GitHub PR
+              │        └── task-scoped Product / Growth / Operations workers
+              └── hermes_gateway ── Chief execution
 
 nix-brain: separate Git repository for durable knowledge and roadmaps
 GitHub: canonical Git provider and PR review boundary
@@ -42,7 +40,8 @@ There is no Engineering Manager in V0. The OpenCode-backed Engineer is a Papercl
 |---|---|---|
 | Paperclip | company goals, projects, issues, hierarchy, assignments, status, blockers, approvals, execution history | durable knowledge corpus, casual chat, duplicate task truth |
 | Telegram + Hermes | direct conversation, clarification, grilling, decisions, employee persona and working memory | authoritative task state, roadmaps, human reminders |
-| Hermes profiles | isolated employee identity, memory, sessions, tools, Telegram context | shared company truth or another employee's credentials |
+| Hermes Chief profile | persistent Chief identity, memory, sessions, bounded tools, Telegram context | shared company truth, specialist execution, or execution credentials |
+| Task-scoped specialists | Product, Growth (marketing + sales), and Operations work assigned by Paperclip | persistent human-facing chat state, top-level project approval, or broad company-control credentials |
 | OpenCode | repository-local engineering execution and verification | company prioritization or project approval |
 | `nix-brain` | reviewed durable facts, policies, decisions, playbooks, roadmaps | live issue status or transient research notes |
 | Todoist | concrete tasks only Lior can personally perform | questions, approvals, agent work, project backlog |
@@ -51,17 +50,17 @@ There is no Engineering Manager in V0. The OpenCode-backed Engineer is a Papercl
 
 ## Identity mapping
 
-Each persistent employee has exactly one Hermes profile and one Paperclip agent identity.
+Only Chief is persistent and human-facing in initial V0. Product, Growth, and Operations are task-scoped Paperclip worker identities; their exact supported adapter/runtime is selected during the worker slice after upstream revalidation. They do not inherit Chief's credential or persistent Telegram context.
 
 | Employee | Hermes | Paperclip adapter | Telegram |
 |---|---|---|---|
 | Chief of Staff | persistent isolated profile | `hermes_gateway` | Chief topic/context |
-| Product | persistent isolated profile | `hermes_gateway` | Product topic/context |
-| Growth | persistent isolated profile | `hermes_gateway` | Growth topic/context |
-| Operations | persistent isolated profile | `hermes_gateway` | Operations topic/context |
+| Product | none persistent; task-scoped runtime | selected supported task adapter | decisions routed through Chief |
+| Growth | none persistent; task-scoped runtime | selected supported task adapter | decisions routed through Chief |
+| Operations | none persistent; task-scoped runtime | selected supported task adapter | decisions routed through Chief |
 | Engineer | none | `opencode_local` | reached through the assigning employee/Paperclip issue |
 
-Temporary research subagents are children of the requesting Hermes employee. They receive a bounded question and fresh conversational context. They are not persistent employees. Their work may remain inside the parent Paperclip issue; create a child issue when the result needs an independent owner, lifecycle, review, or cross-employee handoff.
+Task-scoped specialists and temporary research subagents receive a bounded issue/question and fresh execution context. They are not persistent employees. Their work may remain inside the parent Paperclip issue; create a child issue when the result needs an independent owner, lifecycle, review, or cross-role handoff.
 
 ## Core flows
 
@@ -85,6 +84,8 @@ Per [ADR 0007](decisions/0007-separate-control-plane-credentials-from-execution.
 4. The issue status and comments in Paperclip are the execution record.
 
 Paperclip-to-Hermes and Hermes-to-Paperclip credentials are different. They are never included in prompts or comments.
+
+The pinned upstreams do not carry a Paperclip run ID from the authenticated Runs API request into a long-lived MCP child. Slice 1 therefore uses a version-locked, startup-verified compatibility bridge: request-local context becomes trusted metadata only for the `paperclip` MCP server, and the exact official MCP package receives `PAPERCLIP_RUN_ID` only in a short-lived mutation child. It never uses a process-global run ID, preserves official no-run semantics for Telegram/CLI calls, and adds no model-visible execution or raw-network tool.
 
 ### Cross-employee delegation
 
@@ -169,7 +170,7 @@ A fresh Paperclip volume is initialized with the pinned release's official `pape
 |---|---|---|
 | Git-controlled configuration | Compose files, Tailscale Serve reconstruction command, redacted Hermes config/SOUL templates, policy text, tests, n8n workflow JSON after Slice 7 | GitHub `nix-os`; rebuildable from a commit |
 | External deployment configuration | deployment `.env`, PostgreSQL/Paperclip env files, and Hermes env file containing the Telegram token/allowlist plus Runs API key | separate age-encrypted configuration pack, restored to recorded paths with mode `0600` and verified checksums |
-| Runtime state | Paperclip PostgreSQL data, Paperclip uploads/config, Hermes provider OAuth/profile memory/sessions/gateway state, n8n database and storage, local worktrees/logs | named volumes/host state directory; restored from verified off-host backups |
+| Runtime state | Paperclip PostgreSQL data, Paperclip uploads/config, Hermes profile memory/sessions/gateway state, n8n database and storage, local worktrees/logs | named volumes/host state directory; restored from verified off-host backups |
 | Durable company knowledge | `nix-brain` Markdown and Git history | separate private GitHub repository; local clones are disposable |
 | Secrets | bot token, model credentials, Hermes API keys, Paperclip agent keys, DB passwords, GitHub App key, Todoist token, n8n encryption key | root-owned external files or the relevant encrypted persistent service state outside the checkout; per-service injection; separately backed up encrypted |
 

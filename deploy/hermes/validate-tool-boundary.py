@@ -60,6 +60,7 @@ PREFLIGHT_CREDENTIAL_ENV = {
     "API_SERVER_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS",
     "PAPERCLIP_API_KEY", "PAPERCLIP_AGENT_ID", "PAPERCLIP_COMPANY_ID", "PAPERCLIP_API_URL",
     "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "GOOGLE_API_KEY",
+    "OPENCODE_GO_API_KEY", "OPENCODE_ZEN_API_KEY",
     "GEMINI_API_KEY", "XAI_API_KEY", "DEEPSEEK_API_KEY", "GROQ_API_KEY",
     "TOGETHER_API_KEY", "HF_TOKEN", "HUGGINGFACE_TOKEN",
 }
@@ -396,10 +397,11 @@ def process_check(
     """Prove the model-facing gateway, MCP child, and logger run as Hermes."""
     expected = {
         "gateway": lambda command: "hermes gateway run --replace" in command,
-        "mcp": lambda command: "npm exec @paperclipai/mcp-server@2026.916.1" in command,
+        "mcp_wrapper": lambda command: "python3 /opt/nix/run-scoped-paperclip-mcp.py" in command,
+        "mcp_upstream": lambda command: "npm exec @paperclipai/mcp-server@2026.916.1" in command,
         "logger": lambda command: "s6-log" in command and "/opt/data/logs/gateways/default" in command,
     }
-    found: dict[str, list[tuple[int, int, int]]] = {label: [] for label in expected}
+    found: dict[str, list[tuple[int, int, int, int]]] = {label: [] for label in expected}
     for proc_dir in proc_root.iterdir():
         if not proc_dir.name.isdigit():
             continue
@@ -409,11 +411,12 @@ def process_check(
         except (FileNotFoundError, PermissionError, ProcessLookupError):
             continue
         fields = {line.split(":", 1)[0]: line.split(":", 1)[1].split() for line in status_lines if ":" in line}
+        ppid = int(fields["PPid"][0])
         uid = int(fields["Uid"][0])
         gid = int(fields["Gid"][0])
         for label, matches in expected.items():
             if matches(command):
-                found[label].append((int(proc_dir.name), uid, gid))
+                found[label].append((int(proc_dir.name), ppid, uid, gid))
     missing = sorted(label for label, values in found.items() if not values)
     if missing:
         fail("required Hermes processes were not found: " + ", ".join(missing))
@@ -422,10 +425,35 @@ def process_check(
     unsafe = {
         label: values
         for label, values in found.items()
-        if any(value[1:] != (10000, 10000) for value in values)
+        if any(value[2:] != (10000, 10000) for value in values)
     }
     if unsafe:
         fail("Hermes process ownership is unsafe: " + ", ".join(sorted(unsafe)))
+    wrapper_pids = {pid for pid, _, _, _ in found["mcp_wrapper"]}
+    for pid, _, _, _ in found["mcp_wrapper"]:
+        if "PAPERCLIP_RUN_ID" in _process_environment(proc_root / str(pid)):
+            fail("MCP wrapper retained a static Paperclip run ID")
+    persistent_upstreams = 0
+    for pid, ppid, _, _ in found["mcp_upstream"]:
+        run_values = _process_environment(proc_root / str(pid)).get("PAPERCLIP_RUN_ID", [])
+        if not run_values:
+            if ppid not in wrapper_pids:
+                fail("persistent MCP upstream is not owned by a discovered wrapper")
+            persistent_upstreams += 1
+            continue
+        if len(run_values) != 1:
+            fail("run-scoped MCP child has malformed Paperclip run attribution")
+        try:
+            supplied = run_values[0].decode("ascii")
+            canonical = str(uuid.UUID(supplied))
+        except (UnicodeDecodeError, ValueError):
+            fail("run-scoped MCP child has malformed Paperclip run attribution")
+        if supplied != canonical:
+            fail("run-scoped MCP child has malformed Paperclip run attribution")
+        if ppid not in wrapper_pids:
+            fail("run-scoped MCP child is not owned by a discovered wrapper")
+    if persistent_upstreams < 1:
+        fail("no unattributed persistent Paperclip MCP upstream was found")
     if profile_env.exists():
         forbidden_profile_keys = {
             "TELEGRAM_BOT_TOKEN",
@@ -480,8 +508,8 @@ def process_check(
 
     summary = {
         label: [
-            {"pid": pid, "uid": uid, "gid": gid}
-            for pid, uid, gid in sorted(values)
+            {"pid": pid, "ppid": ppid, "uid": uid, "gid": gid}
+            for pid, ppid, uid, gid in sorted(values)
         ]
         for label, values in sorted(found.items())
     }

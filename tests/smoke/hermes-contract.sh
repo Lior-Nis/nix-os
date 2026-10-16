@@ -61,13 +61,12 @@ import os, pathlib, yaml
 from types import SimpleNamespace
 from gateway.authz_mixin import GatewayAuthorizationMixin
 from gateway.config import Platform
-from gateway.profile_routing import parse_profile_routes, match_profile_route
 from gateway.session import SessionSource
 from hermes_cli.config import _expand_env_vars
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 cfg = yaml.safe_load(pathlib.Path("/nix/config.yaml").read_text())
-assert cfg["model"] == {"provider": "openai-codex", "default": "gpt-5.6-sol"}
+assert cfg["model"] == {"provider": "opencode-go", "default": "gpt-5.6-luna"}
 assert cfg["gateway"]["multiplex_profiles"] is False
 expected_toolsets = ["file", "memory", "session_search", "paperclip"]
 assert cfg["platform_toolsets"] == {
@@ -142,19 +141,15 @@ assert accepted(TelegramGate(-100111, "group", 123456789)) is False
 assert accepted(TelegramGate(-100222, "forum", 123456789, thread_id=42)) is False
 assert accepted(TelegramGate(555555555, "private", 555555555, is_bot=True)) is False
 server = cfg["mcp_servers"]["paperclip"]
-assert server["args"] == ["-y", "--min-release-age=0", "@paperclipai/mcp-server@2026.916.1"]
+assert server["command"] == "python3"
+assert server["args"] == ["/opt/nix/run-scoped-paperclip-mcp.py"]
+assert server["timeout"] == 90
+assert "PAPERCLIP_RUN_ID" not in server["env"]
 assert set(server["tools"]["include"]) == {
   "paperclipMe", "paperclipListIssues", "paperclipGetIssue",
   "paperclipListComments", "paperclipListProjects", "paperclipGetProject",
   "paperclipCreateIssue", "paperclipUpdateIssue", "paperclipAddComment",
 }
-routes = parse_profile_routes([
-  {"name": "future-product-topic", "platform": "telegram", "chat_id": "-1001", "thread_id": "22", "profile": "product"},
-  {"name": "future-growth-topic", "platform": "telegram", "chat_id": "-1001", "thread_id": "33", "profile": "growth"},
-])
-assert match_profile_route(routes, "telegram", chat_id="-1001", thread_id="22").profile == "product"
-assert match_profile_route(routes, "telegram", chat_id="-1001", thread_id="33").profile == "growth"
-assert match_profile_route(routes, "telegram", chat_id="-1001", thread_id="44") is None
 skill = pathlib.Path("/opt/hermes/optional-skills/software-development/grill-me/SKILL.md")
 assert skill.is_file()
 assert "name: grill-me" in skill.read_text()
@@ -165,6 +160,7 @@ mcp_listing=$(docker run --rm --entrypoint hermes \
   --env PAPERCLIP_COMPANY_ID=contract-company \
   --env PAPERCLIP_AGENT_ID=contract-agent \
   --volume "$repo_root/deploy/hermes/config.yaml:/opt/data/config.yaml:ro" \
+  --volume "$repo_root/deploy/hermes/run-scoped-paperclip-mcp.py:/opt/nix/run-scoped-paperclip-mcp.py:ro" \
   "$image" mcp list)
 grep -q 'paperclip' <<<"$mcp_listing"
 grep -q '9 selected' <<<"$mcp_listing"
@@ -172,6 +168,7 @@ grep -q 'enabled' <<<"$mcp_listing"
 
 docker run --rm --entrypoint python3 \
   --volume "$repo_root/tests/smoke/probe-paperclip-mcp.py:/nix/probe-paperclip-mcp.py:ro" \
+  --volume "$repo_root/deploy/hermes/run-scoped-paperclip-mcp.py:/opt/nix/run-scoped-paperclip-mcp.py:ro" \
   "$image" /nix/probe-paperclip-mcp.py
 
 docker run --rm --user 10000:10000 --entrypoint python3 \
@@ -201,10 +198,12 @@ docker run --rm --user 10000:10000 --entrypoint sh --volume "$volume:/opt/data" 
 docker run -d --name "$container" --entrypoint /bin/sh --volume "$volume:/opt/data" \
   --volume "$repo_root/deploy/hermes/entrypoint.sh:/opt/nix/entrypoint.sh:ro" \
   --volume "$repo_root/deploy/hermes/startup-boundary.py:/opt/nix/startup-boundary.py:ro" \
+  --volume "$repo_root/deploy/hermes/patch-run-attribution.py:/opt/nix/patch-run-attribution.py:ro" \
   --volume "$mode_file:/run/nix/hermes-telegram-mode.env:ro" \
   --volume "$repo_root/deploy/hermes/config.yaml:/opt/data/config.yaml:ro" \
   --volume "$repo_root/deploy/hermes/SOUL.md:/opt/data/SOUL.md:ro" \
   --volume "$repo_root/deploy/hermes/validate-tool-boundary.py:/opt/nix/validate-tool-boundary.py:ro" \
+  --volume "$repo_root/deploy/hermes/run-scoped-paperclip-mcp.py:/opt/nix/run-scoped-paperclip-mcp.py:ro" \
   --volume "$repo_root:/workspace/nix-brain:ro" \
   --env API_SERVER_ENABLED=true --env API_SERVER_HOST=0.0.0.0 --env API_SERVER_PORT=8642 \
   --env API_SERVER_KEY="$api_key" --env HERMES_GATEWAY_BOOTSTRAP_STATE=running \

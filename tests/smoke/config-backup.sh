@@ -21,6 +21,7 @@ printf 'POSTGRES_PASSWORD=%s\nPAPERCLIP_DB_PASSWORD=%s\n' "$postgres_password" "
 } >"$source_dir/secrets/paperclip.env"
 {
   printf 'API_SERVER_KEY=%s\n' "$(openssl rand -hex 32)"
+  printf 'OPENCODE_GO_API_KEY=test-opencode-go-key-12345678\n'
   printf 'TELEGRAM_BOT_TOKEN=test-token\nTELEGRAM_ALLOWED_USERS=123456789\n'
   printf 'TELEGRAM_ALLOW_ALL_USERS=false\nGATEWAY_ALLOW_ALL_USERS=false\n'
 } >"$source_dir/secrets/hermes.env"

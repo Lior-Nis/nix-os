@@ -38,7 +38,14 @@ require(any(mount.get("target") == "/var/lib/postgresql/data" for mount in postg
 hermes_mounts = services["hermes"].get("volumes", [])
 require(any(mount.get("target") == "/opt/data" for mount in hermes_mounts), "Hermes state is not persistent")
 require(any(mount.get("target") == "/workspace/nix-brain" and mount.get("read_only") for mount in hermes_mounts), "nix-brain must be mounted read-only")
-for helper in ("entrypoint.sh", "claim-agent.py", "verify-paperclip-mcp.py", "validate-tool-boundary.py"):
+for helper in (
+    "entrypoint.sh",
+    "claim-agent.py",
+    "verify-paperclip-mcp.py",
+    "validate-tool-boundary.py",
+    "patch-run-attribution.py",
+    "run-scoped-paperclip-mcp.py",
+):
     require(
         any(mount.get("target") == f"/opt/nix/{helper}" and mount.get("read_only") for mount in hermes_mounts),
         f"Hermes operator helper must be mounted read-only: {helper}",
@@ -109,15 +116,33 @@ require(hermes_environment.get("API_SERVER_HOST") == "0.0.0.0", "Hermes must lis
 require(hermes_environment.get("HERMES_GATEWAY_BOOTSTRAP_STATE") == "running", "Hermes gateway restart persistence is missing")
 require(hermes_environment.get("HERMES_WRITE_SAFE_ROOT") == "/opt/data/memories", "Hermes file writes must be confined to memories")
 require(services["hermes"].get("entrypoint") == ["/bin/sh", "/opt/nix/entrypoint.sh"], "Hermes must enforce its Telegram mode before upstream startup")
+require(
+    "python3 /opt/nix/patch-run-attribution.py" in (repo_root / "deploy/hermes/entrypoint.sh").read_text(),
+    "Hermes must install the version-locked run-attribution patch before upstream startup",
+)
 require("@sha256:99641e57" in services["hermes"].get("image", ""), "Hermes image digest is not the reviewed pin")
 
 hermes_config = (repo_root / "deploy/hermes/config.yaml").read_text()
-require("provider: openai-codex" in hermes_config, "Hermes provider is not explicit")
+require("provider: opencode-go" in hermes_config, "Hermes provider is not explicit")
+require("default: gpt-5.6-luna" in hermes_config, "Hermes model is not explicit")
 require("multiplex_profiles: false" in hermes_config, "Slice 1 must not enable profile multiplexing")
 require("group_policy:" not in hermes_config, "unsupported Telegram group_policy must not be present")
 require("allow_bots: none" in hermes_config, "Telegram bot senders must not receive a bypass")
 require('allowed_chats: ["${TELEGRAM_ALLOWED_USERS}"]' in hermes_config, "Slice 1 must hard-gate Telegram to Lior's direct chat")
-require("@paperclipai/mcp-server@2026.916.1" in hermes_config, "Paperclip MCP package is not pinned")
+require(
+    'command: python3' in hermes_config
+    and 'args: ["/opt/nix/run-scoped-paperclip-mcp.py"]' in hermes_config,
+    "Hermes must use the fixed run-scoped Paperclip MCP wrapper",
+)
+require("    timeout: 90" in hermes_config, "Paperclip MCP outer timeout must be explicit")
+wrapper = (repo_root / "deploy/hermes/run-scoped-paperclip-mcp.py").read_text()
+require(
+    '"@paperclipai/mcp-server@2026.916.1"' in wrapper,
+    "Paperclip MCP package is not pinned inside the wrapper",
+)
+for marker in ("--offline", "SCOPED_STARTUP_TIMEOUT_SECONDS", "SCOPED_RPC_TIMEOUT_SECONDS", "outcome_uncertain", "start_new_session=True"):
+    require(marker in wrapper, f"run-scoped MCP safety contract is missing: {marker}")
+require("PAPERCLIP_RUN_ID" not in hermes_config, "Paperclip run attribution must not be static")
 expected_lane = "[file, memory, session_search, paperclip]"
 for lane in ("cli", "telegram", "api_server"):
     require(f"{lane}: {expected_lane}" in hermes_config, f"Chief {lane} lane is not explicitly restricted")

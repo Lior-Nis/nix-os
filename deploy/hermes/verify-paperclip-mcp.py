@@ -15,7 +15,7 @@ class McpProbe:
     def __init__(self, environment: dict[str, str]) -> None:
         self.next_id = 1
         self.process = subprocess.Popen(
-            ["npx", "-y", "--min-release-age=0", "@paperclipai/mcp-server@2026.916.1"],
+            ["python3", "/opt/nix/run-scoped-paperclip-mcp.py"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -62,8 +62,11 @@ class McpProbe:
                 raise RuntimeError("MCP request failed")
             return response.get("result", {})
 
-    def call(self, name: str, arguments: dict) -> object:
-        result = self.request("tools/call", {"name": name, "arguments": arguments})
+    def call(self, name: str, arguments: dict, *, metadata: dict | None = None) -> object:
+        params = {"name": name, "arguments": arguments}
+        if metadata is not None:
+            params["_meta"] = metadata
+        result = self.request("tools/call", params)
         if result.get("isError") is True:
             raise RuntimeError(f"approved MCP tool failed: {name}")
         text = "".join(
@@ -136,6 +139,7 @@ def main() -> None:
             updated = probe.call(
                 "paperclipUpdateIssue",
                 {"issueId": issue_id, "description": "Updated through the approved Chief tool boundary."},
+                metadata={"com.paperclip/run-id": os.environ["PAPERCLIP_RUN_ID"]},
             )
             if not contains_id(updated, issue_id):
                 raise RuntimeError("bounded Paperclip MCP returned an unexpected updated issue")
@@ -144,6 +148,7 @@ def main() -> None:
                 probe.call(
                     "paperclipAddComment",
                     {"issueId": issue_id, "body": marker},
+                    metadata={"com.paperclip/run-id": os.environ["PAPERCLIP_RUN_ID"]},
                 ),
                 "paperclipAddComment",
             )

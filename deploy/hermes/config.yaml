@@ -1,6 +1,6 @@
 model:
-  provider: openai-codex
-  default: gpt-5.6-sol
+  provider: opencode-go
+  default: gpt-5.6-luna
 
 gateway:
   multiplex_profiles: false
@@ -35,14 +35,15 @@ platforms:
     guest_mode: false
     allow_bots: none
     # Telegram group IDs are negative. Restricting allowed chats to Lior's
-    # positive user ID makes Slice 1 DM-only; Slice 3 will replace this with
-    # explicit group/topic routes when multiplexing is enabled.
+    # positive user ID makes Chief DM-only; task-scoped specialists have no
+    # Telegram route or persistent Hermes profile.
     allowed_chats: ["${TELEGRAM_ALLOWED_USERS}"]
 
 mcp_servers:
   paperclip:
-    command: npx
-    args: ["-y", "--min-release-age=0", "@paperclipai/mcp-server@2026.916.1"]
+    command: python3
+    args: ["/opt/nix/run-scoped-paperclip-mcp.py"]
+    timeout: 90
     env:
       PAPERCLIP_API_URL: "http://paperclip:3100"
       PAPERCLIP_API_KEY: "${PAPERCLIP_API_KEY}"
