@@ -36,11 +36,16 @@ printf 'POSTGRES_PASSWORD=%s\nPAPERCLIP_DB_PASSWORD=%s\n' \
 } >"$test_tmp_dir/hermes.env"
 printf 'HERMES_TELEGRAM_MODE=disabled\n' >"$test_tmp_dir/hermes-telegram-mode.env"
 mkdir "$test_tmp_dir/nix-brain"
+brain_gid=$("$repo_root/tests/fixtures/select-brain-gid")
+chgrp "$brain_gid" "$test_tmp_dir/nix-brain"
+chmod 0750 "$test_tmp_dir/nix-brain"
+brain_gid=$(stat -c '%g' "$test_tmp_dir/nix-brain" 2>/dev/null || stat -f '%g' "$test_tmp_dir/nix-brain")
 {
   printf 'COMPOSE_PROJECT_NAME=nix-os-backup-policy-test\n'
   printf 'PAPERCLIP_PUBLIC_URL=https://nix-os.test-tailnet.ts.net\nPAPERCLIP_LIOR_USER_ID=lior-test-user\nPAPERCLIP_HOST_PORT=0\n'
   printf 'POSTGRES_ENV_FILE=%s\nPAPERCLIP_ENV_FILE=%s\n' "$test_tmp_dir/postgres.env" "$test_tmp_dir/paperclip.env"
   printf 'HERMES_ENV_FILE=%s\nNIX_BRAIN_HOST_PATH=%s\n' "$test_tmp_dir/hermes.env" "$test_tmp_dir/nix-brain"
+  printf 'NIX_BRAIN_GID=%s\n' "$brain_gid"
   printf 'HERMES_TELEGRAM_BOT_USERNAME=the_nixos_bot\n'
   printf 'HERMES_TELEGRAM_MODE_FILE=%s\n' "$test_tmp_dir/hermes-telegram-mode.env"
   printf 'PAPERCLIP_AUTH_DISABLE_SIGN_UP=true\nBACKUP_OUTPUT_DIR=%s\n' "$test_tmp_dir/backups"
@@ -79,6 +84,41 @@ if PATH="$fake_bin:$PATH" NIX_ALLOW_TEST_CONFIG=1 FAKE_AGE_EXIT=23 \
 fi
 if [[ -d "$test_tmp_dir/backups" ]] && find "$test_tmp_dir/backups" -type f -print -quit | grep -q .; then
   fail 'age failure left a plaintext, partial, or published backup artifact behind'
+fi
+
+fake_docker_log="$test_tmp_dir/unsafe-topology-docker.log"
+if PATH="$fake_bin:$PATH" NIX_ALLOW_TEST_CONFIG=1 \
+  NIX_TEST_ONLY_ALLOW_UNENCRYPTED_BACKUP=1 FAKE_TOPOLOGY_UNSAFE=1 \
+  FAKE_DOCKER_LOG="$fake_docker_log" \
+  "$repo_root/scripts/backup" "$test_tmp_dir/test.env" \
+  >"$test_tmp_dir/topology.out" 2>"$test_tmp_dir/topology.err"; then
+  fail 'backup unexpectedly accepted unsafe Chief topology'
+fi
+grep -q 'Paperclip Chief topology is unsafe' "$test_tmp_dir/topology.err" \
+  || fail 'unsafe Chief topology failure was not explicit'
+if grep -Eq '(^| )stop( |$)' "$fake_docker_log"; then
+  fail 'unsafe Chief topology stopped a service before backup refusal'
+fi
+if [[ -d "$test_tmp_dir/backups" ]] && find "$test_tmp_dir/backups" -type f -print -quit | grep -q .; then
+  fail 'unsafe Chief topology published a backup artifact'
+fi
+
+post_stop_log="$test_tmp_dir/post-stop-drift-docker.log"
+if PATH="$fake_bin:$PATH" NIX_ALLOW_TEST_CONFIG=1 \
+  NIX_TEST_ONLY_ALLOW_UNENCRYPTED_BACKUP=1 FAKE_TOPOLOGY_DRIFT_AFTER_STOP=1 \
+  FAKE_DOCKER_LOG="$post_stop_log" \
+  "$repo_root/scripts/backup" "$test_tmp_dir/test.env" \
+  >"$test_tmp_dir/post-stop.out" 2>"$test_tmp_dir/post-stop.err"; then
+  fail 'backup unexpectedly accepted post-stop Chief topology drift'
+fi
+grep -q 'Paperclip Chief topology is unsafe' "$test_tmp_dir/post-stop.err" \
+  || fail 'post-stop Chief topology failure was not explicit'
+grep -Eq '(^| )stop( |$).*hermes' "$post_stop_log" \
+  || fail 'post-stop drift fixture did not quiesce Hermes'
+grep -Eq '(^| )stop( |$).*paperclip' "$post_stop_log" \
+  || fail 'post-stop drift fixture did not quiesce Paperclip'
+if grep -Eq '(^| )pg_dump( |$)' "$post_stop_log"; then
+  fail 'post-stop Chief topology drift reached pg_dump'
 fi
 
 printf 'State backup encryption policy tests passed.\n'

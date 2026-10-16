@@ -23,6 +23,10 @@ printf 'PAPERCLIP_DB_PASSWORD=%s\n' "$paperclip_db_password" >>"$test_tmp_dir/po
 } >"$test_tmp_dir/hermes.env"
 printf 'HERMES_TELEGRAM_MODE=disabled\n' >"$test_tmp_dir/hermes-telegram-mode.env"
 mkdir "$test_tmp_dir/nix-brain"
+brain_gid=$("$repo_root/tests/fixtures/select-brain-gid")
+chgrp "$brain_gid" "$test_tmp_dir/nix-brain"
+chmod 0750 "$test_tmp_dir/nix-brain"
+brain_gid=$(stat -c '%g' "$test_tmp_dir/nix-brain" 2>/dev/null || stat -f '%g' "$test_tmp_dir/nix-brain")
 {
   printf 'COMPOSE_PROJECT_NAME=nix-os-test\n'
   printf 'PAPERCLIP_PUBLIC_URL=https://nix-os.test-tailnet.ts.net\n'
@@ -34,6 +38,7 @@ mkdir "$test_tmp_dir/nix-brain"
   printf 'HERMES_TELEGRAM_BOT_USERNAME=the_nixos_bot\n'
   printf 'HERMES_TELEGRAM_MODE_FILE=%s\n' "$test_tmp_dir/hermes-telegram-mode.env"
   printf 'NIX_BRAIN_HOST_PATH=%s\n' "$test_tmp_dir/nix-brain"
+  printf 'NIX_BRAIN_GID=%s\n' "$brain_gid"
   printf 'PAPERCLIP_AUTH_DISABLE_SIGN_UP=true\n'
   printf 'BACKUP_OUTPUT_DIR=%s\n' "$test_tmp_dir/backups"
 } >"$test_tmp_dir/test.env"
@@ -42,6 +47,33 @@ chmod 0600 "$test_tmp_dir"/*.env
 NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$test_tmp_dir/test.env"
 docker compose --env-file "$test_tmp_dir/test.env" config --format json >"$test_tmp_dir/compose.json"
 python3 "$repo_root/tests/smoke/validate_compose.py" "$test_tmp_dir/compose.json" "$repo_root"
+
+for invalid_brain_gid in 0 999999; do
+  sed "s/^NIX_BRAIN_GID=.*$/NIX_BRAIN_GID=$invalid_brain_gid/" \
+    "$test_tmp_dir/test.env" >"$test_tmp_dir/wrong-brain-gid.env"
+  if NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$test_tmp_dir/wrong-brain-gid.env" >/dev/null 2>&1; then
+    printf 'invalid or mismatched nix-brain group unexpectedly passed\n' >&2
+    exit 1
+  fi
+done
+
+for unsafe_brain_mode in 0755 0700; do
+  chmod "$unsafe_brain_mode" "$test_tmp_dir/nix-brain"
+  if NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$test_tmp_dir/test.env" >/dev/null 2>&1; then
+    printf 'unsafe nix-brain directory mode unexpectedly passed\n' >&2
+    exit 1
+  fi
+done
+chmod 0750 "$test_tmp_dir/nix-brain"
+
+mv "$test_tmp_dir/nix-brain" "$test_tmp_dir/nix-brain-real"
+ln -s "$test_tmp_dir/nix-brain-real" "$test_tmp_dir/nix-brain"
+if NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$test_tmp_dir/test.env" >/dev/null 2>&1; then
+  printf 'symlinked nix-brain root unexpectedly passed\n' >&2
+  exit 1
+fi
+unlink "$test_tmp_dir/nix-brain"
+mv "$test_tmp_dir/nix-brain-real" "$test_tmp_dir/nix-brain"
 
 grep -v '^PAPERCLIP_PUBLIC_URL=' "$test_tmp_dir/test.env" >"$test_tmp_dir/missing.env"
 if NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$test_tmp_dir/missing.env" >/dev/null 2>&1; then
@@ -146,6 +178,7 @@ rollback = '''if sudo -E docker compose --env-file "$PWD/.env" stop hermes \\
 assert rollback in "\n".join(line.strip() for line in deploy.splitlines())
 assert "Replacing the individually bind-mounted marker without recreating the container is not a durable rollback." in restore
 assert 'NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$restore_config"' in (root / "scripts/restore-smoke").read_text()
+assert '-e "NIX_EXPECT_BRAIN_GID=$restore_brain_gid" hermes' in (root / "scripts/restore-smoke").read_text()
 PY
 
 printf 'Foundation configuration tests passed.\n'

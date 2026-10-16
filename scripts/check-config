@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 config_file=${1:-${CONFIG_FILE:-.env}}
+pinned_hermes_gids="$repo_root/deploy/hermes/pinned-system-gids.txt"
 
 fail() {
   printf 'configuration error: %s\n' "$*" >&2
@@ -51,6 +53,22 @@ file_owner_uid() {
   fi
 }
 
+file_group_gid() {
+  if stat -c '%g' "$1" >/dev/null 2>&1; then
+    stat -c '%g' "$1"
+  else
+    stat -f '%g' "$1"
+  fi
+}
+
+file_mode() {
+  if stat -c '%a' "$1" >/dev/null 2>&1; then
+    stat -c '%a' "$1"
+  else
+    stat -f '%Lp' "$1"
+  fi
+}
+
 command -v docker >/dev/null 2>&1 || fail "docker is required"
 docker compose version >/dev/null 2>&1 || fail "Docker Compose v2 is required"
 [[ -f "$config_file" ]] || fail "$config_file does not exist; copy .env.example and replace placeholders"
@@ -69,6 +87,7 @@ hermes_env=$(require_config HERMES_ENV_FILE)
 hermes_telegram_bot_username=$(require_config HERMES_TELEGRAM_BOT_USERNAME)
 hermes_mode_file=$(require_config HERMES_TELEGRAM_MODE_FILE)
 nix_brain_path=$(require_config NIX_BRAIN_HOST_PATH)
+nix_brain_gid=$(require_config NIX_BRAIN_GID)
 signup_disabled=$(require_config PAPERCLIP_AUTH_DISABLE_SIGN_UP)
 
 [[ "$project_name" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || fail "COMPOSE_PROJECT_NAME must match [a-z0-9][a-z0-9_-]*"
@@ -119,7 +138,21 @@ if [[ ${NIX_ALLOW_TEST_CONFIG:-0} != 1 ]]; then
 fi
 
 [[ "$nix_brain_path" == /* ]] || fail "NIX_BRAIN_HOST_PATH must be absolute"
-[[ -d "$nix_brain_path" ]] || fail "NIX_BRAIN_HOST_PATH does not exist: $nix_brain_path"
+[[ -d "$nix_brain_path" && ! -L "$nix_brain_path" ]] \
+  || fail "NIX_BRAIN_HOST_PATH must be a real directory, not a symlink"
+[[ "$nix_brain_gid" =~ ^[1-9][0-9]*$ ]] || fail "NIX_BRAIN_GID must be a positive numeric group ID"
+actual_nix_brain_gid=$(file_group_gid "$nix_brain_path")
+[[ "$nix_brain_gid" == "$actual_nix_brain_gid" ]] \
+  || fail "NIX_BRAIN_GID must exactly match the group of NIX_BRAIN_HOST_PATH"
+brain_mode=$(file_mode "$nix_brain_path")
+(( (8#$brain_mode & 050) == 050 )) \
+  || fail "NIX_BRAIN_HOST_PATH must grant its group read and traverse permissions"
+(( (8#$brain_mode & 007) == 0 )) \
+  || fail "NIX_BRAIN_HOST_PATH must not grant permissions to other users"
+[[ -f "$pinned_hermes_gids" ]] || fail "pinned Hermes system-group inventory is missing"
+if [[ "$nix_brain_gid" != 10000 ]] && grep -qx "$nix_brain_gid" "$pinned_hermes_gids"; then
+  fail "NIX_BRAIN_GID collides with a group in the pinned Hermes image"
+fi
 
 postgres_password=$(secret_value "$postgres_env" POSTGRES_PASSWORD)
 paperclip_db_password=$(secret_value "$postgres_env" PAPERCLIP_DB_PASSWORD)

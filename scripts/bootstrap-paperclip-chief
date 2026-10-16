@@ -758,20 +758,33 @@ def require_chief_shape(
     board_user_id: str,
     *,
     require_key: bool = True,
+    require_permissions: bool = True,
 ) -> None:
     adapter = chief.get("adapterConfig")
     if chief.get("name") != "Chief of Staff" or chief.get("adapterType") != "hermes_gateway" or not isinstance(adapter, dict):
         raise BootstrapError("claimed Chief identity or adapter is unexpected")
+    api_base_url = adapter.get("apiBaseUrl")
     expected = {
-        "apiBaseUrl": "http://hermes:8642",
         "paperclipApiUrl": "http://paperclip:3100",
         "sessionKeyStrategy": "issue",
         "dangerouslyAllowInsecureRemoteHttp": True,
     }
-    if any(adapter.get(key) != value for key, value in expected.items()) or not adapter.get("apiKey"):
+    if (
+        api_base_url not in ("http://hermes:8642", "http://hermes:8642/")
+        or any(adapter.get(key) != value for key, value in expected.items())
+        or not adapter.get("apiKey")
+    ):
         raise BootstrapError("claimed Chief gateway configuration drifted")
     if chief.get("status") in ("pending_approval", "terminated"):
         raise BootstrapError("claimed Chief is not active")
+    permissions = chief.get("permissions")
+    if require_permissions and (
+        not isinstance(permissions, dict)
+        or permissions.get("canCreateAgents") is not False
+        or permissions.get("canCreateSkills") is not False
+        or permissions.get("canAssignTasks") is not True
+    ):
+        raise BootstrapError("claimed Chief permissions are not restricted")
     if not (
         (chief.get("role") == "general" and chief.get("reportsTo") == temp_id)
         or (chief.get("role") == "ceo" and chief.get("reportsTo") is None)
@@ -799,9 +812,14 @@ def finalize(api: Api, company_id: str, chief_id: str, board_user_id: str) -> st
     temp = marked[0]
     chief = chiefs[0]
     temp_id = str(temp.get("id") or "")
-    require_chief_shape(api, chief, temp_id, board_user_id)
+    require_chief_shape(api, chief, temp_id, board_user_id, require_permissions=False)
     if agent_keys(api, temp_id):
         raise BootstrapError("temporary bootstrap CEO unexpectedly has an API key")
+
+    api.patch(
+        f"/api/agents/{q(chief_id)}/permissions",
+        {"canCreateAgents": False, "canCreateSkills": False, "canAssignTasks": True},
+    )
 
     if chief.get("role") != "ceo" or chief.get("reportsTo") is not None:
         api.patch(f"/api/agents/{q(chief_id)}", {"role": "ceo", "reportsTo": None})
@@ -1087,8 +1105,8 @@ def converge(
             raise BootstrapError("Hermes claim receipt does not match one approved Chief join")
         require_marked_join_invite(matching_joins[0], accepted_invites)
         goal_id, project_id = ensure_approved_work_graph(api, company_id)
-        restart_and_verify_hermes(config_path)
         temp_id = finalize(api, company_id, chief_id, board_user_id)
+        restart_and_verify_hermes(config_path)
         return temp_id, chief_id, goal_id, project_id
 
     if prior is not None and prior.get("status") == "approved":
@@ -1097,7 +1115,14 @@ def converge(
         if len(agents) != 2 or len(marked) != 1 or len(chiefs) != 1:
             raise BootstrapError("approved Chief recovery requires the exact temporary-manager/Chief topology")
         require_temp_shape(api, marked[0], final=False)
-        require_chief_shape(api, chiefs[0], str(marked[0].get("id") or ""), board_user_id, require_key=False)
+        require_chief_shape(
+            api,
+            chiefs[0],
+            str(marked[0].get("id") or ""),
+            board_user_id,
+            require_key=False,
+            require_permissions=False,
+        )
         goal_id, project_id = ensure_approved_work_graph(api, company_id)
         recover_approved_chief_key(
             api,
@@ -1107,8 +1132,8 @@ def converge(
             chief_id,
             board_user_id,
         )
-        restart_and_verify_hermes(config_path)
         temp_id = finalize(api, company_id, chief_id, board_user_id)
+        restart_and_verify_hermes(config_path)
         return temp_id, chief_id, goal_id, project_id
 
     temp_id, goal_id, project_id = prepare(api, company_id)
@@ -1207,8 +1232,8 @@ def converge(
     join = {}
     if claimed.get("companyId") != company_id or claimed.get("agentId") != chief_id:
         raise BootstrapError("Hermes persisted an unexpected claimed identity")
-    restart_and_verify_hermes(config_path)
     temp_id = finalize(api, company_id, chief_id, board_user_id)
+    restart_and_verify_hermes(config_path)
     return temp_id, chief_id, goal_id, project_id
 
 

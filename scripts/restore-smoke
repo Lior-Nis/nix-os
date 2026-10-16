@@ -63,7 +63,23 @@ payload_dir=$(find "$restore_tmp_dir" -mindepth 1 -maxdepth 1 -type d -name 'nix
   hash_check SHA256SUMS
 )
 
+backup_format=$(grep -E '^BACKUP_FORMAT_VERSION=' "$payload_dir/manifest.env" | cut -d= -f2- || true)
 source_project=$(grep -E '^SOURCE_PROJECT=' "$payload_dir/manifest.env" | cut -d= -f2-)
+case "$backup_format" in
+  3)
+    source_lior_user_id=$(grep -E '^PAPERCLIP_LIOR_USER_ID=' "$payload_dir/manifest.env" | cut -d= -f2- || true)
+    ;;
+  2)
+    source_lior_user_id=${RESTORE_PAPERCLIP_LIOR_USER_ID:-}
+    [[ -n "$source_lior_user_id" ]] \
+      || fail "format-2 backup requires RESTORE_PAPERCLIP_LIOR_USER_ID from its external configuration pack"
+    ;;
+  *)
+    fail "unsupported BACKUP_FORMAT_VERSION: ${backup_format:-missing}"
+    ;;
+esac
+[[ "$source_lior_user_id" =~ ^[A-Za-z0-9._:-]{3,200}$ ]] \
+  || fail "backup manifest has an invalid PAPERCLIP_LIOR_USER_ID"
 restore_project=${RESTORE_PROJECT_NAME:-nix-os-restore-$$}
 [[ "$restore_project" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || fail "invalid RESTORE_PROJECT_NAME"
 [[ "$restore_project" != "$source_project" ]] || fail "restore project must differ from source project"
@@ -115,10 +131,17 @@ else
   } >"$restore_hermes_env"
 fi
 mkdir -p "$restore_brain"
+printf '# Isolated restore brain fixture\n' >"$restore_brain/README.md"
+git -C "$restore_brain" init -q
+git -C "$restore_brain" add README.md
+restore_brain_gid=$("$repo_root/tests/fixtures/select-brain-gid")
+chgrp -R "$restore_brain_gid" "$restore_brain"
+chmod -R g+rX,o-rwx "$restore_brain"
+restore_brain_gid=$(stat -c '%g' "$restore_brain" 2>/dev/null || stat -f '%g' "$restore_brain")
 {
   printf 'COMPOSE_PROJECT_NAME=%s\n' "$restore_project"
   printf 'PAPERCLIP_PUBLIC_URL=https://nix-os.restore-test.ts.net\n'
-  printf 'PAPERCLIP_LIOR_USER_ID=lior-restore-test-user\n'
+  printf 'PAPERCLIP_LIOR_USER_ID=%s\n' "$source_lior_user_id"
   printf 'PAPERCLIP_HOST_PORT=0\n'
   printf 'POSTGRES_ENV_FILE=%s\n' "$restore_postgres_env"
   printf 'PAPERCLIP_ENV_FILE=%s\n' "$restore_paperclip_env"
@@ -126,6 +149,7 @@ mkdir -p "$restore_brain"
   printf 'HERMES_TELEGRAM_BOT_USERNAME=the_nixos_bot\n'
   printf 'HERMES_TELEGRAM_MODE_FILE=%s\n' "$restore_hermes_mode"
   printf 'NIX_BRAIN_HOST_PATH=%s\n' "$restore_brain"
+  printf 'NIX_BRAIN_GID=%s\n' "$restore_brain_gid"
   printf 'PAPERCLIP_AUTH_DISABLE_SIGN_UP=true\n'
   printf 'BACKUP_OUTPUT_DIR=%s\n' "$restore_tmp_dir/backups"
 } >"$restore_config"
@@ -195,6 +219,9 @@ fi
   --no-owner \
   --no-privileges <"$payload_dir/postgres.dump"
 
+"$repo_root/scripts/check-paperclip-chief-topology" "$restore_config" >/dev/null \
+  || fail "restored Paperclip Chief topology is unsafe"
+
 "${compose_restore[@]}" exec -T postgres psql --username paperclip --dbname paperclip --tuples-only --no-align \
   --command "SELECT 'public_tables=' || count(*) FROM information_schema.tables WHERE table_schema = 'public'; SELECT 'companies=' || count(*) FROM companies; SELECT 'issues=' || count(*) FROM issues; SELECT 'documents=' || count(*) FROM documents;" \
   >"$restore_tmp_dir/restored-database-counts.txt"
@@ -238,7 +265,8 @@ gateway_allow_all=$(grep -E '^GATEWAY_ALLOW_ALL_USERS=' "$restore_hermes_env" | 
   -e "NIX_EXPECT_TELEGRAM_TOKEN_SHA256=$telegram_token_digest" \
   -e "NIX_EXPECT_TELEGRAM_ALLOWED_USERS=$telegram_users" \
   -e "NIX_EXPECT_TELEGRAM_ALLOW_ALL_USERS=$telegram_allow_all" \
-  -e "NIX_EXPECT_GATEWAY_ALLOW_ALL_USERS=$gateway_allow_all" hermes \
+  -e "NIX_EXPECT_GATEWAY_ALLOW_ALL_USERS=$gateway_allow_all" \
+  -e "NIX_EXPECT_BRAIN_GID=$restore_brain_gid" hermes \
   python3 /opt/nix/validate-tool-boundary.py processes >/dev/null \
   || fail "restored Hermes process ownership or Telegram-disable boundary is unsafe"
 # shellcheck disable=SC2016

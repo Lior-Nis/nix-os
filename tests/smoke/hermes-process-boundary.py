@@ -39,6 +39,7 @@ CONFIG = {
     "GATEWAY_ALLOW_ALL_USERS": "false",
 }
 EXPECTATIONS = {
+    "NIX_EXPECT_BRAIN_GID": "20000",
     "NIX_EXPECT_TELEGRAM_TOKEN_SHA256": hashlib.sha256(
         CONFIG["TELEGRAM_BOT_TOKEN"].encode()
     ).hexdigest(),
@@ -61,7 +62,8 @@ def add_process(
     (process / "cmdline").write_bytes(command.replace(" ", "\0").encode() + b"\0")
     (process / "status").write_text(
         f"Name:\tfixture\nPPid:\t{parent_pid}\n"
-        "Uid:\t10000\t10000\t10000\t10000\nGid:\t10000\t10000\t10000\t10000\n",
+        "Uid:\t10000\t10000\t10000\t10000\n"
+        "Gid:\t10000\t10000\t10000\t10000\nGroups:\t10000 20000\n",
         encoding="utf-8",
     )
     items = environment.items() if isinstance(environment, dict) else environment
@@ -259,6 +261,12 @@ def main() -> None:
             root = Path(directory)
             fixture(root, CONFIG)
             rejected(root, "live", "exactly one positive numeric user ID")
+
+    with configured_environment(NIX_EXPECT_BRAIN_GID="30000"):
+        with tempfile.TemporaryDirectory(prefix="nix-hermes-process-brain-group-") as directory:
+            root = Path(directory)
+            fixture(root, CONFIG)
+            rejected(root, "live", "lacks the validated nix-brain supplemental group")
 
     # The gateway and Docker creation environment agree, but the separately
     # validated external host file has rotated. This must fail until recreate.

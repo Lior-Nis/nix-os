@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import subprocess
 import sys
 import uuid
 
@@ -65,6 +66,7 @@ PREFLIGHT_CREDENTIAL_ENV = {
     "TOGETHER_API_KEY", "HF_TOKEN", "HUGGINGFACE_TOKEN",
 }
 GRILL_GUIDANCE = Path("/opt/hermes/optional-skills/software-development/grill-me/SKILL.md")
+BRAIN_ROOT = Path("/workspace/nix-brain")
 
 
 def fail(message: str) -> None:
@@ -166,7 +168,8 @@ def require_denied(raw: str, label: str) -> None:
     error = payload.get("error")
     if not isinstance(error, str) or not any(
         marker in error.lower() for marker in (
-            "denied", "access denied", "outside hermes_write_safe_root", "cannot read", "device file",
+            "denied", "permission denied", "read-only file system",
+            "outside hermes_write_safe_root", "cannot read", "device file",
         )
     ):
         fail(f"{label} did not fail closed")
@@ -179,6 +182,48 @@ def _write_preflight_fixture(path: Path, content: str) -> None:
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def _tracked_brain_markdown() -> tuple[Path, str, str]:
+    """Select a small tracked Markdown file without emitting its name or contents."""
+    from agent.redact import redact_sensitive_text
+
+    listing = subprocess.run(
+        [
+            "git", "-c", f"safe.directory={BRAIN_ROOT}", "-C", str(BRAIN_ROOT),
+            "ls-files", "-z", "--", "*.md",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if listing.returncode != 0:
+        fail("read-only brain checkout is not a readable Git worktree")
+    for encoded_relative in listing.stdout.split(b"\0"):
+        if not encoded_relative:
+            continue
+        try:
+            relative = encoded_relative.decode("utf-8")
+            candidate = (BRAIN_ROOT / relative).resolve(strict=True)
+            candidate.relative_to(BRAIN_ROOT.resolve(strict=True))
+            if candidate.name.casefold() in {"agents.md", "claude.md", "soul.md"}:
+                continue
+            size = candidate.stat().st_size
+            if not candidate.is_file() or size <= 0 or size > 64 * 1024:
+                continue
+            content = candidate.read_text(encoding="utf-8")
+            lines = content.splitlines()
+            if not lines or len(lines) > 1000 or any(len(line) > 512 for line in lines):
+                continue
+        except (OSError, UnicodeDecodeError, ValueError):
+            continue
+        numbered_source = content[:-1] if content.endswith("\n") else content
+        numbered = "\n".join(
+            f"{line_number}|{line}"
+            for line_number, line in enumerate(numbered_source.split("\n"), start=1)
+        )
+        return candidate, content, redact_sensitive_text(numbered, file_read=True)
+    fail("read-only brain checkout has no usable tracked Markdown file")
 
 
 def files_check(*, preflight: bool = False) -> None:
@@ -285,6 +330,24 @@ def files_check(*, preflight: bool = False) -> None:
         )
         if hashlib.sha256(GRILL_GUIDANCE.read_bytes()).digest() != hashlib.sha256(guidance_before).digest():
             fail("pinned grill-me guidance changed during validation")
+
+        brain_file, brain_before, expected_brain_tool_content = _tracked_brain_markdown()
+        brain_digest = hashlib.sha256(brain_before.encode("utf-8")).digest()
+        brain_result = require_success(
+            read_file_tool(str(brain_file), task_id="nix-boundary-brain-read"),
+            "read tracked brain Markdown",
+        )
+        if str(brain_result.get("content", "")) != expected_brain_tool_content:
+            fail("tracked brain Markdown read did not return its exact contents")
+        require_denied(
+            write_file_tool(
+                str(brain_file), brain_before + "\n<!-- nix-boundary-write-probe -->\n",
+                task_id="nix-boundary-brain-write",
+            ),
+            "write tracked brain Markdown",
+        )
+        if hashlib.sha256(brain_file.read_bytes()).digest() != brain_digest:
+            fail("tracked brain Markdown changed during validation")
 
         probe_id = uuid.uuid4().hex
         safe_file = SAFE_WRITE_ROOT / f".nix-boundary-{probe_id}.txt"
@@ -401,7 +464,9 @@ def process_check(
         "mcp_upstream": lambda command: "npm exec @paperclipai/mcp-server@2026.916.1" in command,
         "logger": lambda command: "s6-log" in command and "/opt/data/logs/gateways/default" in command,
     }
-    found: dict[str, list[tuple[int, int, int, int]]] = {label: [] for label in expected}
+    found: dict[str, list[tuple[int, int, int, int, tuple[int, ...]]]] = {
+        label: [] for label in expected
+    }
     for proc_dir in proc_root.iterdir():
         if not proc_dir.name.isdigit():
             continue
@@ -414,9 +479,10 @@ def process_check(
         ppid = int(fields["PPid"][0])
         uid = int(fields["Uid"][0])
         gid = int(fields["Gid"][0])
+        groups = tuple(int(value) for value in fields.get("Groups", []))
         for label, matches in expected.items():
             if matches(command):
-                found[label].append((int(proc_dir.name), ppid, uid, gid))
+                found[label].append((int(proc_dir.name), ppid, uid, gid, groups))
     missing = sorted(label for label, values in found.items() if not values)
     if missing:
         fail("required Hermes processes were not found: " + ", ".join(missing))
@@ -425,16 +491,16 @@ def process_check(
     unsafe = {
         label: values
         for label, values in found.items()
-        if any(value[2:] != (10000, 10000) for value in values)
+        if any(value[2:4] != (10000, 10000) for value in values)
     }
     if unsafe:
         fail("Hermes process ownership is unsafe: " + ", ".join(sorted(unsafe)))
-    wrapper_pids = {pid for pid, _, _, _ in found["mcp_wrapper"]}
-    for pid, _, _, _ in found["mcp_wrapper"]:
+    wrapper_pids = {pid for pid, _, _, _, _ in found["mcp_wrapper"]}
+    for pid, _, _, _, _ in found["mcp_wrapper"]:
         if "PAPERCLIP_RUN_ID" in _process_environment(proc_root / str(pid)):
             fail("MCP wrapper retained a static Paperclip run ID")
     persistent_upstreams = 0
-    for pid, ppid, _, _ in found["mcp_upstream"]:
+    for pid, ppid, _, _, _ in found["mcp_upstream"]:
         run_values = _process_environment(proc_root / str(pid)).get("PAPERCLIP_RUN_ID", [])
         if not run_values:
             if ppid not in wrapper_pids:
@@ -454,6 +520,13 @@ def process_check(
             fail("run-scoped MCP child is not owned by a discovered wrapper")
     if persistent_upstreams < 1:
         fail("no unattributed persistent Paperclip MCP upstream was found")
+    expected_brain_gid = os.getenv("NIX_EXPECT_BRAIN_GID", "")
+    if expected_brain_gid:
+        if re.fullmatch(r"[1-9][0-9]*", expected_brain_gid) is None:
+            fail("validated nix-brain group is not a positive numeric group ID")
+        brain_gid = int(expected_brain_gid)
+        if brain_gid not in found["gateway"][0][4]:
+            fail("live gateway lacks the validated nix-brain supplemental group")
     if profile_env.exists():
         forbidden_profile_keys = {
             "TELEGRAM_BOT_TOKEN",
@@ -509,7 +582,7 @@ def process_check(
     summary = {
         label: [
             {"pid": pid, "ppid": ppid, "uid": uid, "gid": gid}
-            for pid, ppid, uid, gid in sorted(values)
+            for pid, ppid, uid, gid, _ in sorted(values)
         ]
         for label, values in sorted(found.items())
     }

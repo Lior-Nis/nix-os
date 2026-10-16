@@ -55,12 +55,13 @@ telegram_mode() {
 }
 
 verify_processes() {
-  local mode telegram_token token_digest telegram_users telegram_allow_all gateway_allow_all
+  local mode telegram_token token_digest telegram_users telegram_allow_all gateway_allow_all brain_gid
   mode=$(telegram_mode)
   telegram_token=$(read_hermes_secret TELEGRAM_BOT_TOKEN)
   telegram_users=$(read_hermes_secret TELEGRAM_ALLOWED_USERS)
   telegram_allow_all=$(read_hermes_secret TELEGRAM_ALLOW_ALL_USERS)
   gateway_allow_all=$(read_hermes_secret GATEWAY_ALLOW_ALL_USERS)
+  brain_gid=$(read_config NIX_BRAIN_GID)
   [[ -n "$telegram_token" ]] || fail "TELEGRAM_BOT_TOKEN is missing"
   token_digest=$(printf '%s' "$telegram_token" \
     | python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())')
@@ -70,7 +71,9 @@ verify_processes() {
     -e "NIX_EXPECT_TELEGRAM_TOKEN_SHA256=$token_digest" \
     -e "NIX_EXPECT_TELEGRAM_ALLOWED_USERS=$telegram_users" \
     -e "NIX_EXPECT_TELEGRAM_ALLOW_ALL_USERS=$telegram_allow_all" \
-    -e "NIX_EXPECT_GATEWAY_ALLOW_ALL_USERS=$gateway_allow_all" hermes \
+    -e "NIX_EXPECT_GATEWAY_ALLOW_ALL_USERS=$gateway_allow_all" \
+    -e "NIX_EXPECT_BRAIN_GID=$brain_gid" \
+    hermes \
     python3 /opt/nix/validate-tool-boundary.py processes >/dev/null
   printf '%s' "$mode"
 }
@@ -129,7 +132,7 @@ case "$action" in
     "${compose[@]}" exec -T --user 10000:10000 hermes curl -fsS http://paperclip:3100/api/health >/dev/null
     "${compose[@]}" exec -T --user 10000:10000 hermes hermes auth status opencode-go >/dev/null
     "${compose[@]}" exec -T --user 10000:10000 hermes python3 /opt/nix/verify-paperclip-mcp.py >/dev/null
-    printf 'Hermes API auth, restricted tool/file/process boundary, %s Telegram process mode, bounded Paperclip MCP, provider auth, and read-only grilling guidance are ready.\n' "$telegram_mode"
+    printf 'Hermes API auth, restricted tool/file/process boundary, %s Telegram process mode, bounded Paperclip MCP, provider auth, tracked read-only brain access, and read-only grilling guidance are ready.\n' "$telegram_mode"
     ;;
   *)
     printf 'Usage: %s {telegram-disable|telegram-enable|files-preflight|auth|verify-processes|verify} [/absolute/path/to/deployment.env]\n' "$0" >&2

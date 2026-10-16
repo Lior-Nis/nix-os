@@ -40,6 +40,7 @@ class State:
         self.challenge_count = 0
         self.board_tokens: set[str] = set()
         self.fail_temp_patch_once = False
+        self.fail_chief_permissions_patch_once = False
         self.invites: list[dict] = []
         self.joins: list[dict] = []
         self.secret_values: set[str] = set()
@@ -60,6 +61,7 @@ class State:
         self.challenge_count = 0
         self.board_tokens = set()
         self.fail_temp_patch_once = False
+        self.fail_chief_permissions_patch_once = False
         self.invites = []
         self.joins = []
         self.secret_values = set()
@@ -280,7 +282,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "adapterConfig": copy.deepcopy(join["agentDefaultsPayload"]),
                 "runtimeConfig": {},
                 "budgetMonthlyCents": 0,
-                "permissions": {"canCreateAgents": False, "canCreateSkills": False},
+                "permissions": {
+                    "canCreateAgents": True,
+                    "canCreateSkills": True,
+                    "canAssignTasks": True,
+                },
                 "metadata": None,
             }
             state.agents.append(chief)
@@ -362,6 +368,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path == "/api/agents/temp-agent" and state.fail_temp_patch_once:
             state.fail_temp_patch_once = False
             response(self, 500, {"error": "injected interrupted finalization"})
+            return
+        if path == "/api/agents/chief-agent/permissions" and state.fail_chief_permissions_patch_once:
+            state.fail_chief_permissions_patch_once = False
+            response(self, 500, {"error": "injected Chief permission patch interruption"})
             return
         if path == "/api/projects/project-1":
             state.projects[0].update(payload)
@@ -666,6 +676,60 @@ def main() -> None:
         reviewed_hash = hashlib.sha256((REPO / "deploy/hermes/claim-agent.py").read_bytes()).hexdigest()
         stale_hash = "0" * 64 if reviewed_hash != "0" * 64 else "1" * 64
 
+        chief = {
+            "id": "chief-agent",
+            "name": "Chief of Staff",
+            "role": "general",
+            "reportsTo": "temp-agent",
+            "status": "idle",
+            "adapterType": "hermes_gateway",
+            "permissions": {
+                "canCreateAgents": False,
+                "canCreateSkills": False,
+                "canAssignTasks": True,
+            },
+            "adapterConfig": {
+                "apiBaseUrl": "http://hermes:8642/",
+                "apiKey": "fixture-api-key",
+                "paperclipApiUrl": "http://paperclip:3100",
+                "sessionKeyStrategy": "issue",
+                "dangerouslyAllowInsecureRemoteHttp": True,
+            },
+        }
+        bootstrap.require_chief_shape(
+            bootstrap.Api("http://127.0.0.1:1"),
+            chief,
+            "temp-agent",
+            "lior-user",
+            require_key=False,
+        )
+        for unsafe_api_base_url in (
+            "http://hermes:8642//",
+            "https://hermes:8642",
+            "http://hermes:8642/path",
+            "http://hermes:8642?query=1",
+            "http://hermes:8642#fragment",
+            "http://hermes.example:8642",
+            "http://hermes:8643",
+            "http://attacker@hermes:8642",
+        ):
+            unsafe_chief = copy.deepcopy(chief)
+            unsafe_chief["adapterConfig"]["apiBaseUrl"] = unsafe_api_base_url
+            try:
+                bootstrap.require_chief_shape(
+                    bootstrap.Api("http://127.0.0.1:1"),
+                    unsafe_chief,
+                    "temp-agent",
+                    "lior-user",
+                    require_key=False,
+                )
+            except bootstrap.BootstrapError as exc:
+                assert "gateway configuration drifted" in str(exc)
+            else:
+                raise AssertionError(
+                    f"unsafe Chief API base URL unexpectedly accepted: {unsafe_api_base_url}"
+                )
+
         matching = ClaimRuntimeOperator([reviewed_hash])
         bootstrap.run_operator_command = matching
         matching_status = bootstrap.initial_claim_status(write_runtime_config(tmp))
@@ -804,11 +868,36 @@ def main() -> None:
             temp = next(item for item in state.agents if item["id"] == "temp-agent")
             assert temp["role"] == "general" and temp["reportsTo"] == "chief-agent" and temp["status"] == "paused"
             assert temp["permissions"]["canAssignTasks"] is False
+            chief = next(item for item in state.agents if item["id"] == "chief-agent")
+            assert chief["permissions"] == {
+                "canCreateAgents": False,
+                "canCreateSkills": False,
+                "canAssignTasks": True,
+            }
             assert operator.verify_count == 1
             run_helper(config, operator, expect_ok=True)
             assert len(state.invites) == 1 and len(state.joins) == 1
             assert state.challenge_count == 2 and len(state.revoked) == 2
             assert operator.stage is None
+
+            state.reset_paperclip()
+            config = write_config(tmp, port)
+            operator = FakeOperator()
+            state.fail_chief_permissions_patch_once = True
+            interrupted_permissions = run_helper(config, operator, expect_ok=False)
+            assert "PATCH /api/agents/chief-agent/permissions returned HTTP 500" in interrupted_permissions.stderr
+            assert operator.verify_count == 0
+            chief = next(item for item in state.agents if item["id"] == "chief-agent")
+            assert chief["permissions"]["canCreateAgents"] is True
+            recovered_permissions = run_helper(config, operator, expect_ok=True)
+            assert "sole root CEO" in recovered_permissions.stdout
+            assert operator.verify_count == 1
+            chief = next(item for item in state.agents if item["id"] == "chief-agent")
+            assert chief["permissions"] == {
+                "canCreateAgents": False,
+                "canCreateSkills": False,
+                "canAssignTasks": True,
+            }
 
             state.reset_paperclip()
             config = write_config(tmp, port)
