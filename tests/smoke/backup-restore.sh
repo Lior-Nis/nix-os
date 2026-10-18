@@ -65,6 +65,8 @@ cleanup() {
     "${compose[@]}" ps >&2 || true
     printf 'Source Paperclip logs at failure:\n' >&2
     "${compose[@]}" logs --no-color --tail 200 paperclip >&2 || true
+    printf 'Source Hermes logs at failure:\n' >&2
+    "${compose[@]}" logs --no-color --tail 200 hermes >&2 || true
   fi
   if [[ -n "$restore_config" && -f "$restore_config" ]]; then
     docker compose --env-file "$restore_config" down --volumes --remove-orphans >/dev/null 2>&1 || true
@@ -104,6 +106,10 @@ printf 'POSTGRES_PASSWORD=%s\nPAPERCLIP_DB_PASSWORD=%s\n' "$postgres_password" "
   printf 'TELEGRAM_ALLOW_ALL_USERS=false\nGATEWAY_ALLOW_ALL_USERS=false\n'
 } >"$smoke_tmp_dir/hermes.env"
 printf 'HERMES_TELEGRAM_MODE=disabled\n' >"$smoke_tmp_dir/hermes-telegram-mode.env"
+# Docker Desktop presents bind-mounted files as root-owned, while native Linux
+# preserves the host runner UID. Give every source Hermes lifecycle command the
+# same root-owned runtime marker used in production, including backup cleanup.
+cp "$smoke_tmp_dir/hermes-telegram-mode.env" "$runtime_mode_file"
 "$repo_root/tests/fixtures/create-slice3-secret-files" "$smoke_tmp_dir"
 mkdir "$smoke_tmp_dir/nix-brain"
 printf '# Recovery brain fixture\n' >"$smoke_tmp_dir/nix-brain/README.md"
@@ -129,21 +135,16 @@ brain_gid=$(stat -c '%g' "$smoke_tmp_dir/nix-brain" 2>/dev/null || stat -f '%g' 
   printf 'NIX_SPECIALIST_ENVIRONMENT_ID=66666666-6666-4666-8666-666666666666\n'
   printf 'NIX_BRAIN_GID=%s\n' "$brain_gid"
   printf 'HERMES_TELEGRAM_BOT_USERNAME=the_nixos_bot\n'
-  printf 'HERMES_TELEGRAM_MODE_FILE=%s\n' "$smoke_tmp_dir/hermes-telegram-mode.env"
+  printf 'HERMES_TELEGRAM_MODE_FILE=%s\n' "$runtime_mode_file"
   printf 'PAPERCLIP_AUTH_DISABLE_SIGN_UP=false\nBACKUP_OUTPUT_DIR=%s\n' "$smoke_tmp_dir/backups"
 } >"$config_file"
 chmod 0600 "$smoke_tmp_dir"/*.env
-
-NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$config_file"
-# Docker Desktop presents bind-mounted files as root-owned, while native Linux
-# preserves the host runner UID. Keep the config fixture readable for later
-# non-root host validation, but give every source Hermes lifecycle command a
-# separate root-owned runtime marker matching production.
-cp "$smoke_tmp_dir/hermes-telegram-mode.env" "$runtime_mode_file"
 docker run --rm --volume "$runtime_mode_file:/mode.env" "$archive_helper_image" sh -ec '
   chown 0:0 /mode.env
   chmod 0600 /mode.env
 '
+
+NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$config_file"
 docker volume create "${smoke_project}_hermes_data" >/dev/null
 docker run --rm --volume "${smoke_project}_hermes_data:/state" "$archive_helper_image" sh -ec '
   install -d /state/memories /state/sessions /state/logs/gateways/default
