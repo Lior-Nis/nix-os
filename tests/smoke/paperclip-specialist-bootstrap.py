@@ -47,6 +47,23 @@ class FakeApi:
             return list(self.environments)
         if path.endswith("/leases"):
             return list(self.leases)
+        if "/instructions-bundle/file?path=AGENTS.md" in path:
+            agent_id = path.split("/agents/", 1)[1].split("/", 1)[0]
+            agent = next(row for row in self.agents if row["id"] == agent_id)
+            content = agent["instructionsBundle"]["files"].get("AGENTS.md")
+            if content is None:
+                return {"error": "Instructions file not found"}
+            return {
+                "path": "AGENTS.md",
+                "size": len(content.encode("utf-8")),
+                "language": "markdown",
+                "markdown": True,
+                "isEntryFile": True,
+                "editable": True,
+                "deprecated": False,
+                "virtual": False,
+                "content": content,
+            }
         if path.endswith("/agents"):
             return list(self.agents)
         if path.endswith("/secrets"):
@@ -239,6 +256,46 @@ def main() -> None:
     assert module["ensure_agents"](api, company, chief, project, environment_id) == specialists
     assert len(api.environments) == 1
     assert len(api.agents) == 3
+    api.agents[0]["status"] = "paused"
+    try:
+        module["ensure_agents"](api, company, chief, project, environment_id)
+    except module["BootstrapError"] as exc:
+        assert "product specialist drifted" in str(exc)
+    else:
+        raise AssertionError("paused specialist unexpectedly passed convergence")
+    api.agents[0]["status"] = "idle"
+    api.agents[1]["status"] = "error"
+    try:
+        module["ensure_agents"](api, company, chief, project, environment_id)
+    except module["BootstrapError"] as exc:
+        assert "growth specialist drifted" in str(exc)
+    else:
+        raise AssertionError("errored specialist unexpectedly passed convergence")
+    api.agents[1]["status"] = "idle"
+    api.agents[2]["status"] = "active"
+    try:
+        module["ensure_agents"](api, company, chief, project, environment_id)
+    except module["BootstrapError"] as exc:
+        assert "operations specialist drifted" in str(exc)
+    else:
+        raise AssertionError("non-idle specialist unexpectedly passed convergence")
+    api.agents[2]["status"] = "idle"
+    original_product_instructions = api.agents[0]["instructionsBundle"]["files"]["AGENTS.md"]
+    api.agents[0]["instructionsBundle"]["files"]["AGENTS.md"] = "# drifted\n"
+    try:
+        module["ensure_agents"](api, company, chief, project, environment_id)
+    except module["BootstrapError"] as exc:
+        assert "product specialist managed instructions drifted" in str(exc)
+    else:
+        raise AssertionError("drifted specialist instructions unexpectedly passed convergence")
+    del api.agents[0]["instructionsBundle"]["files"]["AGENTS.md"]
+    try:
+        module["ensure_agents"](api, company, chief, project, environment_id)
+    except module["BootstrapError"] as exc:
+        assert "product specialist managed instructions drifted" in str(exc)
+    else:
+        raise AssertionError("missing specialist instructions unexpectedly passed convergence")
+    api.agents[0]["instructionsBundle"]["files"]["AGENTS.md"] = original_product_instructions
 
     # Initial bootstrap is allowed only while both the checked-in config and
     # the running, hash-verified server enforce the empty restrictive floor.
@@ -304,6 +361,14 @@ def main() -> None:
         )
 
         module["verify_configured_topology"](api, company, recovered)
+        api.agents[0]["status"] = "paused"
+        try:
+            module["verify_configured_topology"](api, company, recovered)
+        except module["BootstrapError"] as exc:
+            assert "product specialist recovery identity" in str(exc)
+        else:
+            raise AssertionError("paused recovery specialist unexpectedly passed pre-mutation verification")
+        api.agents[0]["status"] = "idle"
         wrong = dict(recovered)
         wrong["product"] = "99999999-9999-4999-8999-999999999999"
         try:
@@ -349,7 +414,10 @@ def main() -> None:
                     row["id"] for row in api.agents
                 ) in config.read_text(encoding="utf-8")
 
-        with patch.dict(module["activate_specialists"].__globals__, {"run_compose": fake_compose}):
+        with patch.dict(module["activate_specialists"].__globals__, {
+            "run_compose": fake_compose,
+            "verify_instruction_bundles": lambda *_args: None,
+        }):
             activated = module["activate_specialists"](
                 api, config, company, chief, project, environment_id
             )

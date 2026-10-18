@@ -20,11 +20,16 @@ from typing import Any
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 CHIEF_HELPER = runpy.run_path(str(REPO_ROOT / "scripts/bootstrap-paperclip-chief"))
+SPECIALIST_TOPOLOGY_HELPER = runpy.run_path(
+    str(REPO_ROOT / "scripts/check-paperclip-specialist-topology")
+)
 Api = CHIEF_HELPER["Api"]
 BootstrapError = CHIEF_HELPER["BootstrapError"]
 require_dict = CHIEF_HELPER["require_dict"]
 revoke_board_token = CHIEF_HELPER["revoke_board_token"]
 q = CHIEF_HELPER["q"]
+TopologyError = SPECIALIST_TOPOLOGY_HELPER["TopologyError"]
+verify_instruction_bundles = SPECIALIST_TOPOLOGY_HELPER["verify_instruction_bundles"]
 
 ENVIRONMENT_NAME = "Nix task-scoped Daytona sandbox"
 ENVIRONMENT_MARKER = {"kind": "nix-specialist-daytona", "version": 1}
@@ -262,6 +267,28 @@ def marked(value: object, marker: dict[str, Any]) -> bool:
     return isinstance(value, dict) and value.get("nix") == marker
 
 
+def verify_api_instruction_bundle(api: Any, slug: str, agent_id: str) -> None:
+    expected = (REPO_ROOT / f"deploy/specialists/{slug}.md").read_bytes()
+    detail = require_dict(
+        api.get(f"/api/agents/{q(agent_id)}/instructions-bundle/file?path=AGENTS.md"),
+        f"{slug} managed instruction file",
+    )
+    content = detail.get("content")
+    if (
+        detail.get("path") != "AGENTS.md"
+        or detail.get("size") != len(expected)
+        or detail.get("language") != "markdown"
+        or detail.get("isEntryFile") is not True
+        or detail.get("markdown") is not True
+        or detail.get("editable") is not True
+        or detail.get("virtual") is not False
+        or detail.get("deprecated") is not False
+        or not isinstance(content, str)
+        or content.encode("utf-8") != expected
+    ):
+        raise BootstrapError(f"existing {slug} specialist managed instructions drifted")
+
+
 def ensure_daytona_plugin(api: Any, company_id: str) -> str:
     rows = list_dicts(api, "/api/plugins", "plugin list")
     matches = [row for row in rows if row.get("pluginKey") == DAYTONA_PLUGIN_KEY]
@@ -425,8 +452,13 @@ def verify_configured_topology(api: Any, company_id: str, configured: dict[str, 
             and row["metadata"].get("nix") == AGENT_MARKER
             and row["metadata"].get("specialistRole") == slug
         ]
-        if len(matches) != 1 or matches[0].get("id") != configured[slug]:
+        if (
+            len(matches) != 1
+            or matches[0].get("id") != configured[slug]
+            or matches[0].get("status") != "idle"
+        ):
             raise BootstrapError(f"configured {slug} specialist recovery identity does not match Paperclip")
+        verify_api_instruction_bundle(api, slug, configured[slug])
 
 
 def ensure_environment(
@@ -643,12 +675,13 @@ def ensure_agents(
             or row.get("defaultEnvironmentId") != environment_id
             or row.get("budgetMonthlyCents") != 0
             or row.get("runtimeConfig") != {"heartbeat": {"enabled": False, "maxConcurrentRuns": 1}}
-            or row.get("status") in ("pending_approval", "terminated")
+            or row.get("status") != "idle"
         ):
             raise BootstrapError(f"existing {slug} specialist drifted; refusing implicit repair")
         keys = list_dicts(api, f"/api/agents/{q(agent_id)}/keys", f"{slug} key list")
         if any(not key.get("revokedAt") for key in keys):
             raise BootstrapError(f"{slug} specialist unexpectedly has an active API key")
+        verify_api_instruction_bundle(api, slug, agent_id)
         result[slug] = agent_id
 
     specialist_ids = [result[slug] for slug, *_ in ROLES]
@@ -712,6 +745,10 @@ def activate_specialists(
     # three IDs under that floor, publish them atomically, then reload both
     # consumers before any work is assigned. No host executor is involved.
     specialists = ensure_agents(api, company_id, chief_id, project_id, environment_id)
+    try:
+        verify_instruction_bundles(config_path, company_id, specialists)
+    except TopologyError as exc:
+        raise BootstrapError(str(exc)) from exc
     if configured is not None and (
         environment_id != configured["environment"]
         or any(specialists[slug] != configured[slug] for slug, *_ in ROLES)
@@ -766,6 +803,14 @@ def main(argv: list[str] | None = None) -> int:
         _, key_id = authenticate(api, company_id, expected_user_id)
         if configured is not None:
             verify_configured_topology(api, company_id, configured)
+            try:
+                verify_instruction_bundles(
+                    config_path,
+                    company_id,
+                    {slug: configured[slug] for slug, *_ in ROLES},
+                )
+            except TopologyError as exc:
+                raise BootstrapError(str(exc)) from exc
         experimental = require_dict(api.get("/api/instance/settings/experimental"), "experimental settings")
         if experimental.get("enableEnvironments") is not True or experimental.get("enableNativeRunner") is not True:
             api.patch(

@@ -22,6 +22,21 @@ grep -Fq 'scripts/check-paperclip-specialist-topology' "$repo_root/scripts/backu
   || fail 'backup does not gate production capture on specialist topology'
 grep -Fq 'scripts/check-paperclip-specialist-topology' "$repo_root/scripts/restore-smoke" \
   || fail 'restore smoke does not validate the recovered specialist topology'
+restore_specialist_check_line=$(awk '
+  /"\$repo_root\/scripts\/check-paperclip-specialist-topology" "\$restore_config"/ {
+    print NR
+    exit
+  }
+' "$repo_root/scripts/restore-smoke")
+restore_paperclip_start_line=$(awk '
+  /"\$\{compose_restore\[@\]\}" up -d --wait paperclip/ {
+    print NR
+    exit
+  }
+' "$repo_root/scripts/restore-smoke")
+[[ -n "$restore_specialist_check_line" && -n "$restore_paperclip_start_line" \
+  && "$restore_specialist_check_line" -lt "$restore_paperclip_start_line" ]] \
+  || fail 'restore smoke can start Paperclip before the recovered specialist topology and instruction bundles pass'
 # shellcheck disable=SC2016
 grep -Fq 'restore_runner_cache_volume="${restore_project}_paperclip_runner_cache"' \
   "$repo_root/scripts/restore-smoke" \

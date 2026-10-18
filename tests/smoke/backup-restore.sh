@@ -653,6 +653,32 @@ if NIX_ALLOW_TEST_CONFIG=1 NIX_REQUIRE_SPECIALIST_TOPOLOGY=1 \
   fail "specialist backup accepted a missing authenticated Board cookie"
 fi
 
+product_instructions_path="/paperclip/instances/default/companies/${company_id}/agents/${product_agent_id}/instructions/AGENTS.md"
+"${compose[@]}" exec -T paperclip mv "$product_instructions_path" "${product_instructions_path}.nix-test-missing"
+if NIX_ALLOW_TEST_CONFIG=1 NIX_REQUIRE_SPECIALIST_TOPOLOGY=1 \
+  HERMES_TELEGRAM_MODE_FILE="$runtime_mode_file" \
+  BACKUP_PAPERCLIP_COOKIE_FILE="$source_cookie_host" \
+  BACKUP_OUTPUT_DIR="$smoke_tmp_dir/backups" BACKUP_AGE_RECIPIENT="$backup_recipient" \
+  "$repo_root/scripts/backup" "$config_file" >/dev/null 2>&1; then
+  fail "specialist backup accepted a missing managed role instruction bundle"
+fi
+"${compose[@]}" exec -T paperclip mv "${product_instructions_path}.nix-test-missing" "$product_instructions_path"
+
+"${compose[@]}" exec -T paperclip sh -ec "printf '\nunsafe drift\n' >> \"\$1\"" sh "$product_instructions_path"
+if NIX_ALLOW_TEST_CONFIG=1 NIX_REQUIRE_SPECIALIST_TOPOLOGY=1 \
+  HERMES_TELEGRAM_MODE_FILE="$runtime_mode_file" \
+  BACKUP_PAPERCLIP_COOKIE_FILE="$source_cookie_host" \
+  BACKUP_OUTPUT_DIR="$smoke_tmp_dir/backups" BACKUP_AGE_RECIPIENT="$backup_recipient" \
+  "$repo_root/scripts/backup" "$config_file" >/dev/null 2>&1; then
+  fail "specialist backup accepted a drifted managed role instruction bundle"
+fi
+"${compose[@]}" exec -T paperclip sh -ec "cat > \"\$1\"" sh "$product_instructions_path" \
+  <"$repo_root/deploy/specialists/product.md"
+
+NIX_ALLOW_TEST_CONFIG=1 NIX_REQUIRE_SPECIALIST_TOPOLOGY=1 \
+  "$repo_root/scripts/check-paperclip-specialist-topology" "$config_file" >/dev/null \
+  || fail "specialist topology did not recover after instruction bundle negative fixtures"
+
 daytona_worker_path='/paperclip/.paperclip/plugins/node_modules/@paperclipai/plugin-daytona/dist/worker.js'
 "${compose[@]}" exec -T paperclip mv "$daytona_worker_path" "${daytona_worker_path}.nix-test-corrupt"
 if NIX_ALLOW_TEST_CONFIG=1 NIX_REQUIRE_SPECIALIST_TOPOLOGY=1 \
@@ -723,6 +749,26 @@ RESTORE_PROJECT_NAME="$restore_project" RESTORE_KEEP=true RESTORE_WORK_DIR="$res
 
 [[ -f "$restore_config" ]] || fail "could not locate retained restore configuration"
 restore_compose=(docker compose --env-file "$restore_config")
+restored_product_instructions_path="/paperclip/instances/default/companies/${company_id}/agents/${product_agent_id}/instructions/AGENTS.md"
+"${restore_compose[@]}" exec -T paperclip mv \
+  "$restored_product_instructions_path" "${restored_product_instructions_path}.nix-test-missing"
+if NIX_ALLOW_TEST_CONFIG=1 NIX_REQUIRE_SPECIALIST_TOPOLOGY=1 \
+  "$repo_root/scripts/check-paperclip-specialist-topology" "$restore_config" >/dev/null 2>&1; then
+  fail "restored topology accepted a missing managed role instruction bundle"
+fi
+"${restore_compose[@]}" exec -T paperclip mv \
+  "${restored_product_instructions_path}.nix-test-missing" "$restored_product_instructions_path"
+"${restore_compose[@]}" exec -T paperclip sh -ec \
+  "printf '\nunsafe restored drift\n' >> \"\$1\"" sh "$restored_product_instructions_path"
+if NIX_ALLOW_TEST_CONFIG=1 NIX_REQUIRE_SPECIALIST_TOPOLOGY=1 \
+  "$repo_root/scripts/check-paperclip-specialist-topology" "$restore_config" >/dev/null 2>&1; then
+  fail "restored topology accepted a drifted managed role instruction bundle"
+fi
+"${restore_compose[@]}" exec -T paperclip sh -ec "cat > \"\$1\"" sh \
+  "$restored_product_instructions_path" <"$repo_root/deploy/specialists/product.md"
+NIX_ALLOW_TEST_CONFIG=1 NIX_REQUIRE_SPECIALIST_TOPOLOGY=1 \
+  "$repo_root/scripts/check-paperclip-specialist-topology" "$restore_config" >/dev/null \
+  || fail "restored specialist topology did not recover after instruction negatives"
 restore_cookie=/tmp/nix-os-restore-cookie.txt
 restore_response=/tmp/nix-os-restore-response.json
 restore_post() {

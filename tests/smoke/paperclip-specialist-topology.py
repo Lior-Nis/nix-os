@@ -278,6 +278,18 @@ def main() -> None:
         "product specialist topology",
     )
     expect_rejected(
+        lambda value: value["agents"][0].update({"status": "paused"}),
+        "product specialist topology",
+    )
+    expect_rejected(
+        lambda value: value["agents"][1].update({"status": "error"}),
+        "growth specialist topology",
+    )
+    expect_rejected(
+        lambda value: value["agents"][2].update({"status": "active"}),
+        "operations specialist topology",
+    )
+    expect_rejected(
         lambda value: value["agents"][1]["adapterConfig"].update(
             {"model": "opencode/another-model"}
         ),
@@ -380,7 +392,31 @@ def main() -> None:
         "lease blocks a safe backup",
     )
     expect_rejected(
+        lambda value: value["unsafeLeases"].append({"id": "lease", "status": "retained"}),
+        "lease blocks a safe backup",
+    )
+    expect_rejected(
+        lambda value: value["unsafeLeases"].append({"id": "lease", "status": "future_state"}),
+        "lease blocks a safe backup",
+    )
+    expect_rejected(
+        lambda value: value["unsafeLeases"].append({"id": "lease", "status": None}),
+        "lease blocks a safe backup",
+    )
+    expect_rejected(
         lambda value: value["unsafeRuns"].append({"id": "run", "status": "running"}),
+        "specialist run blocks a safe backup",
+    )
+    expect_rejected(
+        lambda value: value["unsafeRuns"].append({"id": "run", "status": "scheduled_retry"}),
+        "specialist run blocks a safe backup",
+    )
+    expect_rejected(
+        lambda value: value["unsafeRuns"].append({"id": "run", "status": "future_state"}),
+        "specialist run blocks a safe backup",
+    )
+    expect_rejected(
+        lambda value: value["unsafeRuns"].append({"id": "run", "status": None}),
         "specialist run blocks a safe backup",
     )
 
@@ -397,7 +433,13 @@ def main() -> None:
     assert "FROM environments" in query
     assert "FROM company_secret_bindings" in query
     assert "FROM environment_leases" in query
-    assert "status IN ('queued', 'running', 'cancelling')" in query
+    assert "(status IS NULL OR status NOT IN ('released', 'expired', 'failed'))" in query
+    assert (
+        "(status IS NULL OR status NOT IN "
+        "('succeeded', 'interrupted', 'failed', 'cancelled', 'timed_out'))"
+        in query
+    )
+    assert "cancelling" not in query
     try:
         checker.build_topology_query(
             f"{CHIEF_ID}' OR true --",

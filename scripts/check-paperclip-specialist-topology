@@ -27,6 +27,7 @@ DAYTONA_PACKAGE = "@paperclipai/plugin-daytona"
 DAYTONA_PLUGIN_KEY = "paperclip.daytona-sandbox-provider"
 DAYTONA_PLUGIN_MANIFEST_VERSION = "0.1.7"
 DAYTONA_IMAGE = "daytonaio/sandbox:0.8.0@sha256:eadf88e4391072b7ad4bed27d9cadfc9fe9d8ed375d9219d34c2ccb518f213e3"
+ARCHIVE_HELPER_IMAGE = "postgres:17.11-alpine3.24@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24"
 ROLE_SPECS = {
     "product": ("Product", "pm"),
     "growth": ("Growth", "cmo"),
@@ -159,6 +160,56 @@ def expected_adapter_config(company_id: str, agent_id: str) -> dict[str, Any]:
     }
 
 
+def verify_instruction_bundles(
+    config_path: pathlib.Path,
+    company_id: str,
+    specialist_ids: dict[str, str],
+) -> None:
+    require_uuid(company_id, "specialist company ID")
+    if set(specialist_ids) != set(ROLE_SPECS):
+        raise TopologyError("specialist instruction identity map is invalid")
+    arguments: list[str] = []
+    for slug in ROLE_SPECS:
+        agent_id = require_uuid(str(specialist_ids[slug]), f"{slug} agent ID")
+        source = REPO_ROOT / "deploy" / "specialists" / f"{slug}.md"
+        if not source.is_file() or source.is_symlink():
+            raise TopologyError(f"tracked {slug} specialist instructions are missing or unsafe")
+        arguments.extend((slug, agent_id, hashlib.sha256(source.read_bytes()).hexdigest()))
+
+    project_name = read_config(config_path, "COMPOSE_PROJECT_NAME")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", project_name):
+        raise TopologyError("COMPOSE_PROJECT_NAME is unsafe for instruction verification")
+    volume = f"{project_name}_paperclip_data"
+    run(["docker", "volume", "inspect", volume], label="Paperclip instruction volume lookup")
+    script = r'''set -eu
+company=$1
+shift
+while test "$#" -gt 0; do
+  slug=$1
+  agent_id=$2
+  expected_digest=$3
+  shift 3
+  root="/paperclip/instances/default/companies/$company/agents/$agent_id/instructions"
+  file="$root/AGENTS.md"
+  test -d "$root" && test ! -L "$root"
+  test "$(find "$root" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')" = 1
+  test -f "$file" && test ! -L "$file"
+  test "$(stat -c %h "$file")" = 1
+  test "$(sha256sum "$file" | cut -d ' ' -f 1)" = "$expected_digest"
+  cmp -s "$file" "/expected/$slug.md"
+done'''
+    run(
+        [
+            "docker", "run", "--rm", "--network", "none", "--read-only",
+            "--volume", f"{volume}:/paperclip:ro",
+            "--volume", f"{REPO_ROOT / 'deploy' / 'specialists'}:/expected:ro",
+            ARCHIVE_HELPER_IMAGE, "sh", "-ec", script, "instruction-verifier", company_id,
+            *arguments,
+        ],
+        label="specialist managed instruction bundle verification",
+    )
+
+
 def build_topology_query(
     chief_id: str,
     project_id: str,
@@ -272,14 +323,14 @@ SELECT json_build_object(
     SELECT json_agg(json_build_object('id', id::text, 'status', status))
     FROM environment_leases
     WHERE company_id = (SELECT company_id FROM agents WHERE id = '{chief_id}'::uuid)
-      AND status IN ('active', 'pending_cleanup')
+      AND (status IS NULL OR status NOT IN ('released', 'expired', 'failed'))
       AND (environment_id = '{environment_id}'::uuid OR provider = 'daytona')
   ), '[]'::json),
   'unsafeRuns', COALESCE((
     SELECT json_agg(json_build_object('id', id::text, 'status', status, 'agentId', agent_id::text))
     FROM heartbeat_runs
     WHERE agent_id IN ({specialist_sql})
-      AND status IN ('queued', 'running', 'cancelling')
+      AND (status IS NULL OR status NOT IN ('succeeded', 'interrupted', 'failed', 'cancelled', 'timed_out'))
   ), '[]'::json),
   'plugins', COALESCE((
     SELECT json_agg(json_build_object(
@@ -395,9 +446,9 @@ def validate_topology(expected: dict[str, Any], snapshot: dict[str, Any]) -> Non
     ):
         raise TopologyError("unexpected nonterminated paperclip_runner exists outside the specialist allowlist")
     if unsafe_leases:
-        raise TopologyError("active or pending-cleanup specialist Daytona lease blocks a safe backup")
+        raise TopologyError("nonterminal or unknown specialist Daytona lease blocks a safe backup")
     if unsafe_runs:
-        raise TopologyError("queued, running, or cancelling specialist run blocks a safe backup")
+        raise TopologyError("nonterminal or unknown specialist run blocks a safe backup")
 
     expected_id_list = [str(specialist_ids[slug]) for slug in ROLE_SPECS]
     marked = [
@@ -426,7 +477,7 @@ def validate_topology(expected: dict[str, Any], snapshot: dict[str, Any]) -> Non
             or row.get("name") != name
             or row.get("role") != role
             or row.get("reportsTo") != chief_id
-            or row.get("status") in ("pending_approval", "terminated")
+            or row.get("status") != "idle"
             or row.get("adapterType") != "paperclip_runner"
             or row.get("adapterConfig") != adapter_config
             or row.get("runtimeConfig") != {"heartbeat": {"enabled": False, "maxConcurrentRuns": 1}}
@@ -673,6 +724,9 @@ def production_check(config_path: pathlib.Path) -> None:
         },
         snapshot,
     )
+    chief = require_dict(snapshot.get("chief"), "Chief snapshot")
+    company_id = require_uuid(str(chief.get("companyId") or ""), "Chief company ID")
+    verify_instruction_bundles(config_path, company_id, specialist_ids)
 
 
 def main() -> int:
