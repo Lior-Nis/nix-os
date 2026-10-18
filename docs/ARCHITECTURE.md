@@ -1,6 +1,6 @@
 # Nix Business OS V0 architecture
 
-Status: Slices 0 and 1 are accepted in production. The deployed checkout is PR #15 merge `ec83c9f28c941823b222dd5eb93d242d1ec5e443`; its runtime implementation came from PR #14 merge `120083439dca52ba9c482664b1fc19acb7733bcf`. Hosted CI, run attribution, final Chief topology, native Telegram-to-Paperclip work creation, persistent Telegram model-route enforcement, downloaded-artifact recovery, and post-reboot acceptance all pass as of 2026-10-17.
+Status: Slices 0, 1, and 2 are accepted in production. The Slice 2 runtime implementation entered production through PR #16 merge `c765af0bca3987b949a2679d263f5fb7086e7d00`. Hosted CI, independent review and re-review, the restricted Chief boundary, native Telegram-to-Paperclip work creation, Paperclip-to-Chief execution, founder-question delivery, interrupted-run recovery, downloaded-artifact recovery, and routing preservation all pass as of 2026-10-18.
 
 ## Purpose and scope
 

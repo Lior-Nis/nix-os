@@ -1,6 +1,6 @@
 # Nix Business OS V0 implementation plan
 
-Status: **SLICE 0: ACCEPTED. SLICE 1: ACCEPTED.** Production is at PR #15 merge commit `ec83c9f28c941823b222dd5eb93d242d1ec5e443`; the accepted runtime implementation originated in PR #14 merge `120083439dca52ba9c482664b1fc19acb7733bcf`. Hosted CI, run attribution, final Chief topology, native Telegram-to-Paperclip work creation, persistent Telegram model-route enforcement, encrypted downloaded-artifact recovery, and post-reboot runtime acceptance pass. Updated 2026-10-17.
+Status: **SLICE 0: ACCEPTED. SLICE 1: ACCEPTED. SLICE 2: ACCEPTED.** The accepted Slice 2 runtime entered production through PR #16 merge `c765af0bca3987b949a2679d263f5fb7086e7d00`. Hosted CI, independent review and re-review, run attribution, final Chief topology, both Telegram-to-Paperclip and Paperclip-to-Chief execution, founder-question delivery, interrupted-run recovery, encrypted downloaded-artifact recovery, and routing preservation pass. Updated 2026-10-18.
 
 ## How to use this plan
 
@@ -12,7 +12,7 @@ Each slice is vertical: it ends in a behavior Lior can observe and a failure Lio
 
 ### Repository facts
 
-The supplied directory was empty on 2026-09-22. The reviewed foundation and remediation were merged through PRs. The tailnet-only Slice 0 amendment was accepted at `a6205378c70048c76a8ad15c73da3c6777e6404f`; subsequent Slice 1 bootstrap, Telegram, run-attribution, final-topology, brain-permission, and recovery work merged through PR #14, and its acceptance-evidence update merged through PR #15. Production currently runs PR #15 merge `ec83c9f28c941823b222dd5eb93d242d1ec5e443`.
+The supplied directory was empty on 2026-09-22. The reviewed foundation and remediation were merged through PRs. The tailnet-only Slice 0 amendment was accepted at `a6205378c70048c76a8ad15c73da3c6777e6404f`; subsequent Slice 1 bootstrap, Telegram, run-attribution, final-topology, brain-permission, and recovery work merged through PR #14, and its acceptance-evidence update merged through PR #15. Slice 2's reviewed Paperclip-to-Chief execution loop merged through PR #16, and production ran its exact merge `c765af0bca3987b949a2679d263f5fb7086e7d00` for live acceptance.
 
 ### Decisions already made
 
@@ -346,6 +346,19 @@ Lior assigns/wakes a bounded issue in Paperclip. The Chief checks it out, perfor
 ### Manual end-to-end verification
 
 Create a harmless Paperclip issue asking Chief to inspect a known public fact or local fixture, wake it, observe the live run, and verify its evidence/status. Interrupt one second issue by restarting Hermes, then retry it and confirm a single final result with the failed attempt still auditable.
+
+### Live acceptance record — 2026-10-18
+
+| Gate | Evidence | Result |
+|---|---|---|
+| Review, hosted CI, merge, deploy | PR #16 passed independent security/recovery review, remediation, re-review, and both hosted `foundation` and `recovery` jobs before merge. Production ran the exact merge `c765af0bca3987b949a2679d263f5fb7086e7d00`; PostgreSQL, Paperclip, and Hermes were healthy, the eleven-tool boundary and topology gates passed, and the pre-existing Tailscale Serve siblings remained unchanged with Funnel off. | Passed |
+| Successful Chief lifecycle and child work | `NIX-3` (`f16f9a28-3926-4530-a573-7fe1dbdb795e`) ran as Paperclip run `330f75af-d8b4-4746-b0f4-1645a07c281a` and Hermes run `run_1d2d0f87e22841659cf229f02ffb10e1`. It checked out the assigned issue, left run-attributed progress, created exactly one in-project child `NIX-4` (`f43092db-77ab-4f0d-b27b-a2d821a55fd0`), and reached `in_review`. | Passed |
+| Founder-question path | The same trusted run created exactly one pending human-only interaction, `a1e1a4d8-dc70-4fae-a0ee-d88bd02fff0c`, addressed to the pinned Lior user. Chief's fixed loopback delivery path notified the existing private Telegram chat once; no Todoist item or second Telegram receiver was created. | Passed |
+| Interrupted-run recovery | `NIX-5` (`9f093544-f60d-44ce-a45d-d7c410de9903`) retains the interrupted `hermes_gateway_connect_failed` run `4232cab0-1a5c-4c93-b750-9b7450c83f26`. Paperclip's supported recovery-action reconciliation preserved that attempt and created successors. An expired provider credential caused separately attributable failed run `03d8df33-c4ec-4bd7-a4cc-1c2d03d9e3ec`; after least-privilege credential rotation and evidence-backed reconciliation, run `0f7ee7d5-42f5-4b2d-82ba-cb6a515d425b` / Hermes run `run_24ad2181c53a4bfbb6bbe9388ccd2306` succeeded. Both successors link directly to source run `4232cab0-1a5c-4c93-b750-9b7450c83f26`; the successful run is not recorded as a child of `03d8df33-c4ec-4bd7-a4cc-1c2d03d9e3ec`. `NIX-5` is `done` with exactly one `S2B-20261017-0249` result comment, `a2ca3308-896e-4c94-82f9-1c5a8e70821f`, attributed to that final run. The temporary Board credential was revoked, proved rejected with HTTP 401, and removed locally. | Passed |
+| Supplemental recovered execution | Fresh `NIX-6` (`6a695b45-debf-49ae-ac32-db894654c0af`) completed through run `261b77f5-baa4-4aae-b209-ccc4b1d41e66` with one run-attributed `S2C-20261017-0308` comment, confirming ordinary execution after gateway recovery independently of the interrupted-run chain. | Passed |
+| Final Google Drive recovery | Consecutive post-acceptance ciphertexts `nix-os-config-20261018T144838Z.tar.gz.age` and `nix-os-nix-os-20261018T144848Z.tar.gz.age` were uploaded immutably, downloaded back as distinct Drive copies, and verified with outer SHA-256 values `20c74c73887bd52cd6c70b999042455728cb115a60411d3959a9a627f8fc7bed` and `360a0816389e4c8602b3a68c83d8c505f812e600640fc4e952a2758ccba16d94`. Config restore passed, and the exact downloaded state booted as isolated project `nix-os-restore-13828` with the restricted restored Hermes profile healthy. Temporary decrypted recovery files and isolated volumes were removed. | Passed |
+
+The open Alpha/Beta choice on `NIX-3` remains a deliberate founder decision for the Slice 3 decision/resume loop; its pending state does not weaken the Slice 2 proof that a consequential ambiguity becomes authoritative Paperclip interaction state and a single Telegram notification.
 
 ### Failure modes
 
@@ -774,4 +787,4 @@ Every locked requirement is implemented or explicitly delayed to a named slice.
 
 ## Exact next implementation task
 
-Implement Slice 2's Paperclip-to-Chief execution loop against the exact pinned upstreams. Reuse the one existing Chief identity and `hermes_gateway`; add no specialist or second persistent gateway yet. Preserve the reviewed run-attribution bridge and prove checkout, progress, retry-safe completion, explicit blocking, transcript visibility, and wakeup deduplication before beginning Slice 3.
+Implement Slice 3's minimal task-scoped Product, Growth, and Operations workers against freshly revalidated upstreams. Keep Chief as the only persistent human-facing employee, preserve the control-plane credential boundary, and prove a visible specialist-to-Chief-to-Telegram founder decision round trip before beginning durable brain writeback.
