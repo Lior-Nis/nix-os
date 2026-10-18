@@ -372,3 +372,29 @@ PYTHONDONTWRITEBYTECODE=1 python3 tests/e2e/paperclip-hermes-loop.py
 Hosted Docker CI additionally runs `tests/smoke/paperclip-hermes-gateway-image.sh`. That fresh-state check compiles and invokes the exact adapter source in the pinned Paperclip image against the pinned Hermes image. It proves run admission, redacted correlation, event-stream use, polling fallback, issue-session isolation, idempotent replay and conflict, and replay after a gateway restart. With no provider secret, the admitted runs are expected to end in a visible provider failure; this is admission and transport evidence only, not a successful employee lifecycle. The following `tests/smoke/backup-restore.sh` CI step separately uses a real pinned Paperclip server and the exact official MCP package under supported heartbeat runs to prove checkout, run-attributed issue update/comment/child creation, forced human-only structured questioning addressed to the pinned Lior user, exact-key replay, a real competing-run HTTP-409 checkout conflict, transition to `in_review`, and preservation of the resulting interaction plus execution/delivery databases through encrypted backup and isolated restore. Neither secret-free check replaces the successful live lifecycle acceptance below.
 
 Live acceptance must still prove the Paperclip issue/run/Hermes-run correlation, one child issue, issue-scoped session isolation, a human-only question addressed exactly to Lior and delivered once through Chief's existing Telegram chat, and an interrupted attempt followed by one deliberate successful retry. Do not record Slice 2 as accepted until the PR, hosted CI, independent review, deployment, live checks, and recovery extension all pass.
+
+## Recover a settled interrupted Hermes run
+
+Do not clear a legacy execution hold by editing PostgreSQL, deleting the failed run, or repeatedly pressing retry. First inspect the issue, source heartbeat run, Hermes run/log correlation, comments, child issues, pending interactions, provider state, and active leases. If any external outcome is uncertain, keep the issue blocked and reconcile it manually before allowing replay.
+
+For a conclusively stopped provider with no performed action, use a short-lived authenticated Paperclip Board session and the supported `POST /api/issues/:id/recovery-actions/resolve` route. The pinned settled-legacy path requires Board authority, no competing active recovery, `outcome="restored"`, and `sourceIssueStatus="todo"`. Send this strict shape, substituting only the exact recorded IDs and evidence:
+
+```json
+{
+  "actionId": "<exact-recovery-action-id>",
+  "outcome": "restored",
+  "sourceIssueStatus": "todo",
+  "executionReconciliation": {
+    "runId": "<exact-source-run-id>",
+    "providerStopped": true,
+    "actionOutcome": "not_performed",
+    "outcomeEvidence": "<at least 20 characters of concrete evidence>"
+  }
+}
+```
+
+Other outcomes must describe the actually observed result; never label an ambiguous dispatch as `not_performed` merely to unblock work. At this pin, `GET /api/issues/:id/recovery-actions` projects only the currently active action and can return an empty list even while a settled `replay=blocked` hold remains. Read the exact ID from the already-recorded recovery response/activity or the issue's `executionBlocker.recoveryActionId` projection. If neither supplies it, stop for upstream diagnosis. Never guess an action ID, and never read or write PostgreSQL to bypass this control.
+
+Create the temporary Board session only through Paperclip's official CLI/browser approval flow. Put its data directory in a root-owned mode-`0700` temporary directory and require the credential file to be mode `0600`; do not place its bearer token in command arguments, environment variables, logs, or documentation. Read the token only inside the invoking process. After use, revoke it server-side, prove the captured old token receives HTTP 401, run the supported logout, and verify the credential store contains zero entries.
+
+After Paperclip accepts the reconciliation, verify that it—not an operator script—creates the successor. Confirm the predecessor remains failed and auditable, the successor links through `retryOfRunId`, the issue and session context match, and only one final result/comment exists. A provider-authentication failure before model or tool execution is a separate attributable failed run and requires its own evidence-backed recovery. Finally capture a new consecutive encrypted configuration/state backup pair.
