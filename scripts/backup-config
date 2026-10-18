@@ -5,6 +5,11 @@ umask 077
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 config_file=${1:-${CONFIG_FILE:-$repo_root/.env}}
 config_tmp_dir=''
+artifact_staging=''
+checksum_staging=''
+published_artifact=''
+published_checksum=''
+publish_complete=0
 
 fail() {
   printf 'configuration backup error: %s\n' "$*" >&2
@@ -20,6 +25,15 @@ hash_file() {
 }
 
 cleanup() {
+  local cleanup_path
+  for cleanup_path in "$artifact_staging" "$checksum_staging"; do
+    [[ -z "$cleanup_path" ]] || rm -f "$cleanup_path"
+  done
+  if [[ $publish_complete == 0 ]]; then
+    for cleanup_path in "$published_artifact" "$published_checksum"; do
+      [[ -z "$cleanup_path" ]] || rm -f "$cleanup_path"
+    done
+  fi
   [[ -z "$config_tmp_dir" ]] || rm -rf "$config_tmp_dir"
 }
 trap cleanup EXIT
@@ -31,6 +45,8 @@ command -v age >/dev/null 2>&1 || fail "age is required"
 postgres_env=$(read_config POSTGRES_ENV_FILE)
 paperclip_env=$(read_config PAPERCLIP_ENV_FILE)
 hermes_env=$(read_config HERMES_ENV_FILE)
+founder_relay_env=$(read_config FOUNDER_RELAY_ENV_FILE)
+specialist_provider_env=$(read_config SPECIALIST_PROVIDER_ENV_FILE)
 output_dir=${BACKUP_OUTPUT_DIR:-$(read_config BACKUP_OUTPUT_DIR)}
 [[ -n "$output_dir" ]] || fail "BACKUP_OUTPUT_DIR is not configured"
 mkdir -p "$output_dir"
@@ -45,15 +61,19 @@ install -m 0600 "$config_file" "$payload_dir/files/deployment.env"
 install -m 0600 "$postgres_env" "$payload_dir/files/postgres.env"
 install -m 0600 "$paperclip_env" "$payload_dir/files/paperclip.env"
 install -m 0600 "$hermes_env" "$payload_dir/files/hermes.env"
+install -m 0600 "$founder_relay_env" "$payload_dir/files/founder-relay.env"
+install -m 0600 "$specialist_provider_env" "$payload_dir/files/specialist-provider.env"
 
 git_commit=$(git -C "$repo_root" rev-parse HEAD 2>/dev/null || printf 'uncommitted')
 {
-  printf 'CONFIG_PACK_FORMAT_VERSION=2\n'
+  printf 'CONFIG_PACK_FORMAT_VERSION=4\n'
   printf 'CREATED_AT=%s\n' "$timestamp"
   printf 'GIT_COMMIT=%s\n' "$git_commit"
   printf 'POSTGRES_ENV_FILE=%s\n' "$postgres_env"
   printf 'PAPERCLIP_ENV_FILE=%s\n' "$paperclip_env"
   printf 'HERMES_ENV_FILE=%s\n' "$hermes_env"
+  printf 'FOUNDER_RELAY_ENV_FILE=%s\n' "$founder_relay_env"
+  printf 'SPECIALIST_PROVIDER_ENV_FILE=%s\n' "$specialist_provider_env"
 } >"$payload_dir/manifest.env"
 (
   cd "$payload_dir"
@@ -62,16 +82,36 @@ git_commit=$(git -C "$repo_root" rev-parse HEAD 2>/dev/null || printf 'uncommitt
   hash_file files/postgres.env
   hash_file files/paperclip.env
   hash_file files/hermes.env
+  hash_file files/founder-relay.env
+  hash_file files/specialist-provider.env
 ) >"$payload_dir/SHA256SUMS"
 
 artifact="$output_dir/${pack_name}.tar.gz.age"
-tar -C "$config_tmp_dir" -czf - "$pack_name" \
-  | age --recipient "$BACKUP_AGE_RECIPIENT" --output "$artifact"
-chmod 0600 "$artifact"
+artifact_staging="$output_dir/.${pack_name}.tar.gz.age.partial.$$"
+checksum_staging="$output_dir/.${pack_name}.tar.gz.age.sha256.partial.$$"
+[[ ! -e "$artifact" && ! -e "${artifact}.sha256" \
+  && ! -e "$artifact_staging" && ! -e "$checksum_staging" ]] \
+  || fail "configuration backup artifact or checksum already exists"
+COPYFILE_DISABLE=1 tar -C "$config_tmp_dir" -czf - "$pack_name" \
+  | age --recipient "$BACKUP_AGE_RECIPIENT" --output "$artifact_staging"
+chmod 0600 "$artifact_staging"
 artifact_basename=$(basename "$artifact")
 (
   cd "$output_dir"
-  hash_file "$artifact_basename" >"${artifact_basename}.sha256"
+  hash_file "$(basename "$artifact_staging")" | awk -v name="$artifact_basename" '{ print $1 "  " name }' \
+    >"$checksum_staging"
 )
-chmod 0600 "${artifact}.sha256"
+chmod 0600 "$checksum_staging"
+mv "$artifact_staging" "$artifact"
+artifact_staging=''
+published_artifact=$artifact
+if [[ ${NIX_TEST_FAIL_CONFIG_PUBLISH_AFTER_ARTIFACT:-0} == 1 ]]; then
+  [[ ${NIX_ALLOW_TEST_CONFIG:-0} == 1 ]] \
+    || fail "test-only configuration publish failure requires NIX_ALLOW_TEST_CONFIG=1"
+  fail "injected configuration publish failure"
+fi
+mv "$checksum_staging" "${artifact}.sha256"
+checksum_staging=''
+published_checksum="${artifact}.sha256"
+publish_complete=1
 printf 'Encrypted configuration pack created. Secret contents were not logged.\n%s\n' "$artifact"

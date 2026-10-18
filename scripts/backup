@@ -27,6 +27,33 @@ read_config() {
   grep -E "^${key}=" "$config_file" | tail -n 1 | cut -d= -f2- || true
 }
 
+cookie_header_from_file() {
+  python3 - "$1" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+parts = []
+for raw in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
+    if raw.startswith("#HttpOnly_"):
+        raw = raw.removeprefix("#HttpOnly_")
+    elif not raw or raw.startswith("#"):
+        continue
+    fields = raw.split("\t")
+    if len(fields) != 7:
+        raise SystemExit("backup cookie file is not a Netscape cookie jar")
+    name, value = fields[5:7]
+    if not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", name):
+        raise SystemExit("backup cookie file contains an invalid cookie name")
+    if any(character in value for character in '\\\"\r\n;'):
+        raise SystemExit("backup cookie file contains an unsafe cookie value")
+    parts.append(f"{name}={value}")
+if not parts:
+    raise SystemExit("backup cookie file contains no cookies")
+print("; ".join(parts))
+PY
+}
+
 hash_file() {
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$1"
@@ -74,8 +101,13 @@ case "$test_only_unencrypted" in
 esac
 
 "$repo_root/scripts/check-config" "$config_file"
+command -v python3 >/dev/null 2>&1 || fail "python3 is required"
+command -v jq >/dev/null 2>&1 || fail "jq is required"
 project_name=$(read_config COMPOSE_PROJECT_NAME)
 lior_paperclip_user_id=$(read_config PAPERCLIP_LIOR_USER_ID)
+paperclip_public_url=$(read_config PAPERCLIP_PUBLIC_URL)
+[[ "$paperclip_public_url" =~ ^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?$ ]] \
+  || fail "PAPERCLIP_PUBLIC_URL is unsafe for the authenticated backup readiness check"
 output_dir=${BACKUP_OUTPUT_DIR:-$(read_config BACKUP_OUTPUT_DIR)}
 [[ -n "$output_dir" ]] || fail "BACKUP_OUTPUT_DIR is not configured"
 mkdir -p "$output_dir"
@@ -93,9 +125,18 @@ if [[ $test_only_unencrypted == 0 ]]; then
     || fail "could not resolve the pinned Hermes image"
 fi
 
+specialist_topology_required=0
+if [[ ${NIX_ALLOW_TEST_CONFIG:-0} != 1 || ${NIX_REQUIRE_SPECIALIST_TOPOLOGY:-0} == 1 ]]; then
+  specialist_topology_required=1
+fi
+
 check_backup_safety() {
   "$repo_root/scripts/check-paperclip-chief-topology" "$config_file" >/dev/null \
     || fail "Paperclip Chief topology is unsafe; refusing to capture a backup"
+  if [[ $specialist_topology_required == 1 ]]; then
+    "$repo_root/scripts/check-paperclip-specialist-topology" "$config_file" >/dev/null \
+      || fail "Paperclip specialist topology is unsafe; refusing to capture a backup"
+  fi
   if [[ $test_only_unencrypted == 1 ]]; then
     return
   fi
@@ -129,7 +170,169 @@ check_backup_safety() {
     || fail "Hermes profile state contains invalid or external-only Telegram controls"
 }
 
+check_live_specialist_readiness() {
+  local cookie_file=${BACKUP_PAPERCLIP_COOKIE_FILE:-}
+  local cookie_mode cookie_links cookie_header plugins_json plugin_id capabilities_json
+  local chief_id company_id environment_id environments_json secrets_json secret_ids
+  local daytona_secret_id opencode_secret_id
+
+  [[ -n "$cookie_file" && -f "$cookie_file" && ! -L "$cookie_file" ]] \
+    || fail "BACKUP_PAPERCLIP_COOKIE_FILE must name a private authenticated board cookie jar"
+  cookie_mode=$(stat -c '%a' "$cookie_file" 2>/dev/null || stat -f '%Lp' "$cookie_file")
+  (( (8#$cookie_mode & 077) == 0 )) \
+    || fail "BACKUP_PAPERCLIP_COOKIE_FILE must not be group/world accessible"
+  cookie_links=$(stat -c '%h' "$cookie_file" 2>/dev/null || stat -f '%l' "$cookie_file")
+  [[ "$cookie_links" == 1 ]] \
+    || fail "BACKUP_PAPERCLIP_COOKIE_FILE must have exactly one hard link"
+  cookie_header=$(cookie_header_from_file "$cookie_file") \
+    || fail "BACKUP_PAPERCLIP_COOKIE_FILE is invalid"
+
+  board_get() {
+    local path=$1
+    {
+      printf 'silent\nshow-error\nfail\n'
+      printf 'header = "Cookie: %s"\n' "$cookie_header"
+      printf 'header = "Origin: %s"\n' "$paperclip_public_url"
+      printf 'url = "http://127.0.0.1:3100%s"\n' "$path"
+    } | "${compose[@]}" exec -T paperclip curl -K -
+  }
+
+  chief_id=$(read_config NIX_CHIEF_AGENT_ID)
+  environment_id=$(read_config NIX_SPECIALIST_ENVIRONMENT_ID)
+  company_id=$("${compose[@]}" exec -T postgres psql --username paperclip --dbname paperclip \
+    --no-psqlrc --tuples-only --no-align \
+    --command "SELECT company_id FROM agents WHERE id = '$chief_id' LIMIT 1;" | tr -d '[:space:]')
+  [[ "$company_id" =~ ^[0-9a-fA-F-]{36}$ ]] \
+    || fail "could not resolve the specialist company for live backup readiness"
+
+  plugins_json=$(board_get '/api/plugins') \
+    || fail "could not read live Paperclip plugins with the authenticated board session"
+  jq -e '
+    [.[] | select(.packageName == "@paperclipai/plugin-daytona" and .version == "0.1.7")]
+    | length == 1
+    and .[0].status == "ready"
+    and .[0].pluginKey == "paperclip.daytona-sandbox-provider"
+    and .[0].manifestJson.id == "paperclip.daytona-sandbox-provider"
+    and .[0].manifestJson.version == "0.1.7"
+    and .[0].manifestJson.capabilities == ["environment.drivers.register"]
+  ' >/dev/null <<<"$plugins_json" || fail "live exact Daytona plugin is not ready"
+  plugin_id=$(jq -er '.[] | select(.pluginKey == "paperclip.daytona-sandbox-provider") | .id' \
+    <<<"$plugins_json") || fail "live Daytona plugin identifier is missing"
+
+  capabilities_json=$(board_get "/api/companies/${company_id}/environments/capabilities") \
+    || fail "could not read live environment capabilities"
+  jq -e --arg plugin_id "$plugin_id" '
+    .sandboxProviders.daytona.status == "supported"
+    and .sandboxProviders.daytona.source == "plugin"
+    and .sandboxProviders.daytona.pluginKey == "paperclip.daytona-sandbox-provider"
+    and .sandboxProviders.daytona.pluginId == $plugin_id
+    and .sandboxProviders.daytona.supportsSavedProbe == true
+    and .sandboxProviders.daytona.supportsUnsavedProbe == true
+    and .sandboxProviders.daytona.supportsRunExecution == true
+  ' >/dev/null <<<"$capabilities_json" \
+    || fail "live Daytona plugin worker is not execution-ready"
+
+  environments_json=$(board_get "/api/companies/${company_id}/environments") \
+    || fail "could not read the live specialist environment"
+  secret_ids=$(jq -er --arg id "$environment_id" '
+    (if type == "array" then . else (.environments // .items // .data // []) end) as $rows
+    | [($rows[] | select(.id == $id))] as $matches
+    | if ($matches | length) != 1 then error("specialist environment missing") else $matches[0] end
+    | .config.apiKey as $daytona
+    | .envVars.OPENCODE_API_KEY.secretId as $opencode
+    | if .name != "Nix task-scoped Daytona sandbox"
+        or .driver != "sandbox" or .status != "active"
+        or .metadata != {nix:{kind:"nix-specialist-daytona",version:1}}
+        or .config != {
+          provider:"daytona",apiKey:$daytona,apiUrl:null,target:"eu",snapshot:null,
+          image:"daytonaio/sandbox:0.8.0@sha256:eadf88e4391072b7ad4bed27d9cadfc9fe9d8ed375d9219d34c2ccb518f213e3",
+          language:null,timeoutMs:300000,livenessTimeoutMs:30000,cpu:1,memory:2,disk:5,gpu:null,
+          autoStopInterval:15,autoArchiveInterval:60,autoDeleteInterval:60,reuseLease:false,
+          archiveOnRelease:false,runnerLifecycleMode:"per_turn"
+        }
+        or .envVars != {OPENCODE_API_KEY:{
+          type:"secret_ref",secretId:$opencode,version:"latest",
+          projectionClass:"unclassified",projectionAllowlistKey:null
+        }}
+      then error("specialist Daytona environment drifted") else . end
+    | [$daytona, $opencode]
+    | if length != 2 or any(. == null or . == "") or .[0] == .[1]
+      then error("specialist secret references invalid") else .[] end
+  ' <<<"$environments_json") || fail "live specialist environment bindings are invalid"
+  secrets_json=$(board_get "/api/companies/${company_id}/secrets") \
+    || fail "could not read live specialist secret metadata"
+  daytona_secret_id=$(sed -n '1p' <<<"$secret_ids")
+  opencode_secret_id=$(sed -n '2p' <<<"$secret_ids")
+  jq -e --arg daytona "$daytona_secret_id" --arg opencode "$opencode_secret_id" '
+    . as $rows
+    | ([$rows[] | select(
+      .id == $daytona
+      and .key == "nix-specialist-daytona-api-key"
+      and .provider == "local_encrypted"
+      and .status == "active"
+      and .latestVersion >= 1
+      and (.description | test("^Nix Slice 3 daytona; sha256=[0-9a-f]{64}$"))
+    )] | length == 1)
+    and ([$rows[] | select(
+      .id == $opencode
+      and .key == "nix-specialist-opencode-api-key"
+      and .provider == "local_encrypted"
+      and .status == "active"
+      and .latestVersion >= 1
+      and (.description | test("^Nix Slice 3 provider; sha256=[0-9a-f]{64}$"))
+    )] | length == 1)
+  ' >/dev/null <<<"$secrets_json" \
+    || fail "live specialist secret metadata is incomplete"
+
+  # The database record alone is insufficient: /paperclip is the only copy of
+  # the installed npm package. Verify package-lock integrity and critical
+  # executable files before archiving the volume.
+  "${compose[@]}" exec -T paperclip node - <<'JS' \
+    || fail "installed Daytona plugin package artifacts are incomplete or changed"
+const fs = require("node:fs");
+const crypto = require("node:crypto");
+const root = "/paperclip/.paperclip/plugins";
+const packageRoot = `${root}/node_modules/@paperclipai/plugin-daytona`;
+const expected = {
+  "package.json": "0b96f641f9f3101179c488dcc68e40aea75963e80b981d0a3aa328b9cb932715",
+  "dist/index.js": "d2b4e4da5685aa0b0bd031fa08a1e20fd6c65a9fe26a5fbd927617f629909d7d",
+  "dist/manifest.js": "01c193593acd8c6b67d284356158dae3fe0b17c4121ad19614dfdb212c721484",
+  "dist/plugin.js": "1cdd3c802333e0e40e386f1b624eb9e2ea36a8cca131170fe06cf88e17db09c4",
+  "dist/worker.js": "9104ef61f80d1292618fd56d367f36ac90e2e255bac2ff34c928078d862cb3cb",
+};
+const lock = JSON.parse(fs.readFileSync(`${root}/package-lock.json`, "utf8"));
+const lockedRows = Object.entries(lock.packages ?? {}).filter(([key]) =>
+  key === "node_modules/@paperclipai/plugin-daytona" ||
+  key.endsWith("/node_modules/@paperclipai/plugin-daytona")
+);
+if (lockedRows.length !== 1) throw new Error("Daytona package-lock entry is absent or duplicated");
+const locked = lockedRows[0][1];
+if (locked?.version !== "2026.916.1" ||
+    locked?.integrity !== "sha512-rJOMUxFCEpXgaZ5gaD9OdSVNmg+5h9Gm77M/0mTD8MVVFgEw7yltrB7mzT0Ff09qb6lGkZgpVWkG7Glot/+g5A==") {
+  throw new Error("Daytona package-lock integrity is absent or changed");
+}
+for (const [relative, digest] of Object.entries(expected)) {
+  const path = `${packageRoot}/${relative}`;
+  const metadata = fs.lstatSync(path);
+  if (!metadata.isFile() || metadata.isSymbolicLink()) {
+    throw new Error(`Daytona package artifact is not a regular file: ${relative}`);
+  }
+  const actual = crypto.createHash("sha256").update(fs.readFileSync(path)).digest("hex");
+  if (actual !== digest) throw new Error(`Daytona package artifact changed: ${relative}`);
+}
+JS
+  "${compose[@]}" exec -T paperclip npm ls \
+    --prefix /paperclip/.paperclip/plugins --omit=dev --all --json >/dev/null \
+    || fail "installed Daytona plugin dependency tree is incomplete"
+  unset cookie_header plugins_json plugin_id capabilities_json environments_json secrets_json secret_ids
+  unset daytona_secret_id opencode_secret_id
+}
+
 check_backup_safety
+if [[ $specialist_topology_required == 1 ]]; then
+  check_live_specialist_readiness \
+    || fail "Paperclip specialist live/package readiness is unsafe; refusing to capture a backup"
+fi
 
 if "${compose[@]}" ps --status running --services | grep -qx hermes; then
   hermes_was_running=1
@@ -167,18 +370,40 @@ docker run --rm \
   --volume "$payload_dir:/backup" \
   "$archive_helper_image" sh -ec '
     cd /source
+    test -z "$(find . ! -type f ! -type d ! -type l -print -quit)" \
+      || { echo "Paperclip state contains an unsupported special file" >&2; exit 1; }
+    find . -type l -exec sh -ec '\''
+      for link do
+        case "$link" in ./.paperclip/plugins/node_modules/.bin/*) ;; *) exit 1 ;; esac
+        target=$(readlink -f "$link") || exit 1
+        case "$target" in /source/.paperclip/plugins/node_modules/*) ;; *) exit 1 ;; esac
+        test -f "$target" || exit 1
+      done
+    '\'' sh {} + \
+      || { echo "Paperclip state contains a symlink outside the reconstructible npm .bin policy" >&2; exit 1; }
     find . -type f -exec sha256sum {} \; | sort > /backup/paperclip-files.sha256
-    tar -czf /backup/paperclip-data.tar.gz .
+    tar --exclude="./.paperclip/plugins/node_modules/.bin/*" \
+      -czf /backup/paperclip-data.tar.gz .
   '
+"$repo_root/scripts/safe-extract-tar" --validate-only --allow-dot-root \
+  "$payload_dir/paperclip-data.tar.gz"
 
 docker run --rm \
   --volume "$hermes_volume:/source:ro" \
   --volume "$payload_dir:/backup" \
   "$archive_helper_image" sh -ec '
     cd /source
-    find . -type f -exec sha256sum {} \; | sort > /backup/hermes-files.sha256
-    tar -czf /backup/hermes-data.tar.gz .
+    test -z "$(find . \( -path "./.npm" -o -path "./home/.cache" \) -prune \
+      -o ! -type f ! -type d -print -quit)" \
+      || { echo "Hermes durable state contains an unsupported link or special file" >&2; exit 1; }
+    find . \( -path "./.npm" -o -path "./home/.cache" \) -prune \
+      -o -type f -exec sha256sum {} \; \
+      | sort > /backup/hermes-files.sha256
+    tar --exclude="./.npm" --exclude="./home/.cache" \
+      -czf /backup/hermes-data.tar.gz .
   '
+"$repo_root/scripts/safe-extract-tar" --validate-only --allow-dot-root \
+  "$payload_dir/hermes-data.tar.gz"
 
 if [[ $paperclip_was_running == 1 ]]; then
   if "${compose[@]}" up -d --wait paperclip; then
@@ -223,13 +448,13 @@ if [[ $test_only_unencrypted == 1 ]]; then
   artifact_staging="$output_dir/.${backup_name}.tar.gz.test-only.partial.$$"
   [[ ! -e "$artifact" && ! -e "$artifact_staging" ]] \
     || fail "backup artifact already exists: $artifact"
-  tar -C "$backup_tmp_dir" -czf "$artifact_staging" "$backup_name"
+  COPYFILE_DISABLE=1 tar -C "$backup_tmp_dir" -czf "$artifact_staging" "$backup_name"
 else
   artifact="$output_dir/${backup_name}.tar.gz.age"
   artifact_staging="$output_dir/.${backup_name}.tar.gz.age.partial.$$"
   [[ ! -e "$artifact" && ! -e "$artifact_staging" ]] \
     || fail "backup artifact already exists: $artifact"
-  tar -C "$backup_tmp_dir" -czf - "$backup_name" \
+  COPYFILE_DISABLE=1 tar -C "$backup_tmp_dir" -czf - "$backup_name" \
     | age --recipient "$BACKUP_AGE_RECIPIENT" --output "$artifact_staging"
 fi
 chmod 0600 "$artifact_staging"
@@ -251,6 +476,7 @@ published_checksum="${artifact}.sha256"
 artifact_ready=1
 printf '%s\n' "$artifact"
 
-if [[ $paperclip_was_running == 1 && $paperclip_restarted == 0 ]] || [[ $hermes_was_running == 1 && $hermes_restarted == 0 ]]; then
+if [[ $paperclip_was_running == 1 && $paperclip_restarted == 0 ]] \
+  || [[ $hermes_was_running == 1 && $hermes_restarted == 0 ]]; then
   exit 1
 fi

@@ -2,6 +2,7 @@
 set -euo pipefail
 umask 077
 
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 artifact=${1:-}
 target_config=${2:-$PWD/.env}
 restore_root=${CONFIG_RESTORE_ROOT:-/}
@@ -12,12 +13,59 @@ fail() {
   exit 1
 }
 
-hash_check() {
-  if command -v sha256sum >/dev/null 2>&1; then sha256sum --check "$1"; else shasum -a 256 --check "$1"; fi
-}
-
 hash_value() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi
+}
+
+manifest_value() {
+  local key=$1 value
+  value=$(awk -F= -v key="$key" '
+    $1 == key { count += 1; value = substr($0, length(key) + 2) }
+    END { if (count != 1 || value == "") exit 1; print value }
+  ' "$payload_dir/manifest.env") || fail "configuration pack manifest requires exactly one non-empty $key"
+  printf '%s\n' "$value"
+}
+
+validate_packed_path() {
+  python3 - "$1" <<'PY' || fail "configuration pack contains an unsafe or non-normalized secret path"
+import os
+import sys
+
+value = sys.argv[1]
+if (
+    value == "/"
+    or not value.startswith("/")
+    or value != os.path.normpath(value)
+    or "//" in value
+    or any(ord(character) < 32 for character in value)
+):
+    raise SystemExit(1)
+PY
+}
+
+target_below_restore_root() {
+  python3 - "$restore_root" "$1" <<'PY' || fail "configuration restore target escapes CONFIG_RESTORE_ROOT"
+import os
+from pathlib import Path
+import sys
+
+root_text, packed = sys.argv[1:]
+root = Path(root_text)
+if root_text != os.path.normpath(root_text) or root.is_symlink():
+    raise SystemExit(1)
+root_real = root.resolve(strict=False)
+relative = packed.lstrip("/")
+target = root_real / relative
+current = root_real
+for part in Path(relative).parts[:-1]:
+    current = current / part
+    if current.is_symlink():
+        raise SystemExit(1)
+target_parent = target.parent.resolve(strict=False)
+if os.path.commonpath((str(root_real), str(target_parent))) != str(root_real):
+    raise SystemExit(1)
+print(target)
+PY
 }
 
 cleanup() {
@@ -28,43 +76,97 @@ trap cleanup EXIT
 [[ -n "$artifact" && "$artifact" == /* && -f "$artifact" ]] || fail "usage: $0 /absolute/path/to/config-pack.tar.gz.age [/target/checkout/.env]"
 [[ -n ${AGE_IDENTITY_FILE:-} && -f "$AGE_IDENTITY_FILE" ]] || fail "AGE_IDENTITY_FILE must name the age identity file"
 command -v age >/dev/null 2>&1 || fail "age is required"
+command -v python3 >/dev/null 2>&1 || fail "python3 is required"
 [[ "$target_config" == /* ]] || fail "target configuration path must be absolute"
 [[ "$restore_root" == /* ]] || fail "CONFIG_RESTORE_ROOT must be absolute"
 
-if [[ -f "${artifact}.sha256" ]]; then
-  (cd "$(dirname "$artifact")" && hash_check "$(basename "$artifact").sha256")
-fi
+"$repo_root/scripts/verify-artifact-sidecar" "$artifact"
 
 restore_tmp_dir=$(mktemp -d /tmp/nix-os-config-restore.XXXXXX)
 age --decrypt --identity "$AGE_IDENTITY_FILE" --output "$restore_tmp_dir/config.tar.gz" "$artifact"
-tar -xzf "$restore_tmp_dir/config.tar.gz" -C "$restore_tmp_dir"
-payload_dir=$(find "$restore_tmp_dir" -mindepth 1 -maxdepth 1 -type d -name 'nix-os-config-*' -print -quit)
+"$repo_root/scripts/safe-extract-tar" --required-prefix nix-os-config- \
+  "$restore_tmp_dir/config.tar.gz" "$restore_tmp_dir"
+payload_dir=$(find "$restore_tmp_dir" -mindepth 1 -maxdepth 1 -type d -name 'nix-os-config-*' -print)
+[[ -n "$payload_dir" && "$payload_dir" != *$'\n'* ]] \
+  || fail "configuration pack must contain exactly one payload directory"
 [[ -n "$payload_dir" ]] || fail "configuration pack payload is missing"
-(cd "$payload_dir" && hash_check SHA256SUMS >/dev/null)
+"$repo_root/scripts/verify-backup-checksums" "$payload_dir"
 
-postgres_path=$(grep -E '^POSTGRES_ENV_FILE=' "$payload_dir/manifest.env" | cut -d= -f2-)
-paperclip_path=$(grep -E '^PAPERCLIP_ENV_FILE=' "$payload_dir/manifest.env" | cut -d= -f2-)
-hermes_path=$(grep -E '^HERMES_ENV_FILE=' "$payload_dir/manifest.env" | cut -d= -f2-)
-[[ "$postgres_path" == /* && "$paperclip_path" == /* && "$hermes_path" == /* ]] || fail "configuration pack contains invalid secret paths"
+config_pack_format=$(manifest_value CONFIG_PACK_FORMAT_VERSION)
+case "$config_pack_format" in
+  2|4) ;;
+  *) fail "unsupported CONFIG_PACK_FORMAT_VERSION: ${config_pack_format:-missing}" ;;
+esac
+postgres_path=$(manifest_value POSTGRES_ENV_FILE)
+paperclip_path=$(manifest_value PAPERCLIP_ENV_FILE)
+hermes_path=$(manifest_value HERMES_ENV_FILE)
+validate_packed_path "$postgres_path"
+validate_packed_path "$paperclip_path"
+validate_packed_path "$hermes_path"
+if [[ "$config_pack_format" == 4 ]]; then
+  founder_relay_path=$(manifest_value FOUNDER_RELAY_ENV_FILE)
+  specialist_provider_env_path=$(manifest_value SPECIALIST_PROVIDER_ENV_FILE)
+  for packed_path in \
+    "$founder_relay_path" \
+    "$specialist_provider_env_path"; do
+    validate_packed_path "$packed_path"
+  done
+fi
 if [[ "$restore_root" == / ]]; then
   target_postgres=$postgres_path
   target_paperclip=$paperclip_path
   target_hermes=$hermes_path
+  if [[ "$config_pack_format" == 4 ]]; then
+    target_founder_relay=$founder_relay_path
+    target_specialist_provider_env=$specialist_provider_env_path
+  fi
 else
-  target_postgres="${restore_root%/}${postgres_path}"
-  target_paperclip="${restore_root%/}${paperclip_path}"
-  target_hermes="${restore_root%/}${hermes_path}"
+  target_postgres=$(target_below_restore_root "$postgres_path")
+  target_paperclip=$(target_below_restore_root "$paperclip_path")
+  target_hermes=$(target_below_restore_root "$hermes_path")
+  if [[ "$config_pack_format" == 4 ]]; then
+    target_founder_relay=$(target_below_restore_root "$founder_relay_path")
+    target_specialist_provider_env=$(target_below_restore_root "$specialist_provider_env_path")
+  fi
 fi
-
-for target in "$target_config" "$target_postgres" "$target_paperclip" "$target_hermes"; do
+restore_targets=("$target_config" "$target_postgres" "$target_paperclip" "$target_hermes")
+if [[ "$config_pack_format" == 4 ]]; then
+  restore_targets+=(
+    "$target_founder_relay"
+    "$target_specialist_provider_env"
+  )
+fi
+for ((target_index = 0; target_index < ${#restore_targets[@]}; target_index += 1)); do
+  target=${restore_targets[$target_index]}
+  for ((other_index = 0; other_index < target_index; other_index += 1)); do
+    [[ "$target" != "${restore_targets[$other_index]}" ]] \
+      || fail "configuration pack maps multiple files to one restore target: $target"
+  done
   if [[ -e "$target" && ${CONFIG_RESTORE_FORCE:-false} != true ]]; then
     fail "refusing to overwrite existing file: $target"
   fi
 done
 
-install -d -m 0700 "$(dirname "$target_config")" "$(dirname "$target_postgres")" "$(dirname "$target_paperclip")" "$(dirname "$target_hermes")"
+for target in "${restore_targets[@]}"; do
+  install -d -m 0700 "$(dirname "$target")"
+done
 if [[ "$restore_root" == / ]]; then
   install -m 0600 "$payload_dir/files/deployment.env" "$target_config"
+elif [[ "$config_pack_format" == 4 ]]; then
+  awk \
+    -v pg="$target_postgres" \
+    -v pc="$target_paperclip" \
+    -v hm="$target_hermes" \
+    -v fr="$target_founder_relay" \
+    -v spe="$target_specialist_provider_env" '
+    /^POSTGRES_ENV_FILE=/ { print "POSTGRES_ENV_FILE=" pg; next }
+    /^PAPERCLIP_ENV_FILE=/ { print "PAPERCLIP_ENV_FILE=" pc; next }
+    /^HERMES_ENV_FILE=/ { print "HERMES_ENV_FILE=" hm; next }
+    /^FOUNDER_RELAY_ENV_FILE=/ { print "FOUNDER_RELAY_ENV_FILE=" fr; next }
+    /^SPECIALIST_PROVIDER_ENV_FILE=/ { print "SPECIALIST_PROVIDER_ENV_FILE=" spe; next }
+    { print }
+  ' "$payload_dir/files/deployment.env" >"$target_config"
+  chmod 0600 "$target_config"
 else
   awk -v pg="$target_postgres" -v pc="$target_paperclip" -v hm="$target_hermes" '
     /^POSTGRES_ENV_FILE=/ { print "POSTGRES_ENV_FILE=" pg; next }
@@ -77,9 +179,17 @@ fi
 install -m 0600 "$payload_dir/files/postgres.env" "$target_postgres"
 install -m 0600 "$payload_dir/files/paperclip.env" "$target_paperclip"
 install -m 0600 "$payload_dir/files/hermes.env" "$target_hermes"
+if [[ "$config_pack_format" == 4 ]]; then
+  install -m 0600 "$payload_dir/files/founder-relay.env" "$target_founder_relay"
+  install -m 0600 "$payload_dir/files/specialist-provider.env" "$target_specialist_provider_env"
+fi
 
 printf 'Configuration pack restored with mode 0600; contents were not logged.\n'
 printf 'deployment.env sha256=%s\n' "$(hash_value "$target_config")"
 printf 'postgres.env sha256=%s\n' "$(hash_value "$target_postgres")"
 printf 'paperclip.env sha256=%s\n' "$(hash_value "$target_paperclip")"
 printf 'hermes.env sha256=%s\n' "$(hash_value "$target_hermes")"
+if [[ "$config_pack_format" == 4 ]]; then
+  printf 'founder-relay.env sha256=%s\n' "$(hash_value "$target_founder_relay")"
+  printf 'specialist-provider.env sha256=%s\n' "$(hash_value "$target_specialist_provider_env")"
+fi

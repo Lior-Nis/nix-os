@@ -33,6 +33,7 @@ printf 'POSTGRES_PASSWORD=%s\nPAPERCLIP_DB_PASSWORD=%s\n' \
   printf 'TELEGRAM_ALLOW_ALL_USERS=false\nGATEWAY_ALLOW_ALL_USERS=false\n'
 } >"$test_tmp_dir/hermes.env"
 printf 'HERMES_TELEGRAM_MODE=disabled\n' >"$test_tmp_dir/hermes-telegram-mode.env"
+"$repo_root/tests/fixtures/create-slice3-secret-files" "$test_tmp_dir"
 {
   printf 'COMPOSE_PROJECT_NAME=nix-os-transition\n'
   printf 'PAPERCLIP_PUBLIC_URL=https://nix-os.test-tailnet.ts.net\n'
@@ -41,8 +42,17 @@ printf 'HERMES_TELEGRAM_MODE=disabled\n' >"$test_tmp_dir/hermes-telegram-mode.en
   printf 'POSTGRES_ENV_FILE=%s\n' "$test_tmp_dir/postgres.env"
   printf 'PAPERCLIP_ENV_FILE=%s\n' "$test_tmp_dir/paperclip.env"
   printf 'HERMES_ENV_FILE=%s\n' "$test_tmp_dir/hermes.env"
+  printf 'FOUNDER_RELAY_ENV_FILE=%s\n' "$test_tmp_dir/founder-relay.env"
   printf 'HERMES_TELEGRAM_BOT_USERNAME=the_nixos_bot\n'
   printf 'HERMES_TELEGRAM_MODE_FILE=%s\n' "$test_tmp_dir/hermes-telegram-mode.env"
+  printf 'SPECIALIST_PROVIDER_ENV_FILE=%s\n' "$test_tmp_dir/specialist-provider.env"
+  printf 'NIX_CHIEF_AGENT_ID=11111111-1111-4111-8111-111111111111\n'
+  printf 'NIX_APPROVED_PROJECT_ID=22222222-2222-4222-8222-222222222222\n'
+  printf 'NIX_PRODUCT_AGENT_ID=33333333-3333-4333-8333-333333333333\n'
+  printf 'NIX_GROWTH_AGENT_ID=44444444-4444-4444-8444-444444444444\n'
+  printf 'NIX_OPERATIONS_AGENT_ID=55555555-5555-4555-8555-555555555555\n'
+  printf 'NIX_SPECIALIST_AGENT_IDS=33333333-3333-4333-8333-333333333333,44444444-4444-4444-8444-444444444444,55555555-5555-4555-8555-555555555555\n'
+  printf 'NIX_SPECIALIST_ENVIRONMENT_ID=66666666-6666-4666-8666-666666666666\n'
   printf 'NIX_BRAIN_HOST_PATH=%s\n' "$test_tmp_dir/nix-brain"
   printf 'NIX_BRAIN_GID=%s\n' "$brain_gid"
   printf 'PAPERCLIP_AUTH_DISABLE_SIGN_UP=true\n'

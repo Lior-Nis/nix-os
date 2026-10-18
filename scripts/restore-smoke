@@ -13,13 +13,53 @@ fail() {
   exit 1
 }
 
-hash_check() {
-  local checksum_file=$1
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum --check "$checksum_file"
-  else
-    shasum -a 256 --check "$checksum_file"
-  fi
+read_config_value() {
+  grep -E "^${1}=" "$restore_config" | tail -n 1 | cut -d= -f2- || true
+}
+
+cookie_header_from_file() {
+  python3 - "$1" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+parts = []
+for raw in path.read_text(encoding="utf-8").splitlines():
+    if raw.startswith("#HttpOnly_"):
+        raw = raw.removeprefix("#HttpOnly_")
+    elif not raw or raw.startswith("#"):
+        continue
+    fields = raw.split("\t")
+    if len(fields) != 7:
+        raise SystemExit("restore cookie file is not a Netscape cookie jar")
+    name, value = fields[5:7]
+    if not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", name):
+        raise SystemExit("restore cookie file contains an invalid cookie name")
+    if any(character in value for character in '\\"\r\n;'):
+        raise SystemExit("restore cookie file contains an unsafe cookie value")
+    parts.append(f"{name}={value}")
+if not parts:
+    raise SystemExit("restore cookie file contains no cookies")
+print("; ".join(parts))
+PY
+}
+
+restore_board_request() {
+  local method=$1 path=$2 body=${3:-} cookie_header
+  cookie_header=$(cookie_header_from_file "$RESTORE_PAPERCLIP_COOKIE_FILE") \
+    || fail "restored specialist probe cookie file is invalid"
+  {
+    printf 'silent\nshow-error\nfail\n'
+    printf 'header = "Cookie: %s"\n' "$cookie_header"
+    printf 'header = "Origin: https://nix-os.restore-test.ts.net"\n'
+    if [[ "$method" == POST ]]; then
+      printf 'header = "Content-Type: application/json"\n'
+      printf 'request = "POST"\n'
+      printf 'data = "%s"\n' "$body"
+    fi
+    printf 'url = "http://127.0.0.1:3100%s"\n' "$path"
+  } | "${compose_restore[@]}" exec -T paperclip curl -K -
 }
 
 cleanup() {
@@ -35,10 +75,9 @@ trap cleanup EXIT
 [[ -n "$artifact" ]] || fail "usage: $0 /absolute/path/to/backup.tar.gz[.age]"
 [[ "$artifact" == /* ]] || fail "backup artifact path must be absolute"
 [[ -f "$artifact" ]] || fail "backup artifact does not exist: $artifact"
+command -v python3 >/dev/null 2>&1 || fail "python3 is required"
 
-if [[ -f "${artifact}.sha256" ]]; then
-  (cd "$(dirname "$artifact")" && hash_check "$(basename "$artifact").sha256")
-fi
+"$repo_root/scripts/verify-artifact-sidecar" "$artifact"
 
 if [[ -n ${RESTORE_WORK_DIR:-} ]]; then
   [[ ! -e "$RESTORE_WORK_DIR" ]] || fail "RESTORE_WORK_DIR already exists: $RESTORE_WORK_DIR"
@@ -55,13 +94,13 @@ if [[ "$artifact" == *.age ]]; then
   age --decrypt --identity "$AGE_IDENTITY_FILE" --output "$archive" "$artifact"
 fi
 
-tar -xzf "$archive" -C "$restore_tmp_dir"
-payload_dir=$(find "$restore_tmp_dir" -mindepth 1 -maxdepth 1 -type d -name 'nix-os-*' -print -quit)
-[[ -n "$payload_dir" ]] || fail "backup payload directory is missing"
-(
-  cd "$payload_dir"
-  hash_check SHA256SUMS
-)
+"$repo_root/scripts/safe-extract-tar" --required-prefix nix-os- "$archive" "$restore_tmp_dir"
+payload_dir=$(find "$restore_tmp_dir" -mindepth 1 -maxdepth 1 -type d -name 'nix-os-*' -print)
+[[ -n "$payload_dir" && "$payload_dir" != *$'\n'* ]] \
+  || fail "backup must contain exactly one payload directory"
+"$repo_root/scripts/verify-backup-checksums" "$payload_dir"
+"$repo_root/scripts/safe-extract-tar" --validate-only --allow-dot-root "$payload_dir/paperclip-data.tar.gz"
+"$repo_root/scripts/safe-extract-tar" --validate-only --allow-dot-root "$payload_dir/hermes-data.tar.gz"
 
 backup_format=$(grep -E '^BACKUP_FORMAT_VERSION=' "$payload_dir/manifest.env" | cut -d= -f2- || true)
 source_project=$(grep -E '^SOURCE_PROJECT=' "$payload_dir/manifest.env" | cut -d= -f2-)
@@ -80,6 +119,22 @@ case "$backup_format" in
 esac
 [[ "$source_lior_user_id" =~ ^[A-Za-z0-9._:-]{3,200}$ ]] \
   || fail "backup manifest has an invalid PAPERCLIP_LIOR_USER_ID"
+restore_require_specialist_topology=${RESTORE_REQUIRE_SPECIALIST_TOPOLOGY:-true}
+[[ "$restore_require_specialist_topology" == true || "$restore_require_specialist_topology" == false ]] \
+  || fail "RESTORE_REQUIRE_SPECIALIST_TOPOLOGY must be true or false"
+if [[ "$restore_require_specialist_topology" == true ]]; then
+  [[ -n ${RESTORE_PAPERCLIP_COOKIE_FILE:-} \
+    && -f "$RESTORE_PAPERCLIP_COOKIE_FILE" \
+    && ! -L "$RESTORE_PAPERCLIP_COOKIE_FILE" ]] \
+    || fail "RESTORE_PAPERCLIP_COOKIE_FILE must name a private authenticated board cookie jar"
+  cookie_mode=$(stat -c '%a' "$RESTORE_PAPERCLIP_COOKIE_FILE" 2>/dev/null \
+    || stat -f '%Lp' "$RESTORE_PAPERCLIP_COOKIE_FILE")
+  (( (8#$cookie_mode & 077) == 0 )) \
+    || fail "RESTORE_PAPERCLIP_COOKIE_FILE must not be group/world accessible"
+  [[ $(stat -c '%h' "$RESTORE_PAPERCLIP_COOKIE_FILE" 2>/dev/null \
+    || stat -f '%l' "$RESTORE_PAPERCLIP_COOKIE_FILE") == 1 ]] \
+    || fail "RESTORE_PAPERCLIP_COOKIE_FILE must have exactly one hard link"
+fi
 restore_project=${RESTORE_PROJECT_NAME:-nix-os-restore-$$}
 [[ "$restore_project" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || fail "invalid RESTORE_PROJECT_NAME"
 [[ "$restore_project" != "$source_project" ]] || fail "restore project must differ from source project"
@@ -88,7 +143,12 @@ restore_project=${RESTORE_PROJECT_NAME:-nix-os-restore-$$}
 restore_postgres_volume="${restore_project}_postgres_data"
 restore_paperclip_volume="${restore_project}_paperclip_data"
 restore_hermes_volume="${restore_project}_hermes_data"
-for restore_volume in "$restore_postgres_volume" "$restore_paperclip_volume" "$restore_hermes_volume"; do
+restore_runner_cache_volume="${restore_project}_paperclip_runner_cache"
+for restore_volume in \
+  "$restore_postgres_volume" \
+  "$restore_paperclip_volume" \
+  "$restore_hermes_volume" \
+  "$restore_runner_cache_volume"; do
   if docker volume inspect "$restore_volume" >/dev/null 2>&1; then
     fail "restore target volume already exists: $restore_volume"
   fi
@@ -97,19 +157,33 @@ done
 restore_postgres_env="$restore_tmp_dir/postgres.env"
 restore_paperclip_env="$restore_tmp_dir/paperclip.env"
 restore_hermes_env="$restore_tmp_dir/hermes.env"
+restore_founder_relay_env="$restore_tmp_dir/founder-relay.env"
+restore_specialist_provider_env="$restore_tmp_dir/specialist-provider.env"
 restore_hermes_mode="$restore_tmp_dir/hermes-telegram-mode.env"
 restore_brain="$restore_tmp_dir/nix-brain"
 restore_config="$restore_tmp_dir/restore.env"
-if [[ -n ${RESTORE_POSTGRES_ENV_FILE:-} || -n ${RESTORE_PAPERCLIP_ENV_FILE:-} || -n ${RESTORE_HERMES_ENV_FILE:-} ]]; then
+if [[ \
+  -n ${RESTORE_POSTGRES_ENV_FILE:-} \
+  || -n ${RESTORE_PAPERCLIP_ENV_FILE:-} \
+  || -n ${RESTORE_HERMES_ENV_FILE:-} \
+  || -n ${RESTORE_FOUNDER_RELAY_ENV_FILE:-} \
+  || -n ${RESTORE_SPECIALIST_PROVIDER_ENV_FILE:-} \
+]]; then
   [[ -n ${RESTORE_POSTGRES_ENV_FILE:-} && -f "$RESTORE_POSTGRES_ENV_FILE" ]] \
     || fail "RESTORE_POSTGRES_ENV_FILE must name the restored PostgreSQL secret file"
   [[ -n ${RESTORE_PAPERCLIP_ENV_FILE:-} && -f "$RESTORE_PAPERCLIP_ENV_FILE" ]] \
     || fail "RESTORE_PAPERCLIP_ENV_FILE must name the restored Paperclip secret file"
   [[ -n ${RESTORE_HERMES_ENV_FILE:-} && -f "$RESTORE_HERMES_ENV_FILE" ]] \
     || fail "RESTORE_HERMES_ENV_FILE must name the restored Hermes secret file"
+  [[ -n ${RESTORE_FOUNDER_RELAY_ENV_FILE:-} && -f "$RESTORE_FOUNDER_RELAY_ENV_FILE" ]] \
+    || fail "RESTORE_FOUNDER_RELAY_ENV_FILE must name the restored founder relay file"
+  [[ -n ${RESTORE_SPECIALIST_PROVIDER_ENV_FILE:-} && -f "$RESTORE_SPECIALIST_PROVIDER_ENV_FILE" ]] \
+    || fail "RESTORE_SPECIALIST_PROVIDER_ENV_FILE must name the restored provider import file"
   install -m 0600 "$RESTORE_POSTGRES_ENV_FILE" "$restore_postgres_env"
   install -m 0600 "$RESTORE_PAPERCLIP_ENV_FILE" "$restore_paperclip_env"
   install -m 0600 "$RESTORE_HERMES_ENV_FILE" "$restore_hermes_env"
+  install -m 0600 "$RESTORE_FOUNDER_RELAY_ENV_FILE" "$restore_founder_relay_env"
+  install -m 0600 "$RESTORE_SPECIALIST_PROVIDER_ENV_FILE" "$restore_specialist_provider_env"
 else
   postgres_password=$(openssl rand -hex 32)
   paperclip_db_password=$(openssl rand -hex 32)
@@ -133,6 +207,13 @@ else
     printf 'TELEGRAM_HOME_CHANNEL=123456789\n'
     printf 'TELEGRAM_ALLOW_ALL_USERS=false\nGATEWAY_ALLOW_ALL_USERS=false\n'
   } >"$restore_hermes_env"
+  printf 'NIX_FOUNDER_RELAY_SECRET=%s\n' "$(openssl rand -hex 32)" >"$restore_founder_relay_env"
+  printf 'NIX_LIOR_TELEGRAM_USER_ID=123456789\nNIX_LIOR_TELEGRAM_CHAT_ID=123456789\n' \
+    >>"$restore_founder_relay_env"
+  {
+    printf 'DAYTONA_API_KEY=test-daytona-key-1234567890\n'
+    printf 'OPENCODE_API_KEY=test-restricted-opencode-key-12345678\n'
+  } >"$restore_specialist_provider_env"
 fi
 mkdir -p "$restore_brain"
 printf '# Isolated restore brain fixture\n' >"$restore_brain/README.md"
@@ -150,14 +231,29 @@ restore_brain_gid=$(stat -c '%g' "$restore_brain" 2>/dev/null || stat -f '%g' "$
   printf 'POSTGRES_ENV_FILE=%s\n' "$restore_postgres_env"
   printf 'PAPERCLIP_ENV_FILE=%s\n' "$restore_paperclip_env"
   printf 'HERMES_ENV_FILE=%s\n' "$restore_hermes_env"
+  printf 'FOUNDER_RELAY_ENV_FILE=%s\n' "$restore_founder_relay_env"
   printf 'HERMES_TELEGRAM_BOT_USERNAME=the_nixos_bot\n'
   printf 'HERMES_TELEGRAM_MODE_FILE=%s\n' "$restore_hermes_mode"
+  printf 'SPECIALIST_PROVIDER_ENV_FILE=%s\n' "$restore_specialist_provider_env"
+  printf 'NIX_CHIEF_AGENT_ID=%s\n' "${RESTORE_NIX_CHIEF_AGENT_ID:-11111111-1111-4111-8111-111111111111}"
+  printf 'NIX_APPROVED_PROJECT_ID=%s\n' "${RESTORE_NIX_APPROVED_PROJECT_ID:-22222222-2222-4222-8222-222222222222}"
+  printf 'NIX_PRODUCT_AGENT_ID=%s\n' "${RESTORE_NIX_PRODUCT_AGENT_ID:-33333333-3333-4333-8333-333333333333}"
+  printf 'NIX_GROWTH_AGENT_ID=%s\n' "${RESTORE_NIX_GROWTH_AGENT_ID:-44444444-4444-4444-8444-444444444444}"
+  printf 'NIX_OPERATIONS_AGENT_ID=%s\n' "${RESTORE_NIX_OPERATIONS_AGENT_ID:-55555555-5555-4555-8555-555555555555}"
+  printf 'NIX_SPECIALIST_AGENT_IDS=%s\n' "${RESTORE_NIX_SPECIALIST_AGENT_IDS:-33333333-3333-4333-8333-333333333333,44444444-4444-4444-8444-444444444444,55555555-5555-4555-8555-555555555555}"
+  printf 'NIX_SPECIALIST_ENVIRONMENT_ID=%s\n' "${RESTORE_NIX_SPECIALIST_ENVIRONMENT_ID:-66666666-6666-4666-8666-666666666666}"
   printf 'NIX_BRAIN_HOST_PATH=%s\n' "$restore_brain"
   printf 'NIX_BRAIN_GID=%s\n' "$restore_brain_gid"
   printf 'PAPERCLIP_AUTH_DISABLE_SIGN_UP=true\n'
   printf 'BACKUP_OUTPUT_DIR=%s\n' "$restore_tmp_dir/backups"
 } >"$restore_config"
-chmod 0600 "$restore_postgres_env" "$restore_paperclip_env" "$restore_hermes_env" "$restore_config"
+chmod 0600 \
+  "$restore_postgres_env" \
+  "$restore_paperclip_env" \
+  "$restore_hermes_env" \
+  "$restore_founder_relay_env" \
+  "$restore_specialist_provider_env" \
+  "$restore_config"
 printf 'HERMES_TELEGRAM_MODE=disabled\n' >"$restore_hermes_mode"
 chmod 0600 "$restore_hermes_mode"
 NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$restore_config" >/dev/null
@@ -241,6 +337,10 @@ fi
 
 "$repo_root/scripts/check-paperclip-chief-topology" "$restore_config" >/dev/null \
   || fail "restored Paperclip Chief topology is unsafe"
+if [[ "$restore_require_specialist_topology" == true ]]; then
+  "$repo_root/scripts/check-paperclip-specialist-topology" "$restore_config" >/dev/null \
+    || fail "restored Paperclip specialist topology is unsafe"
+fi
 
 "${compose_restore[@]}" exec -T postgres psql --username paperclip --dbname paperclip --tuples-only --no-align \
   --command "SELECT 'public_tables=' || count(*) FROM information_schema.tables WHERE table_schema = 'public'; SELECT 'companies=' || count(*) FROM companies; SELECT 'issues=' || count(*) FROM issues; SELECT 'documents=' || count(*) FROM documents;" \
@@ -255,6 +355,68 @@ docker run --rm --volume "$restore_tmp_dir:/work" "$archive_helper_image" sh -ec
 "${compose_restore[@]}" up -d --wait paperclip
 health_json=$("${compose_restore[@]}" exec -T paperclip curl -fsS http://127.0.0.1:3100/api/health)
 grep -q '"status":"ok"' <<<"$health_json" || fail "restored Paperclip health did not report ok"
+
+if [[ "$restore_require_specialist_topology" == true ]]; then
+  specialist_environment_id=$(read_config_value NIX_SPECIALIST_ENVIRONMENT_ID)
+  chief_agent_id=$(read_config_value NIX_CHIEF_AGENT_ID)
+  company_id=$("${compose_restore[@]}" exec -T postgres psql \
+    --username paperclip --dbname paperclip --tuples-only --no-align \
+    --command "SELECT company_id FROM agents WHERE id = '$chief_agent_id' LIMIT 1;" | tr -d '[:space:]')
+  [[ "$company_id" =~ ^[0-9a-fA-F-]{36}$ ]] \
+    || fail "could not resolve the restored specialist company"
+  plugins_json=$(restore_board_request GET "/api/plugins") \
+    || fail "could not read restored Paperclip plugins"
+  jq -e '
+    [.[] | select(.packageName == "@paperclipai/plugin-daytona" and .version == "0.1.7")]
+    | length == 1
+    and .[0].status == "ready"
+    and .[0].pluginKey == "paperclip.daytona-sandbox-provider"
+    and .[0].manifestJson.id == "paperclip.daytona-sandbox-provider"
+    and .[0].manifestJson.version == "0.1.7"
+    and (.[0].manifestJson.capabilities | index("environment.drivers.register") != null)
+  ' >/dev/null <<<"$plugins_json" || fail "restored exact Daytona plugin is not ready"
+  daytona_plugin_id=$(jq -er '.[] | select(.pluginKey == "paperclip.daytona-sandbox-provider") | .id' \
+    <<<"$plugins_json") || fail "restored Daytona plugin identifier is missing"
+  capabilities_json=$(restore_board_request GET "/api/companies/${company_id}/environments/capabilities") \
+    || fail "could not read restored environment capabilities"
+  jq -e --arg plugin_id "$daytona_plugin_id" '
+    .sandboxProviders.daytona.status == "supported"
+    and .sandboxProviders.daytona.source == "plugin"
+    and .sandboxProviders.daytona.pluginKey == "paperclip.daytona-sandbox-provider"
+    and .sandboxProviders.daytona.pluginId == $plugin_id
+    and .sandboxProviders.daytona.supportsSavedProbe == true
+    and .sandboxProviders.daytona.supportsUnsavedProbe == true
+    and .sandboxProviders.daytona.supportsRunExecution == true
+  ' >/dev/null <<<"$capabilities_json" || fail "restored Daytona plugin worker is not execution-ready"
+  environments_json=$(restore_board_request GET "/api/companies/${company_id}/environments") \
+    || fail "could not read the restored specialist environment through the supported API"
+  secret_ids=$(jq -er --arg id "$specialist_environment_id" '
+    (if type == "array" then . else (.environments // .items // .data // []) end) as $rows
+    | [($rows[] | select(.id == $id))] as $matches
+    | if ($matches | length) != 1 then error("specialist environment missing") else $matches[0] end
+    | if .driver != "sandbox" or .config.provider != "daytona"
+        or .config.image != "daytonaio/sandbox:0.8.0@sha256:eadf88e4391072b7ad4bed27d9cadfc9fe9d8ed375d9219d34c2ccb518f213e3"
+        or .config.target != "eu" or .config.cpu != 1 or .config.memory != 2 or .config.disk != 5
+        or .config.reuseLease != false or .config.autoDeleteInterval != 60
+        or .config.runnerLifecycleMode != "per_turn"
+      then error("specialist Daytona environment drifted") else . end
+    | [.config.apiKey, .envVars.OPENCODE_API_KEY.secretId]
+    | if length != 2 or any(. == null or . == "") or .[0] == .[1]
+      then error("specialist secret references invalid") else .[] end
+  ' <<<"$environments_json") || fail "restored specialist environment bindings are invalid"
+  secrets_json=$(restore_board_request GET "/api/companies/${company_id}/secrets") \
+    || fail "could not read restored specialist secret metadata"
+  while IFS= read -r secret_id; do
+    jq -e --arg id "$secret_id" '[.[] | select(.id == $id)] | length == 1' >/dev/null <<<"$secrets_json" \
+      || fail "restored specialist secret metadata is incomplete"
+  done <<<"$secret_ids"
+  # Expansion must occur in the restored container, not this operator shell.
+  # shellcheck disable=SC2016
+  "${compose_restore[@]}" exec -T paperclip sh -ec \
+    'test -z "${DAYTONA_API_KEY:-}" && test -z "${OPENCODE_API_KEY:-}"' \
+    || fail "specialist provider credentials leaked into the Paperclip host environment"
+  unset capabilities_json daytona_plugin_id environments_json plugins_json secrets_json secret_ids cookie_header
+fi
 
 "${compose_restore[@]}" up -d --wait hermes
 api_key=$(grep -E '^API_SERVER_KEY=' "$restore_hermes_env" | tail -n 1 | cut -d= -f2-)

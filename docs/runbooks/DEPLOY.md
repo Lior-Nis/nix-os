@@ -1,6 +1,6 @@
 # Nix deployment runbook
 
-Slice 0 production runs Paperclip and PostgreSQL with tailnet-only ingress on one Hostinger VPS. The reviewed Slice 1 extension adds exactly one internal Hermes service. Commands run from a clean clone at a reviewed commit. Tailscale is a host prerequisite, not a Compose service.
+The accepted foundation runs Paperclip, PostgreSQL, and exactly one internal Hermes service with tailnet-only ingress on one Hostinger VPS. The Slice 3 extension adds task-scoped workers in fresh credential-minimal Daytona sandboxes while Chief remains the only persistent Telegram employee; it adds no internal executor service or host listener. Commands run from a clean clone at a reviewed commit. Tailscale is a host prerequisite, not a Compose service.
 
 ## Supported VPS baseline
 
@@ -17,7 +17,7 @@ Run the read-only check:
 - Public Internet: emergency SSH only for Nix; no Paperclip, PostgreSQL, or Nix listener is public. Independently owned cohosted services may have their own exposure policy.
 - Tailnet: ordinary SSH to `nix-os` and Paperclip HTTPS through Tailscale Serve.
 - Host loopback: Paperclip at `127.0.0.1:${PAPERCLIP_HOST_PORT:-3100}`.
-- Compose internal networks: PostgreSQL alone with Paperclip on `data`; Paperclip and Hermes alone on `agent`.
+- Compose internal networks: PostgreSQL alone with Paperclip on `data`; Paperclip and Hermes on internal `agent`; Hermes alone on `hermes_egress`; Paperclip uses `app` for required outbound access, including Daytona.
 - Never run `tailscale funnel` for Paperclip or the Nix-owned `:443` endpoint.
 
 Keep the current `root@<VPS_PUBLIC_IP>` SSH recovery path until the `nix` path is proven. Resolve the real address from Lior's local SSH configuration; do not publish it in repository documentation. Do not change sshd or firewall recovery policy during this amendment.
@@ -141,7 +141,18 @@ Keep root/public-IP recovery available. Review its tightening separately only af
 
 ## Google Drive setup (live interactive step)
 
-Run `rclone config` as the `nix` operator. Create remote `gdrive` using Lior's Google Drive account, an owned Google Desktop OAuth client ID, and the least-privilege `drive.file` scope; rclone's shared client ID is being retired during 2026. Complete browser OAuth interactively only when the encrypted upload/download test is ready. Create the backup root through this client and configure its `root_folder_id`, so the client does not need visibility into unrelated Drive content. The resulting rclone config is a runtime secret outside Git. Escrow an age-encrypted copy separately from this Drive because the refresh token and OAuth client identity are required to regain access after host loss.
+Run `rclone config` interactively as the `nix` operator using the explicit path `/home/nix/.config/rclone/rclone.conf`. Create remote `gdrive` using Lior's Google Drive account, an owned Google Desktop OAuth client ID, and the least-privilege `drive.file` scope; rclone's shared client ID is being retired during 2026. Complete browser OAuth interactively only when the encrypted upload/download test is ready. Create the backup root through this client and configure its `root_folder_id`, so the client does not need visibility into unrelated Drive content. After the upload/download test, harden both the directory and file to root ownership (`root:root`, modes `0700` and `0600`) and thereafter invoke every transfer as `sudo rclone --config /home/nix/.config/rclone/rclone.conf ...`; the ordinary operator must not retain a second readable copy:
+
+```sh
+rclone --config /home/nix/.config/rclone/rclone.conf config
+rclone --config /home/nix/.config/rclone/rclone.conf lsf gdrive: --max-depth 1 >/dev/null
+sudo chown root:root /home/nix/.config/rclone /home/nix/.config/rclone/rclone.conf
+sudo chmod 0700 /home/nix/.config/rclone
+sudo chmod 0600 /home/nix/.config/rclone/rclone.conf
+sudo rclone --config /home/nix/.config/rclone/rclone.conf lsf gdrive: --max-depth 1 >/dev/null
+```
+
+The resulting rclone config is a runtime secret outside Git. Escrow an age-encrypted copy separately from this Drive because the refresh token and OAuth client identity are required to regain access after host loss.
 
 Use only:
 
@@ -398,3 +409,88 @@ Other outcomes must describe the actually observed result; never label an ambigu
 Create the temporary Board session only through Paperclip's official CLI/browser approval flow. Put its data directory in a root-owned mode-`0700` temporary directory and require the credential file to be mode `0600`; do not place its bearer token in command arguments, environment variables, logs, or documentation. Read the token only inside the invoking process. After use, revoke it server-side, prove the captured old token receives HTTP 401, run the supported logout, and verify the credential store contains zero entries.
 
 After Paperclip accepts the reconciliation, verify that it—not an operator script—creates the successor. Confirm the predecessor remains failed and auditable, the successor links through `retryOfRunId`, the issue and session context match, and only one final result/comment exists. A provider-authentication failure before model or tool execution is a separate attributable failed run and requires its own evidence-backed recovery. Finally capture a new consecutive encrypted configuration/state backup pair.
+
+## Slice 3 deployment: task-scoped specialists
+
+Use this section only from a reviewed, hosted-CI-green, merged Slice 3 commit. It installs the exact first-party Daytona sandbox plugin and adds three Paperclip worker records; it adds no Compose executor, Telegram receiver, public route, persistent specialist profile, Engineering Manager, or n8n service. Do not mark Slice 3 accepted until the live decision/resume, reboot, and downloaded Google Drive recovery gates pass.
+
+### 1. Prepare non-secret identities and external secrets
+
+Keep the accepted Chief and approved-project records. Set their exact UUIDs in the production deployment file before starting the Slice 3 services:
+
+```text
+NIX_CHIEF_AGENT_ID=<accepted Chief UUID>
+NIX_APPROVED_PROJECT_ID=<already-approved Nix Business OS V0 project UUID>
+```
+
+Copy the remaining Slice 3 variable names and external paths from `.env.example`. For the first activation only, leave `NIX_PRODUCT_AGENT_ID`, `NIX_GROWTH_AGENT_ID`, `NIX_OPERATIONS_AGENT_ID`, `NIX_SPECIALIST_AGENT_IDS`, and `NIX_SPECIALIST_ENVIRONMENT_ID` empty during the safe pre-bootstrap phase. A nonempty placeholder or partial set is invalid. No specialist exists or is remotely invokable while the allowlist is empty. On a recovery rerun, preserve the complete values previously published by bootstrap: recovery accepts only a complete, internally consistent set whose marked Paperclip environment/agents match exactly and whose live allowlist is either still empty or already exact. It creates no replacement identities and completes the force-recreate. Do not create or approve a new top-level project.
+
+Create the founder-relay file and one root-owned provider-import file locally on the VPS:
+
+```sh
+sudo -E ./scripts/init-founder-relay-secret "$PWD/.env"
+sudo install -m 0600 -o root -g root /dev/null /etc/nix-os/specialist-provider.env
+sudoedit /etc/nix-os/specialist-provider.env
+```
+
+Enter exactly `DAYTONA_API_KEY=<Daytona API key>` and `OPENCODE_API_KEY=<restricted-service-key>`, one per line. Use an OpenCode key limited to model requests; do not place Chief, Paperclip Board, Telegram, GitHub, Todoist, or brain credentials in this file. Never pass either value in a command argument, inherited host environment, issue, PR, or chat. The bootstrap imports/rotates both values into Paperclip's encrypted company secret store; the host file remains only for encrypted configuration backup and deliberate rotation.
+
+Validate the complete external contract without printing a credential:
+
+```sh
+sudo -E ./scripts/check-config "$PWD/.env"
+sudo -E ./scripts/check-paperclip-chief-topology "$PWD/.env"
+```
+
+`check-config` proves the exact two provider bindings, file permissions, and founder identity/secret separation. It must pass before any Compose change.
+
+### 2. Activate the pinned Paperclip boundary
+
+Recreate Paperclip from the merged commit. Its entrypoint verifies exact pinned source/output hashes and builds or verifies the matching OpenCode provider pack in its separate cache volume:
+
+```sh
+sudo -E docker compose --env-file "$PWD/.env" up -d --no-deps --wait --force-recreate paperclip
+```
+
+An unknown Paperclip source, partial patch, stale matching marker, or changed provider artifact must leave Paperclip unhealthy. Do not bypass the patch verifier or edit the provider pack. The provider-import file is not mounted or injected into Paperclip, and no host port, public WebSocket, Tailscale handler, or Funnel route is added for Daytona.
+
+### 3. Converge the Paperclip environment and workers
+
+Run the reviewed one-shot bootstrap with the already-accepted company UUID:
+
+```sh
+sudo -E ./scripts/bootstrap-paperclip-specialists <company-id> --config "$PWD/.env"
+```
+
+The helper prints one ephemeral Paperclip CLI-approval URL. Open it as Lior, verify that it requests the instance-admin `converge Nix task-scoped specialists` Board action, and approve it. The helper requires `cli-auth/me.isInstanceAdmin=true`, verifies the pinned Lior owner/admin identity, and revokes the temporary Board credential on success or failure. On first activation, before requesting approval it requires all five specialist/environment ID fields to be empty, verifies the exact in-container runtime patch, and proves the running container has the empty fail-closed specialist floor. A recovery rerun instead requires the complete previously published identity set described above. It creates workers only under that restrictive floor, writes the final IDs atomically, then force-recreates Paperclip and Hermes with the exact allowlist.
+
+Within that approval, the helper enables Paperclip environments/native runner; installs and verifies exactly `@paperclipai/plugin-daytona@2026.916.1`; requires the live company capabilities route to expose the running Daytona provider for saved probes and run execution; imports or rotates exactly two Paperclip-managed encrypted secrets with non-secret fingerprints; and creates then probes one strict `sandbox/daytona` environment once. The environment pins the reviewed image digest, EU target, 1 CPU, 2 GiB RAM, 5 GiB disk, no lease reuse, `per_turn`, and 60-minute auto-delete. The probe's released lease is durable recovery evidence: if the process crashes after a clean probe but before publishing IDs, a rerun reuses that exact completed receipt instead of creating a second sandbox. Any active, failed, ambiguous, or unexpected lease stops recovery for operator reconciliation. Only after the probe succeeds does the helper create exactly Product, Growth, and Operations. They report to Chief, use `paperclip_runner`, `opencode/gpt-5.6-luna`, disabled scheduled heartbeat, `maxConcurrentRuns: 1`, zero monthly budget, and no API keys. They receive only the server-scoped Paperclip PRP catalog; OpenCode shell/file tools are denied. It writes only their non-secret agent/environment UUIDs back to `.env`, recreates the consumers, then rechecks live plugin-worker capabilities without creating a second paid sandbox. A drifted plugin, environment, secret binding, or worker is detected by bootstrap and the final topology gate and fails closed rather than being silently repaired.
+
+The helper already recreated Paperclip and Hermes with the final allowlist. Run every boundary/topology gate:
+
+```sh
+sudo -E ./scripts/check-config "$PWD/.env"
+sudo -E ./scripts/check-paperclip-chief-topology "$PWD/.env"
+sudo -E ./scripts/check-paperclip-specialist-topology "$PWD/.env"
+sudo -E ./scripts/configure-hermes verify "$PWD/.env"
+sudo -E docker compose --env-file "$PWD/.env" ps
+sudo ss -lntup
+```
+
+The specialist topology gate must prove the exact three workers, Chief manager, approved project boundary, low-trust permissions, specialist-only assignment set, exact Daytona plugin/environment/secret metadata and fingerprints, no worker API keys, and no Engineering Manager. The Hermes verifier must still prove the accepted Chief boundary plus the one fixed founder-decision tool; no shell/process/browser/raw-API escape path is permitted. No new host listener is expected, and the existing Tailscale Serve/Funnel state must remain unchanged.
+
+### 4. Live founder-decision and cross-role acceptance
+
+Use the existing private `@the_nixos_bot` direct chat; do not create a specialist bot or Telegram topic. Ask Chief to create approved-project Product work whose definition of done requires a visible Product-to-Growth child handoff and one genuine consequential choice. Inspect Paperclip and require all of the following before answering:
+
+1. Product runs as the configured task-scoped specialist and records attributable progress in its assigned issue.
+2. Growth starts only after Product creates a same-project child assigned to Growth. No chat-only handoff or top-level project/goal appears.
+3. The ambiguity becomes one pending `ask_user_questions` interaction with `human_only`, Lior's immutable Paperclip user ID, the source run, and the Product issue. No Todoist object exists.
+4. Chief delivers the question through its existing Telegram chat. Reply there as Lior with an explicit option; Chief must use the exact issue/interaction identifiers and stable `founder-decision:<interaction-id>` key.
+5. Paperclip records Lior as resolver and returns a verified founder-relay receipt whose originating and resumed agent IDs are identical. Only that originating specialist resumes; Chief and another specialist do not take ownership.
+6. Exact replay of the same answer/key is idempotent; a changed answer for that key is rejected. A non-Lior DM, group/forum context, API/CLI call, or Paperclip-triggered Chief run cannot invoke the relay.
+7. Product and Growth finish with attributable evidence/status, and a fresh Operations issue also completes through a new bounded sandbox with no context from the prior tasks.
+
+Then restart the stack and reboot the VPS. Re-run both topology gates, `configure-hermes verify`, service health, provider inference, Telegram authorization, Paperclip issue/receipt readback, and the Tailscale route-preservation check. Chief remains the only persistent/human-facing employee.
+
+Finally create a consecutive encrypted configuration/state pair, upload it, download distinct copies from Google Drive, and run the isolated proof in `RESTORE.md`. The restored stack must pass both topology gates before application startup, recover the exact plugin/environment/secret metadata, and prove the live plugin worker through the supported capabilities route without exposing provider values. Record only non-secret IDs, timestamps, Git SHA, relationships, and ciphertext checksums in the Slice 3 acceptance record.

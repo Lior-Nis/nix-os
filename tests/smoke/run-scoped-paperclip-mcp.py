@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import errno
+import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
@@ -24,6 +26,9 @@ RUN_TWO = "22222222-2222-4222-8222-222222222222"
 ISSUE_ONE = "33333333-3333-4333-8333-333333333333"
 PARENT_ONE = "44444444-4444-4444-8444-444444444444"
 PROJECT_ONE = "55555555-5555-4555-8555-555555555555"
+INTERACTION_ONE = "66666666-6666-4666-8666-666666666666"
+SPECIALIST_ONE = "77777777-7777-4777-8777-777777777777"
+CHIEF_ONE = "88888888-8888-4888-8888-888888888888"
 
 
 FAKE_UPSTREAM = r'''#!/usr/bin/env python3
@@ -95,6 +100,7 @@ for line in sys.stdin:
                 "argv":sys.argv[1:],
                 "meta":params.get("_meta"),
                 "runId":os.environ.get("PAPERCLIP_RUN_ID"),
+                "relaySecretPresent":bool(os.environ.get("NIX_FOUNDER_RELAY_SECRET")),
             }, separators=(",", ":"))}]}
     else:
         result = {"echo":method,"runId":os.environ.get("PAPERCLIP_RUN_ID")}
@@ -137,6 +143,149 @@ def group_gone(process_group: int) -> bool:
     return False
 
 
+class FakeRelayResponse:
+    def __init__(self, payload: dict) -> None:
+        self.payload = json.dumps(payload, separators=(",", ":")).encode()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def read(self, limit: int) -> bytes:
+        assert len(self.payload) < limit
+        return self.payload
+
+
+def test_founder_relay(production: dict) -> None:
+    context = {
+        "platform": "telegram",
+        "chat_type": "dm",
+        "chat_id": "123456789",
+        "user_id": "123456789",
+        "message_id": "42",
+    }
+    arguments = {
+        "issueId": ISSUE_ONE,
+        "interactionId": INTERACTION_ONE,
+        "idempotencyKey": f"founder-decision:{INTERACTION_ONE}",
+        "answers": [{
+            "questionId": "choice",
+            "optionIds": ["alpha"],
+            "otherText": "מאושר ✅",
+        }],
+    }
+    relay_secret = "r" * 48
+    observed: list[object] = []
+    relay_origin = [SPECIALIST_ONE]
+
+    def fake_urlopen(request, timeout):
+        observed.append(request)
+        assert timeout == production["FOUNDER_RELAY_TIMEOUT_SECONDS"]
+        assert request.full_url == (
+            f"http://paperclip:3100/api/issues/{ISSUE_ONE}/interactions/"
+            f"{INTERACTION_ONE}/respond"
+        )
+        body = bytes(request.data)
+        assert body == json.dumps(
+            {"answers": arguments["answers"]},
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode()
+        headers = {key.lower(): value for key, value in request.header_items()}
+        timestamp = headers["x-nix-founder-relay-timestamp"]
+        canonical = "\n".join((
+            "v1", timestamp, "POST",
+            f"/api/issues/{ISSUE_ONE}/interactions/{INTERACTION_ONE}/respond",
+            hashlib.sha256(body).hexdigest(), "telegram", "dm",
+            "123456789", "123456789", "42", arguments["idempotencyKey"],
+        )).encode()
+        expected = hmac.new(relay_secret.encode(), canonical, hashlib.sha256).hexdigest()
+        assert headers["x-nix-founder-relay-signature"] == f"v1={expected}"
+        assert headers["authorization"] == f"Bearer {SECRET}"
+        assert relay_secret not in json.dumps(headers)
+        return FakeRelayResponse({
+            "id": INTERACTION_ONE,
+            "issueId": ISSUE_ONE,
+            "kind": "ask_user_questions",
+            "status": "answered",
+            "requestedResolverPolicy": "human_only",
+            "effectiveResolverPolicy": "human_only",
+            "addresseeUserId": "lior-user",
+            "nixFounderRelay": {
+                "version": 1,
+                "verified": True,
+                "interactionId": INTERACTION_ONE,
+                "issueId": ISSUE_ONE,
+                "resolverUserId": "lior-user",
+                "sourceMessageId": "42",
+                "idempotencyKey": arguments["idempotencyKey"],
+                "originAgentId": relay_origin[0],
+                "resumedAgentId": relay_origin[0],
+                "replayed": len(observed) > 1,
+            },
+        })
+
+    saved_open = production["_founder_relay_call"].__globals__["_open_founder_relay"]
+    saved_environment = os.environ.copy()
+    production["_founder_relay_call"].__globals__["_open_founder_relay"] = fake_urlopen
+    os.environ.update({
+        "NIX_FOUNDER_RELAY_SECRET": relay_secret,
+        "PAPERCLIP_API_KEY": SECRET,
+        "PAPERCLIP_API_URL": "http://paperclip:3100",
+        "PAPERCLIP_AGENT_ID": CHIEF_ONE,
+        "PAPERCLIP_LIOR_USER_ID": "lior-user",
+        "NIX_PAPERCLIP_SPECIALIST_AGENT_IDS": SPECIALIST_ONE,
+        "TELEGRAM_ALLOWED_USERS": "123456789",
+        "TELEGRAM_HOME_CHANNEL": "123456789",
+    })
+    try:
+        trusted_request = {
+            "params": {
+                "arguments": arguments,
+                "_meta": {
+                    "com.nix/hermes-platform": "telegram",
+                    "com.nix/hermes-chat-type": "dm",
+                    "com.nix/hermes-chat-id": "123456789",
+                    "com.nix/hermes-user-id": "123456789",
+                    "com.nix/hermes-message-id": "42",
+                },
+            },
+        }
+        assert production["_founder_context"](trusted_request) == context
+        assert production["_founder_arguments"](trusted_request) == arguments
+        wrong_chat = json.loads(json.dumps(trusted_request))
+        wrong_chat["params"]["_meta"]["com.nix/hermes-chat-id"] = "987654321"
+        assert production["_founder_context"](wrong_chat) is None
+        run_lane = json.loads(json.dumps(trusted_request))
+        run_lane["params"]["_meta"]["com.paperclip/run-id"] = RUN_ONE
+        assert production["_founder_context"](run_lane) is None
+        first = tool_payload(production["_founder_relay_call"](80, arguments, context))
+        assert first == {
+            "recorded": True,
+            "issueId": ISSUE_ONE,
+            "interactionId": INTERACTION_ONE,
+            "status": "answered",
+            "idempotencyKey": arguments["idempotencyKey"],
+        }
+        replay = tool_payload(production["_founder_relay_call"](81, arguments, context))
+        assert replay == first
+        relay_origin[0] = CHIEF_ONE
+        chief_origin = tool_payload(
+            production["_founder_relay_call"](82, arguments, context)
+        )
+        assert chief_origin == first
+        assert len(observed) == 3
+        assert SECRET not in json.dumps(first)
+        assert relay_secret not in json.dumps(first)
+    finally:
+        production["_founder_relay_call"].__globals__["_open_founder_relay"] = saved_open
+        os.environ.clear()
+        os.environ.update(saved_environment)
+
+
 def main() -> None:
     production = runpy.run_path(str(WRAPPER), run_name="nix_wrapper_contract")
     persistent_command = production["PERSISTENT_UPSTREAM_COMMAND"]
@@ -147,6 +296,7 @@ def main() -> None:
     assert scoped_command[-1] == PACKAGE
     assert scoped_command.count("--offline") == 1
     assert "--min-release-age=0" not in scoped_command
+    test_founder_relay(production)
 
     successful_interaction = {
         "result": {"content": [{"type": "text", "text": "interaction"}]}
@@ -193,6 +343,7 @@ def main() -> None:
         environment = os.environ | {
             "PAPERCLIP_API_KEY": SECRET,
             "PAPERCLIP_LIOR_USER_ID": "lior-user",
+            "NIX_FOUNDER_RELAY_SECRET": "s" * 48,
             "PAPERCLIP_RUN_ID": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
             "NIX_TEST_SCOPED_DESCENDANT_READY": str(root / "scoped-descendant-ready"),
             "NIX_TEST_SCOPED_DESCENDANT_TERMINATED": str(root / "scoped-descendant-terminated"),
@@ -225,10 +376,50 @@ def main() -> None:
             assert initialized["result"]["serverInfo"]["name"] == "fake"
             listing = request(process, 2, "tools/list", {})
             tools = {item["name"]: item for item in listing["result"]["tools"]}
+            assert "nixResolveFounderDecision" in tools
+            assert tools["nixResolveFounderDecision"]["inputSchema"]["required"] == [
+                "issueId", "interactionId", "idempotencyKey", "answers"
+            ]
             assert tools["paperclipCheckoutIssue"]["inputSchema"]["required"] == ["issueId"]
             assert tools["paperclipUpdateIssue"]["inputSchema"]["required"] == ["issueId"]
             assert tools["paperclipAddComment"]["inputSchema"]["required"] == ["issueId", "body"]
             assert tools["paperclipAskUserQuestions"]["inputSchema"]["required"] == ["issueId", "payload"]
+
+            # API/CLI/Paperclip-run lanes cannot invoke the founder relay.
+            for founder_params in (
+                {
+                    "name": "nixResolveFounderDecision",
+                    "arguments": {
+                        "issueId": ISSUE_ONE,
+                        "interactionId": INTERACTION_ONE,
+                        "idempotencyKey": f"founder-decision:{INTERACTION_ONE}",
+                        "answers": [{"questionId": "choice", "optionIds": ["alpha"]}],
+                    },
+                },
+                {
+                    "name": "nixResolveFounderDecision",
+                    "arguments": {
+                        "issueId": ISSUE_ONE,
+                        "interactionId": INTERACTION_ONE,
+                        "idempotencyKey": f"founder-decision:{INTERACTION_ONE}",
+                        "answers": [{"questionId": "choice", "optionIds": ["alpha"]}],
+                    },
+                    "_meta": {
+                        "com.nix/hermes-platform": "telegram",
+                        "com.nix/hermes-chat-type": "dm",
+                        "com.nix/hermes-chat-id": "123456789",
+                        "com.nix/hermes-user-id": "123456789",
+                        "com.nix/hermes-message-id": "42",
+                        "com.paperclip/run-id": RUN_ONE,
+                    },
+                },
+            ):
+                denied = request(process, 79, "tools/call", founder_params)
+                assert denied["error"] == {
+                    "code": -32602,
+                    "message": "Trusted Lior Telegram DM context is required",
+                }
+                assert SECRET not in json.dumps(denied)
 
             # Missing reserved metadata keeps the official no-run behavior.
             missing = tool_payload(request(
@@ -240,6 +431,7 @@ def main() -> None:
                 },
             ))
             assert missing["runId"] is None
+            assert missing["relaySecretPresent"] is False
             assert missing["argv"] == ["persistent"]
             assert missing["meta"] == {"unrelated": "kept"}
 

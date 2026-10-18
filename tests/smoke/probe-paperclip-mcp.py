@@ -69,6 +69,7 @@ required = {
     "paperclipUpdateIssue",
     "paperclipAddComment",
     "paperclipAskUserQuestions",
+    "nixResolveFounderDecision",
 }
 missing = sorted(required - names)
 if missing:

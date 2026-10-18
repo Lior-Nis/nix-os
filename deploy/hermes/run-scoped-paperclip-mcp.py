@@ -7,11 +7,15 @@ mutations are routed through a short-lived, offline official MCP process
 carrying that ID. Checkout and user-question interactions require that trusted
 context; issue creation intentionally retains official no-run behavior for
 Telegram commitments. The official schemas remain unchanged.
+One additional fixed founder-decision tool is appended locally; it has no
+generic API, credential, or caller-selected routing surface.
 """
 
 from __future__ import annotations
 
 import copy
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -22,6 +26,9 @@ import sys
 import time
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from paperclip_question_delivery import (
@@ -53,9 +60,62 @@ MUTATION_TOOLS = {
 }
 RUN_ID_META_KEY = "com.paperclip/run-id"
 INTERNAL_API_TOOL = "paperclipApiRequest"
+FOUNDER_DECISION_TOOL = "nixResolveFounderDecision"
+FOUNDER_CONTEXT_META_KEYS = {
+    "platform": "com.nix/hermes-platform",
+    "chat_type": "com.nix/hermes-chat-type",
+    "chat_id": "com.nix/hermes-chat-id",
+    "user_id": "com.nix/hermes-user-id",
+    "message_id": "com.nix/hermes-message-id",
+}
+RESERVED_META_KEYS = {RUN_ID_META_KEY, *FOUNDER_CONTEXT_META_KEYS.values()}
+FOUNDER_DECISION_SCHEMA = {
+    "name": FOUNDER_DECISION_TOOL,
+    "description": (
+        "Record Lior's explicit answer to one pending founder decision and resume "
+        "only its server-verified originating employee. Available only in Lior's "
+        "configured Telegram direct-message turn."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "issueId": {"type": "string", "format": "uuid"},
+            "interactionId": {"type": "string", "format": "uuid"},
+            "idempotencyKey": {
+                "type": "string",
+                "minLength": 8,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9._:-]+$",
+            },
+            "answers": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 20,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "questionId": {"type": "string", "minLength": 1, "maxLength": 160},
+                        "optionIds": {
+                            "type": "array",
+                            "maxItems": 129,
+                            "items": {"type": "string", "minLength": 1, "maxLength": 160},
+                        },
+                        "otherText": {"type": ["string", "null"], "maxLength": 100000},
+                    },
+                    "required": ["questionId", "optionIds"],
+                },
+            },
+        },
+        "required": ["issueId", "interactionId", "idempotencyKey", "answers"],
+    },
+}
 UUID_PATTERN = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 )
+IDEMPOTENCY_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{8,200}$")
+POSITIVE_INTEGER = re.compile(r"^[1-9][0-9]*$")
 
 # Hermes' outer MCP call timeout remains the final guard. These shorter bounds
 # ensure a wedged compatibility child reports a useful result first.
@@ -63,6 +123,8 @@ PERSISTENT_RPC_TIMEOUT_SECONDS = 60.0
 PERSISTENT_STARTUP_TIMEOUT_SECONDS = 15.0
 SCOPED_STARTUP_TIMEOUT_SECONDS = 15.0
 SCOPED_RPC_TIMEOUT_SECONDS = 30.0
+FOUNDER_RELAY_TIMEOUT_SECONDS = 20.0
+FOUNDER_RELAY_MAX_RESPONSE_BYTES = 262_144
 WRITE_TIMEOUT_SECONDS = 5.0
 GRACEFUL_SHUTDOWN_SECONDS = 2.0
 KILL_WAIT_SECONDS = 2.0
@@ -80,6 +142,9 @@ class McpProcess:
     def __init__(self, command: tuple[str, ...], *, run_id: str | None = None) -> None:
         environment = os.environ.copy()
         environment.pop("PAPERCLIP_RUN_ID", None)
+        # The official MCP child never participates in founder attestation.
+        # Keep the relay secret in this fixed wrapper process only.
+        environment.pop("NIX_FOUNDER_RELAY_SECRET", None)
         if run_id is not None:
             environment["PAPERCLIP_RUN_ID"] = run_id
         try:
@@ -281,14 +346,30 @@ def _rpc_failure(request_id: Any) -> dict[str, Any]:
     }
 
 
+def _founder_denied(request_id: Any, *, invalid_arguments: bool = False) -> dict[str, Any]:
+    return {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "error": {
+            "code": -32602,
+            "message": (
+                "Founder decision arguments are invalid"
+                if invalid_arguments
+                else "Trusted Lior Telegram DM context is required"
+            ),
+        },
+    }
+
+
 def _strip_reserved_metadata(request: dict[str, Any]) -> dict[str, Any]:
     params = request.get("params")
     metadata = params.get("_meta") if isinstance(params, dict) else None
-    if not isinstance(metadata, dict) or RUN_ID_META_KEY not in metadata:
+    if not isinstance(metadata, dict) or not RESERVED_META_KEYS.intersection(metadata):
         return request
     forwarded = copy.deepcopy(request)
     forwarded_metadata = forwarded["params"]["_meta"]
-    forwarded_metadata.pop(RUN_ID_META_KEY, None)
+    for key in RESERVED_META_KEYS:
+        forwarded_metadata.pop(key, None)
     if not forwarded_metadata:
         forwarded["params"].pop("_meta", None)
     return forwarded
@@ -320,6 +401,309 @@ def _valid_scoped_child_issue(request: dict[str, Any]) -> bool:
         and bool(idempotency_key.strip())
         and len(idempotency_key.strip()) <= 255
     )
+
+
+def _founder_context(request: dict[str, Any]) -> dict[str, str] | None:
+    params = request.get("params")
+    metadata = params.get("_meta") if isinstance(params, dict) else None
+    if not isinstance(metadata, dict) or RUN_ID_META_KEY in metadata:
+        return None
+    context = {
+        name: metadata.get(key) for name, key in FOUNDER_CONTEXT_META_KEYS.items()
+    }
+    configured_user = os.environ.get("TELEGRAM_ALLOWED_USERS", "")
+    configured_chat = os.environ.get("TELEGRAM_HOME_CHANNEL", "")
+    if (
+        context["platform"] != "telegram"
+        or context["chat_type"] != "dm"
+        or context["user_id"] != configured_user
+        or context["chat_id"] != configured_chat
+        or configured_user != configured_chat
+        or POSITIVE_INTEGER.fullmatch(configured_user) is None
+        or not isinstance(context["message_id"], str)
+        or POSITIVE_INTEGER.fullmatch(context["message_id"]) is None
+    ):
+        return None
+    return {name: str(value) for name, value in context.items()}
+
+
+def _founder_arguments(request: dict[str, Any]) -> dict[str, Any] | None:
+    params = request.get("params")
+    arguments = params.get("arguments") if isinstance(params, dict) else None
+    if not isinstance(arguments, dict) or set(arguments) != {
+        "issueId", "interactionId", "idempotencyKey", "answers"
+    }:
+        return None
+    issue_id = arguments.get("issueId")
+    interaction_id = arguments.get("interactionId")
+    idempotency_key = arguments.get("idempotencyKey")
+    answers = arguments.get("answers")
+    if (
+        not isinstance(issue_id, str)
+        or UUID_PATTERN.fullmatch(issue_id) is None
+        or not isinstance(interaction_id, str)
+        or UUID_PATTERN.fullmatch(interaction_id) is None
+        or not isinstance(idempotency_key, str)
+        or IDEMPOTENCY_PATTERN.fullmatch(idempotency_key) is None
+        or not isinstance(answers, list)
+        or not 1 <= len(answers) <= 20
+    ):
+        return None
+    normalized: list[dict[str, Any]] = []
+    question_ids: set[str] = set()
+    for answer in answers:
+        if not isinstance(answer, dict) or not {"questionId", "optionIds"} <= set(answer):
+            return None
+        if not set(answer) <= {"questionId", "optionIds", "otherText"}:
+            return None
+        question_id = answer.get("questionId")
+        option_ids = answer.get("optionIds")
+        other_text = answer.get("otherText")
+        if (
+            not isinstance(question_id, str)
+            or question_id != question_id.strip()
+            or not 1 <= len(question_id) <= 160
+            or question_id in question_ids
+            or not isinstance(option_ids, list)
+            or len(option_ids) > 129
+            or any(
+                not isinstance(option_id, str)
+                or option_id != option_id.strip()
+                or not 1 <= len(option_id) <= 160
+                for option_id in option_ids
+            )
+            or len(set(option_ids)) != len(option_ids)
+            or (
+                "otherText" in answer
+                and other_text is not None
+                and (
+                    not isinstance(other_text, str)
+                    or other_text != other_text.strip()
+                    or len(other_text) > 100000
+                )
+            )
+        ):
+            return None
+        question_ids.add(question_id)
+        normalized_answer: dict[str, Any] = {
+            "questionId": question_id,
+            "optionIds": list(option_ids),
+        }
+        if "otherText" in answer:
+            normalized_answer["otherText"] = other_text
+        normalized.append(normalized_answer)
+    return {
+        "issueId": issue_id,
+        "interactionId": interaction_id,
+        "idempotencyKey": idempotency_key,
+        "answers": normalized,
+    }
+
+
+def _founder_result(
+    request_id: Any, payload: dict[str, Any], *, error: bool = False
+) -> dict[str, Any]:
+    return {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "result": {
+            "content": [{
+                "type": "text",
+                "text": json.dumps(payload, separators=(",", ":")),
+            }],
+            **({"isError": True} if error else {}),
+        },
+    }
+
+
+class _NoFounderRelayRedirects(HTTPRedirectHandler):
+    def redirect_request(self, *_args, **_kwargs):
+        return None
+
+
+def _open_founder_relay(request: Request, timeout: float):
+    # The target is an internal fixed Paperclip origin. Ignore ambient proxy
+    # configuration and refuse redirects so credentials/attestation cannot be
+    # forwarded to another host.
+    return build_opener(ProxyHandler({}), _NoFounderRelayRedirects()).open(
+        request, timeout=timeout
+    )
+
+
+def _founder_relay_call(
+    request_id: Any, arguments: dict[str, Any], context: dict[str, str]
+) -> dict[str, Any]:
+    secret = os.environ.get("NIX_FOUNDER_RELAY_SECRET", "")
+    api_key = os.environ.get("PAPERCLIP_API_KEY", "")
+    api_url = os.environ.get("PAPERCLIP_API_URL", "")
+    lior_user_id = os.environ.get("PAPERCLIP_LIOR_USER_ID", "")
+    specialist_values = os.environ.get("NIX_PAPERCLIP_SPECIALIST_AGENT_IDS", "").split(",")
+    specialist_ids = {value.strip() for value in specialist_values if value.strip()}
+    chief_agent_id = os.environ.get("PAPERCLIP_AGENT_ID", "").strip()
+    parsed = urlsplit(api_url)
+    if (
+        len(secret) < 32
+        or not api_key
+        or not lior_user_id
+        or not specialist_ids
+        or any(UUID_PATTERN.fullmatch(value) is None for value in specialist_ids)
+        or len(specialist_ids) != len([value for value in specialist_values if value.strip()])
+        or UUID_PATTERN.fullmatch(chief_agent_id) is None
+        or parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or parsed.path not in {"", "/"}
+    ):
+        return _founder_result(
+            request_id,
+            {"error": "founder_relay_unavailable", "message": "The founder decision relay is not safely configured."},
+            error=True,
+        )
+
+    issue_id = arguments["issueId"]
+    interaction_id = arguments["interactionId"]
+    idempotency_key = arguments["idempotencyKey"]
+    path = f"/api/issues/{issue_id}/interactions/{interaction_id}/respond"
+    body = json.dumps(
+        {"answers": arguments["answers"]},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    timestamp = str(int(time.time()))
+    canonical = "\n".join((
+        "v1",
+        timestamp,
+        "POST",
+        path,
+        hashlib.sha256(body).hexdigest(),
+        "telegram",
+        "dm",
+        context["user_id"],
+        context["chat_id"],
+        context["message_id"],
+        idempotency_key,
+    )).encode("utf-8")
+    signature = hmac.new(secret.encode("utf-8"), canonical, hashlib.sha256).hexdigest()
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "X-Nix-Founder-Relay-Version": "1",
+        "X-Nix-Founder-Relay-Timestamp": timestamp,
+        "X-Nix-Founder-Relay-Idempotency-Key": idempotency_key,
+        "X-Nix-Founder-Relay-Platform": "telegram",
+        "X-Nix-Founder-Relay-Chat-Type": "dm",
+        "X-Nix-Founder-Relay-User-Id": context["user_id"],
+        "X-Nix-Founder-Relay-Chat-Id": context["chat_id"],
+        "X-Nix-Founder-Relay-Message-Id": context["message_id"],
+        "X-Nix-Founder-Relay-Signature": f"v1={signature}",
+    }
+    try:
+        with _open_founder_relay(
+            Request(api_url.rstrip("/") + path, data=body, headers=headers, method="POST"),
+            FOUNDER_RELAY_TIMEOUT_SECONDS,
+        ) as response:
+            response_bytes = response.read(FOUNDER_RELAY_MAX_RESPONSE_BYTES + 1)
+            if len(response_bytes) > FOUNDER_RELAY_MAX_RESPONSE_BYTES:
+                raise ValueError("oversized relay response")
+            response_payload = json.loads(response_bytes)
+    except HTTPError as exc:
+        # A gateway/server failure can happen after commit. Preserve the same
+        # read-before-replay rule as a transport timeout. Other 4xx responses
+        # are conclusive policy/input rejection. Never echo the response body.
+        if exc.code >= 500 or exc.code == 408:
+            return _founder_result(
+                request_id,
+                {
+                    "error": "outcome_uncertain",
+                    "message": (
+                        "The relay may have recorded the decision. Read the interaction, then retry "
+                        "only with the exact same interactionId, answers, and idempotencyKey."
+                    ),
+                },
+                error=True,
+            )
+        return _founder_result(
+            request_id,
+            {"error": "founder_relay_rejected", "httpStatus": exc.code},
+            error=True,
+        )
+    except (OSError, TimeoutError, URLError):
+        return _founder_result(
+            request_id,
+            {
+                "error": "outcome_uncertain",
+                "message": (
+                    "The relay may have recorded the decision. Read the interaction, then retry "
+                    "only with the exact same interactionId, answers, and idempotencyKey."
+                ),
+            },
+            error=True,
+        )
+    except (UnicodeError, ValueError, json.JSONDecodeError):
+        return _founder_result(
+            request_id,
+            {"error": "invalid_founder_relay_response"},
+            error=True,
+        )
+
+    relay = response_payload.get("nixFounderRelay") if isinstance(response_payload, dict) else None
+    expected_relay = {
+        "version": 1,
+        "verified": True,
+        "interactionId": interaction_id,
+        "issueId": issue_id,
+        "resolverUserId": lior_user_id,
+        "sourceMessageId": context["message_id"],
+        "idempotencyKey": idempotency_key,
+    }
+    if (
+        not isinstance(response_payload, dict)
+        or response_payload.get("id") != interaction_id
+        or response_payload.get("issueId") != issue_id
+        or response_payload.get("kind") != "ask_user_questions"
+        or response_payload.get("status") != "answered"
+        or response_payload.get("requestedResolverPolicy") != "human_only"
+        or response_payload.get("effectiveResolverPolicy") != "human_only"
+        or response_payload.get("addresseeUserId") != lior_user_id
+        or not isinstance(relay, dict)
+        or set(relay) != {*expected_relay, "originAgentId", "resumedAgentId", "replayed"}
+        or any(relay.get(key) != value for key, value in expected_relay.items())
+        or not isinstance(relay.get("replayed"), bool)
+        or not isinstance(relay.get("originAgentId"), str)
+        or UUID_PATTERN.fullmatch(relay["originAgentId"]) is None
+        or relay.get("originAgentId") not in {*specialist_ids, chief_agent_id}
+        or relay.get("resumedAgentId") != relay.get("originAgentId")
+    ):
+        return _founder_result(
+            request_id,
+            {"error": "invalid_founder_relay_response"},
+            error=True,
+        )
+    return _founder_result(
+        request_id,
+        {
+            "recorded": True,
+            "issueId": issue_id,
+            "interactionId": interaction_id,
+            "status": "answered",
+            "idempotencyKey": idempotency_key,
+        },
+    )
+
+
+def _add_founder_tool(response: dict[str, Any]) -> None:
+    result = response.get("result")
+    tools = result.get("tools") if isinstance(result, dict) else None
+    if not isinstance(tools, list):
+        return
+    if any(isinstance(tool, dict) and tool.get("name") == FOUNDER_DECISION_TOOL for tool in tools):
+        raise UpstreamFailure
+    tools.append(copy.deepcopy(FOUNDER_DECISION_SCHEMA))
 
 
 def _mutation_call(
@@ -465,6 +849,21 @@ def serve() -> int:
                 if name == INTERNAL_API_TOOL:
                     _emit(_invalid_params(request.get("id")))
                     continue
+                if name == FOUNDER_DECISION_TOOL:
+                    founder_context = _founder_context(request)
+                    if founder_context is None:
+                        _emit(_founder_denied(request.get("id")))
+                        continue
+                    founder_arguments = _founder_arguments(request)
+                    if founder_arguments is None:
+                        _emit(_founder_denied(request.get("id"), invalid_arguments=True))
+                        continue
+                    _emit(
+                        _founder_relay_call(
+                            request.get("id"), founder_arguments, founder_context
+                        )
+                    )
+                    continue
                 persistent_mutation = name in MUTATION_TOOLS
                 has_reserved, run_id = _explicit_run_metadata(request)
                 if name in RUN_SCOPED_TOOLS:
@@ -552,6 +951,11 @@ def serve() -> int:
                 continue
             for message in preceding:
                 _emit(message)
+            if method == "tools/list":
+                try:
+                    _add_founder_tool(response)
+                except UpstreamFailure:
+                    return 1
             _emit(response)
             if method == "initialize" and "error" not in response:
                 persistent_ready = True

@@ -14,7 +14,10 @@ repo_root = pathlib.Path(sys.argv[2])
 config = json.loads(compose_path.read_text())
 services = config.get("services", {})
 
-require(set(services) == {"paperclip", "postgres", "hermes"}, "Slice 1 must contain only Paperclip, PostgreSQL, and Hermes")
+require(
+    set(services) == {"paperclip", "postgres", "hermes"},
+    "Compose must contain only the accepted control plane",
+)
 for name, service in services.items():
     image = service.get("image", "")
     require("@sha256:" in image, f"{name} image is not digest-pinned")
@@ -34,6 +37,9 @@ require(paperclip_port.get("host_ip") == "127.0.0.1", "Paperclip must bind only 
 paperclip_mounts = services["paperclip"].get("volumes", [])
 postgres_mounts = services["postgres"].get("volumes", [])
 require(any(mount.get("target") == "/paperclip" for mount in paperclip_mounts), "Paperclip state is not persistent")
+require(any(mount.get("target") == "/runner-cache" for mount in paperclip_mounts), "Paperclip runner cache is not persistent")
+require(any(mount.get("target") == "/opt/nix/paperclip-entrypoint.sh" and mount.get("read_only") for mount in paperclip_mounts), "Paperclip patch entrypoint is not read-only")
+require(any(mount.get("target") == "/opt/nix/patch-specialist-runtime.py" and mount.get("read_only") for mount in paperclip_mounts), "Paperclip runtime patch is not read-only")
 require(any(mount.get("target") == "/var/lib/postgresql/data" for mount in postgres_mounts), "PostgreSQL state is not persistent")
 hermes_mounts = services["hermes"].get("volumes", [])
 require(any(mount.get("target") == "/opt/data" for mount in hermes_mounts), "Hermes state is not persistent")
@@ -80,6 +86,8 @@ require(paperclip_env.get("PAPERCLIP_PUBLIC_URL") == "https://nix-os.test-tailne
 require(paperclip_env.get("PAPERCLIP_ALLOWED_HOSTNAMES") == "paperclip", "Paperclip must allow only its internal service hostname in addition to the configured public URL")
 require(paperclip_env.get("PAPERCLIP_MIGRATION_AUTO_APPLY") == "true", "migration policy must be explicit")
 require(paperclip_env.get("PAPERCLIP_ENABLE_COMPANY_DELETION") == "false", "company deletion must be disabled")
+require(paperclip_env.get("PAPERCLIP_RUNNER_REMOTE_BINARY_PATH") == "/app/packages/paperclip-runner/dist/bin/paperclip-runnerd", "native runner binary path is not pinned to the exact Paperclip image")
+require(paperclip_env.get("PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH") == "/runner-cache/nix-specialist-provider-pack", "native provider-pack path is not pinned")
 
 require(not (repo_root / "deploy/caddy").exists(), "Caddy runtime configuration must be removed")
 

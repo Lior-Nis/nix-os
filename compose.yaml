@@ -3,10 +3,12 @@ name: ${COMPOSE_PROJECT_NAME:-nix-os}
 services:
   paperclip:
     image: ghcr.io/paperclipai/paperclip:2026.916.1@sha256:a02ac35ac41df911af477422ea0e781cf41d2b2c600c66f0a5ac9d8c63f52c2c
+    entrypoint: ["/opt/nix/paperclip-entrypoint.sh"]
     restart: unless-stopped
     pids_limit: 2048
     env_file:
       - ${PAPERCLIP_ENV_FILE:?Set PAPERCLIP_ENV_FILE to an absolute secret-file path}
+      - ${FOUNDER_RELAY_ENV_FILE:?Set FOUNDER_RELAY_ENV_FILE to an absolute secret-file path}
     environment:
       HOST: 0.0.0.0
       PORT: "3100"
@@ -22,9 +24,18 @@ services:
       PAPERCLIP_SECRETS_STRICT_MODE: "true"
       PAPERCLIP_DB_BACKUP_ENABLED: "false"
       PAPERCLIP_MIGRATION_AUTO_APPLY: "true"
+      PAPERCLIP_RUNNER_REMOTE_BINARY_PATH: /app/packages/paperclip-runner/dist/bin/paperclip-runnerd
+      PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH: /runner-cache/nix-specialist-provider-pack
+      NIX_PAPERCLIP_SPECIALIST_AGENT_IDS: ${NIX_SPECIALIST_AGENT_IDS:-}
+      NIX_PAPERCLIP_FOUNDER_USER_ID: ${PAPERCLIP_LIOR_USER_ID:?Set PAPERCLIP_LIOR_USER_ID in the Compose environment file}
+      PAPERCLIP_LIOR_USER_ID: ${PAPERCLIP_LIOR_USER_ID:?Set PAPERCLIP_LIOR_USER_ID in the Compose environment file}
+      NIX_CHIEF_AGENT_ID: ${NIX_CHIEF_AGENT_ID:-}
       TRUST_PROXY: uniquelocal
     volumes:
       - paperclip_data:/paperclip
+      - paperclip_runner_cache:/runner-cache
+      - ./deploy/paperclip/entrypoint.sh:/opt/nix/paperclip-entrypoint.sh:ro
+      - ./deploy/paperclip/patch-specialist-runtime.py:/opt/nix/patch-specialist-runtime.py:ro
     ports:
       - name: paperclip-local
         target: 3100
@@ -57,6 +68,7 @@ services:
       - ${NIX_BRAIN_GID:?Set NIX_BRAIN_GID to the numeric group of NIX_BRAIN_HOST_PATH}
     env_file:
       - ${HERMES_ENV_FILE:?Set HERMES_ENV_FILE to an absolute secret-file path}
+      - ${FOUNDER_RELAY_ENV_FILE:?Set FOUNDER_RELAY_ENV_FILE to an absolute secret-file path}
     environment:
       HERMES_GATEWAY_BOOTSTRAP_STATE: running
       API_SERVER_ENABLED: "true"
@@ -64,6 +76,7 @@ services:
       API_SERVER_PORT: "8642"
       HERMES_WRITE_SAFE_ROOT: /opt/data/memories
       PAPERCLIP_LIOR_USER_ID: ${PAPERCLIP_LIOR_USER_ID:?Set PAPERCLIP_LIOR_USER_ID in the Compose environment file}
+      NIX_PAPERCLIP_SPECIALIST_AGENT_IDS: ${NIX_SPECIALIST_AGENT_IDS:-}
       WEBHOOK_ENABLED: "true"
       NIX_BRAIN_GID: ${NIX_BRAIN_GID:?Set NIX_BRAIN_GID to the numeric group of NIX_BRAIN_HOST_PATH}
     command: ["gateway", "run"]
@@ -128,6 +141,8 @@ networks:
 volumes:
   paperclip_data:
     name: ${COMPOSE_PROJECT_NAME:-nix-os}_paperclip_data
+  paperclip_runner_cache:
+    name: ${COMPOSE_PROJECT_NAME:-nix-os}_paperclip_runner_cache
   postgres_data:
     name: ${COMPOSE_PROJECT_NAME:-nix-os}_postgres_data
   hermes_data:

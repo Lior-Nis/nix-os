@@ -34,6 +34,28 @@ secret_value() {
   printf '%s' "$value"
 }
 
+secret_must_not_match_any() {
+  local label=$1
+  shift
+  if ! printf '%s\0' "$@" | python3 -c '
+import hmac
+import sys
+
+values = sys.stdin.buffer.read().split(b"\0")
+if values and values[-1] == b"":
+    values.pop()
+if len(values) < 2:
+    raise SystemExit(2)
+candidate, others = values[0], values[1:]
+collision = 0
+for other in others:
+    collision |= int(hmac.compare_digest(candidate, other))
+raise SystemExit(1 if collision else 0)
+'; then
+    fail "$label must be distinct from every control-plane and specialist credential"
+  fi
+}
+
 private_mode() {
   local secret_file=$1
   local mode
@@ -69,11 +91,20 @@ file_mode() {
   fi
 }
 
+file_link_count() {
+  if stat -c '%h' "$1" >/dev/null 2>&1; then
+    stat -c '%h' "$1"
+  else
+    stat -f '%l' "$1"
+  fi
+}
+
 command -v docker >/dev/null 2>&1 || fail "docker is required"
 docker compose version >/dev/null 2>&1 || fail "Docker Compose v2 is required"
+command -v python3 >/dev/null 2>&1 || fail "python3 is required"
 [[ -f "$config_file" ]] || fail "$config_file does not exist; copy .env.example and replace placeholders"
 
-if grep -Eq '^(POSTGRES_PASSWORD|PAPERCLIP_DB_PASSWORD|DATABASE_URL|BETTER_AUTH_SECRET|PAPERCLIP_TOOL_ACTION_SIGNING_SECRET|API_SERVER_KEY|HERMES_DECISION_WEBHOOK_SECRET|WEBHOOK_SECRET|TELEGRAM_BOT_TOKEN|PAPERCLIP_API_KEY|OPENCODE_GO_API_KEY|OPENCODE_ZEN_API_KEY)=' "$config_file"; then
+if grep -Eq '^(POSTGRES_PASSWORD|PAPERCLIP_DB_PASSWORD|DATABASE_URL|BETTER_AUTH_SECRET|PAPERCLIP_TOOL_ACTION_SIGNING_SECRET|API_SERVER_KEY|HERMES_DECISION_WEBHOOK_SECRET|WEBHOOK_SECRET|NIX_FOUNDER_RELAY_SECRET|NIX_LIOR_TELEGRAM_USER_ID|NIX_LIOR_TELEGRAM_CHAT_ID|TELEGRAM_BOT_TOKEN|PAPERCLIP_API_KEY|DAYTONA_API_KEY|OPENCODE_API_KEY|OPENCODE_GO_API_KEY|OPENCODE_ZEN_API_KEY)=' "$config_file"; then
   fail "$config_file contains a secret key; put secrets only in the external secret files"
 fi
 
@@ -84,17 +115,75 @@ host_port=$(require_config PAPERCLIP_HOST_PORT)
 postgres_env=$(require_config POSTGRES_ENV_FILE)
 paperclip_env=$(require_config PAPERCLIP_ENV_FILE)
 hermes_env=$(require_config HERMES_ENV_FILE)
+founder_relay_env=$(require_config FOUNDER_RELAY_ENV_FILE)
 hermes_telegram_bot_username=$(require_config HERMES_TELEGRAM_BOT_USERNAME)
 hermes_mode_file=$(require_config HERMES_TELEGRAM_MODE_FILE)
+specialist_provider_env=$(require_config SPECIALIST_PROVIDER_ENV_FILE)
 nix_brain_path=$(require_config NIX_BRAIN_HOST_PATH)
 nix_brain_gid=$(require_config NIX_BRAIN_GID)
 signup_disabled=$(require_config PAPERCLIP_AUTH_DISABLE_SIGN_UP)
+chief_agent_id=$(require_config NIX_CHIEF_AGENT_ID)
+approved_project_id=$(require_config NIX_APPROVED_PROJECT_ID)
+
+specialist_keys=(
+  NIX_PRODUCT_AGENT_ID
+  NIX_GROWTH_AGENT_ID
+  NIX_OPERATIONS_AGENT_ID
+  NIX_SPECIALIST_AGENT_IDS
+  NIX_SPECIALIST_ENVIRONMENT_ID
+)
+for specialist_key in "${specialist_keys[@]}"; do
+  grep -q "^${specialist_key}=" "$config_file" \
+    || fail "$specialist_key must be present (empty is allowed only before first specialist bootstrap)"
+done
+product_agent_id=$(read_config NIX_PRODUCT_AGENT_ID)
+growth_agent_id=$(read_config NIX_GROWTH_AGENT_ID)
+operations_agent_id=$(read_config NIX_OPERATIONS_AGENT_ID)
+specialist_agent_ids=$(read_config NIX_SPECIALIST_AGENT_IDS)
+specialist_environment_id=$(read_config NIX_SPECIALIST_ENVIRONMENT_ID)
 
 [[ "$project_name" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || fail "COMPOSE_PROJECT_NAME must match [a-z0-9][a-z0-9_-]*"
 [[ "$signup_disabled" == "true" || "$signup_disabled" == "false" ]] || fail "PAPERCLIP_AUTH_DISABLE_SIGN_UP must be true or false"
 [[ "$host_port" =~ ^[0-9]+$ ]] || fail "PAPERCLIP_HOST_PORT must be an integer"
 [[ "$lior_paperclip_user_id" =~ ^[A-Za-z0-9._:-]{3,200}$ ]] \
   || fail "PAPERCLIP_LIOR_USER_ID has an invalid shape"
+canonical_uuid='^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+[[ "$chief_agent_id" =~ $canonical_uuid ]] \
+  || fail "NIX_CHIEF_AGENT_ID must be a canonical lowercase UUID"
+[[ "$approved_project_id" =~ $canonical_uuid ]] \
+  || fail "NIX_APPROVED_PROJECT_ID must be a canonical lowercase UUID"
+
+specialist_present=0
+for specialist_value in \
+  "$product_agent_id" "$growth_agent_id" "$operations_agent_id" \
+  "$specialist_agent_ids" "$specialist_environment_id"; do
+  [[ -z "$specialist_value" ]] || ((specialist_present += 1))
+done
+if (( specialist_present != 0 && specialist_present != 5 )); then
+  fail "specialist IDs must be all empty before first bootstrap or all configured"
+fi
+if (( specialist_present == 5 )); then
+  for specialist_id in \
+    "$product_agent_id" "$growth_agent_id" "$operations_agent_id" "$specialist_environment_id"; do
+    [[ "$specialist_id" =~ $canonical_uuid ]] \
+      || fail "specialist agent and environment IDs must be canonical lowercase UUIDs"
+  done
+  [[ "$product_agent_id" != "$growth_agent_id" \
+    && "$product_agent_id" != "$operations_agent_id" \
+    && "$growth_agent_id" != "$operations_agent_id" ]] \
+    || fail "Product, Growth, and Operations agent IDs must be distinct"
+  [[ "$chief_agent_id" != "$product_agent_id" \
+    && "$chief_agent_id" != "$growth_agent_id" \
+    && "$chief_agent_id" != "$operations_agent_id" ]] \
+    || fail "the Chief must not appear in the specialist allowlist"
+  [[ "$specialist_environment_id" != "$chief_agent_id" \
+    && "$specialist_environment_id" != "$product_agent_id" \
+    && "$specialist_environment_id" != "$growth_agent_id" \
+    && "$specialist_environment_id" != "$operations_agent_id" ]] \
+    || fail "the specialist environment ID must be distinct from every agent ID"
+  [[ "$specialist_agent_ids" == "$product_agent_id,$growth_agent_id,$operations_agent_id" ]] \
+    || fail "NIX_SPECIALIST_AGENT_IDS must exactly list Product,Growth,Operations in order"
+fi
 [[ "$hermes_telegram_bot_username" =~ ^[A-Za-z0-9_]{5,32}$ ]] \
   || fail "HERMES_TELEGRAM_BOT_USERNAME must be a bare Telegram username"
 [[ $(printf '%s' "$hermes_telegram_bot_username" | tr '[:upper:]' '[:lower:]') == *bot ]] \
@@ -109,14 +198,30 @@ else
   (( host_port >= 0 && host_port <= 65535 )) || fail "test PAPERCLIP_HOST_PORT must be between 0 and 65535"
 fi
 
-for secret_file in "$postgres_env" "$paperclip_env" "$hermes_env"; do
+secret_files=(
+  "$postgres_env"
+  "$paperclip_env"
+  "$hermes_env"
+  "$founder_relay_env"
+  "$specialist_provider_env"
+)
+for (( secret_index = 0; secret_index < ${#secret_files[@]}; secret_index += 1 )); do
+  secret_file=${secret_files[$secret_index]}
   [[ "$secret_file" == /* ]] || fail "secret file paths must be absolute: $secret_file"
+  [[ "$secret_file" != *[$'\t\r\n ']* ]] || fail "secret file paths must not contain whitespace: $secret_file"
+  for (( prior_index = 0; prior_index < secret_index; prior_index += 1 )); do
+    [[ "$secret_file" != "${secret_files[$prior_index]}" ]] \
+      || fail "secret file paths must be distinct: $secret_file"
+  done
   [[ -f "$secret_file" && ! -L "$secret_file" ]] || fail "secret file is missing or unsafe: $secret_file"
+  [[ $(file_link_count "$secret_file") == 1 ]] || fail "secret files must not have hard links: $secret_file"
   private_mode "$secret_file"
 done
 
 if [[ ${NIX_ALLOW_TEST_CONFIG:-0} != 1 ]]; then
-  [[ $(file_owner_uid "$hermes_env") == 0 ]] || fail "Hermes external environment must be owned by root"
+  for secret_file in "${secret_files[@]}"; do
+    [[ $(file_owner_uid "$secret_file") == 0 ]] || fail "external secret files must be owned by root: $secret_file"
+  done
 fi
 
 [[ "$hermes_mode_file" == /* ]] || fail "HERMES_TELEGRAM_MODE_FILE must be absolute"
@@ -176,6 +281,11 @@ telegram_users=$(secret_value "$hermes_env" TELEGRAM_ALLOWED_USERS)
 telegram_home=$(secret_value "$hermes_env" TELEGRAM_HOME_CHANNEL)
 telegram_allow_all=$(secret_value "$hermes_env" TELEGRAM_ALLOW_ALL_USERS)
 gateway_allow_all=$(secret_value "$hermes_env" GATEWAY_ALLOW_ALL_USERS)
+founder_relay_secret=$(secret_value "$founder_relay_env" NIX_FOUNDER_RELAY_SECRET)
+founder_telegram_user=$(secret_value "$founder_relay_env" NIX_LIOR_TELEGRAM_USER_ID)
+founder_telegram_chat=$(secret_value "$founder_relay_env" NIX_LIOR_TELEGRAM_CHAT_ID)
+specialist_provider_key=$(secret_value "$specialist_provider_env" OPENCODE_API_KEY)
+specialist_daytona_key=$(secret_value "$specialist_provider_env" DAYTONA_API_KEY)
 
 if grep -Eq '^[[:space:]]*(export[[:space:]]+)?OPENCODE_GO_BASE_URL[[:space:]]*=' "$hermes_env"; then
   fail "Hermes external environment must not override the reviewed OpenCode Go endpoint"
@@ -194,6 +304,47 @@ fi
 [[ "$telegram_users" =~ ^[0-9]+$ ]] || fail "TELEGRAM_ALLOWED_USERS must contain exactly Lior's numeric user ID in Slice 1"
 [[ "$telegram_home" == "$telegram_users" ]] \
   || fail "TELEGRAM_HOME_CHANNEL must exactly match the sole allowed Telegram user"
+[[ "$founder_relay_secret" =~ ^[0-9a-f]{64}$ ]] \
+  || fail "NIX_FOUNDER_RELAY_SECRET must be exactly 256 bits encoded as lowercase hex"
+[[ "$founder_relay_secret" != "$api_server_key" && "$founder_relay_secret" != "$decision_webhook_secret" ]] \
+  || fail "founder relay, Hermes Runs API, and decision webhook secrets must be distinct"
+[[ "$founder_telegram_user" =~ ^[0-9]+$ && "$founder_telegram_chat" == "$founder_telegram_user" ]] \
+  || fail "founder relay must contain one numeric direct-message Telegram identity"
+[[ "$founder_telegram_user" == "$telegram_users" && "$founder_telegram_chat" == "$telegram_home" ]] \
+  || fail "founder relay Telegram identity must match the validated Hermes single-user chat"
+[[ $(grep -Ec '^(NIX_FOUNDER_RELAY_SECRET|NIX_LIOR_TELEGRAM_USER_ID|NIX_LIOR_TELEGRAM_CHAT_ID)=' "$founder_relay_env" || true) == 3 ]] \
+  || fail "founder relay environment must contain exactly its three reviewed bindings"
+[[ $(wc -l <"$founder_relay_env" | tr -d ' ') == 3 ]] \
+  || fail "founder relay environment must not contain additional bindings"
+[[ $(grep -Ec '^(DAYTONA_API_KEY|OPENCODE_API_KEY)=' "$specialist_provider_env" || true) == 2 ]] \
+  || fail "specialist provider import file must contain exactly DAYTONA_API_KEY and OPENCODE_API_KEY"
+[[ $(wc -l <"$specialist_provider_env" | tr -d ' ') == 2 ]] \
+  || fail "specialist provider import file must not contain additional bindings"
+(( ${#specialist_daytona_key} >= 20 )) \
+  || fail "specialist DAYTONA_API_KEY is missing or too short"
+(( ${#specialist_provider_key} >= 20 )) \
+  || fail "specialist OPENCODE_API_KEY is missing or too short"
+[[ "$specialist_daytona_key" != REPLACE_WITH_DAYTONA_API_KEY ]] \
+  || fail "specialist DAYTONA_API_KEY placeholder must be replaced"
+[[ "$specialist_provider_key" != REPLACE_WITH_RESTRICTED_OPENCODE_API_KEY ]] \
+  || fail "specialist OPENCODE_API_KEY placeholder must be replaced"
+control_plane_secrets=(
+  "$postgres_password"
+  "$paperclip_db_password"
+  "$better_auth_secret"
+  "$tool_action_secret"
+  "$api_server_key"
+  "$decision_webhook_secret"
+  "$opencode_go_api_key"
+  "$telegram_token"
+  "$founder_relay_secret"
+)
+secret_must_not_match_any \
+  "specialist OPENCODE_API_KEY" \
+  "$specialist_provider_key" "$specialist_daytona_key" "${control_plane_secrets[@]}"
+secret_must_not_match_any \
+  "specialist DAYTONA_API_KEY" \
+  "$specialist_daytona_key" "$specialist_provider_key" "${control_plane_secrets[@]}"
 if [[ ${NIX_ALLOW_TEST_CONFIG:-0} != 1 ]]; then
   [[ "$telegram_token" =~ ^[0-9]{6,}:[A-Za-z0-9_-]{30,}$ ]] || fail "TELEGRAM_BOT_TOKEN does not match the BotFather token shape"
 else

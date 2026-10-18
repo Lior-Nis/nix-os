@@ -43,11 +43,13 @@ if [[ ${1:-} == compose ]]; then
       fi
       ;;
     ps)
-      if [[ ${FAKE_TOPOLOGY_DRIFT_AFTER_STOP:-0} == 1 && " $* " == *' --status running --services '* ]]; then
+      if [[ " $* " == *' --status running --services '* ]] \
+        && { [[ ${FAKE_TOPOLOGY_DRIFT_AFTER_STOP:-0} == 1 ]] || [[ ${FAKE_SERVICES_RUNNING:-0} == 1 ]]; }; then
         printf '%s\n' hermes paperclip
       fi
       ;;
-    stop|up) ;;
+    stop) ;;
+    up) ;;
     *) exit 2 ;;
   esac
   exit 0
@@ -79,11 +81,31 @@ if [[ ${1:-} == run ]]; then
   done
   [[ -n "$backup_dir" && -n "$source_volume" ]] || exit 2
   if [[ $source_volume == *_paperclip_data ]]; then
-    printf 'fixture paperclip archive\n' >"$backup_dir/paperclip-data.tar.gz"
-    printf 'fixture  ./fixture-paperclip\n' >"$backup_dir/paperclip-files.sha256"
+    fixture_dir="$backup_dir/.fixture-paperclip.$$"
+    mkdir "$fixture_dir"
+    printf 'fixture paperclip archive\n' >"$fixture_dir/fixture-paperclip"
+    COPYFILE_DISABLE=1 tar -C "$fixture_dir" -czf "$backup_dir/paperclip-data.tar.gz" .
+    if command -v sha256sum >/dev/null 2>&1; then
+      fixture_hash=$(sha256sum "$fixture_dir/fixture-paperclip" | cut -d' ' -f1)
+    else
+      fixture_hash=$(shasum -a 256 "$fixture_dir/fixture-paperclip" | cut -d' ' -f1)
+    fi
+    printf '%s  ./fixture-paperclip\n' "$fixture_hash" >"$backup_dir/paperclip-files.sha256"
+    unlink "$fixture_dir/fixture-paperclip"
+    rmdir "$fixture_dir"
   elif [[ $source_volume == *_hermes_data ]]; then
-    printf 'fixture hermes credential archive\n' >"$backup_dir/hermes-data.tar.gz"
-    printf 'fixture  ./fixture-hermes\n' >"$backup_dir/hermes-files.sha256"
+    fixture_dir="$backup_dir/.fixture-hermes.$$"
+    mkdir "$fixture_dir"
+    printf 'fixture hermes credential archive\n' >"$fixture_dir/fixture-hermes"
+    COPYFILE_DISABLE=1 tar -C "$fixture_dir" -czf "$backup_dir/hermes-data.tar.gz" .
+    if command -v sha256sum >/dev/null 2>&1; then
+      fixture_hash=$(sha256sum "$fixture_dir/fixture-hermes" | cut -d' ' -f1)
+    else
+      fixture_hash=$(shasum -a 256 "$fixture_dir/fixture-hermes" | cut -d' ' -f1)
+    fi
+    printf '%s  ./fixture-hermes\n' "$fixture_hash" >"$backup_dir/hermes-files.sha256"
+    unlink "$fixture_dir/fixture-hermes"
+    rmdir "$fixture_dir"
   else
     exit 2
   fi

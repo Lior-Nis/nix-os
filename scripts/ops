@@ -11,10 +11,18 @@ usage() {
   exit 2
 }
 
+check_specialist_topology_when_configured() {
+  local specialist_ids
+  specialist_ids=$(grep -E '^NIX_SPECIALIST_AGENT_IDS=' "$config_file" | tail -n 1 | cut -d= -f2-)
+  if [[ -n "$specialist_ids" ]]; then
+    "$repo_root/scripts/check-paperclip-specialist-topology" "$config_file"
+  fi
+}
+
 case "$action" in
   deploy)
     "$repo_root/scripts/check-config" "$config_file"
-    "${compose[@]}" pull
+    "${compose[@]}" pull paperclip postgres hermes
     "${compose[@]}" up -d --wait postgres
     "$repo_root/scripts/check-migrations" "$config_file"
     "$repo_root/scripts/initialize-paperclip" "$config_file"
@@ -23,13 +31,14 @@ case "$action" in
     "${compose[@]}" up -d --wait paperclip hermes
     "${compose[@]}" exec -T paperclip curl -fsS http://127.0.0.1:3100/api/health
     "${compose[@]}" exec -T --user 10000:10000 hermes curl -fsS http://127.0.0.1:8642/health >/dev/null
+    check_specialist_topology_when_configured
     printf '\nPaperclip and Hermes are healthy. Configure Tailscale Serve before checking tailnet health.\n'
     ;;
   upgrade)
     "$repo_root/scripts/check-config" "$config_file"
     "$repo_root/scripts/backup" "$config_file"
     "$repo_root/scripts/check-migrations" "$config_file"
-    "${compose[@]}" pull
+    "${compose[@]}" pull paperclip postgres hermes
     "${compose[@]}" up -d --wait --remove-orphans
     "$0" health
     ;;
@@ -48,14 +57,17 @@ case "$action" in
     curl --fail --silent --show-error "${public_url}/api/health"
     printf '\n%s\n' 'Internal Hermes health and authenticated API boundary:'
     "$repo_root/scripts/configure-hermes" verify "$config_file"
+    check_specialist_topology_when_configured
     ;;
   logs)
     "${compose[@]}" logs --follow --tail 200 hermes paperclip postgres
     ;;
   restart)
     "$repo_root/scripts/check-config" "$config_file"
+    check_specialist_topology_when_configured
     "$repo_root/scripts/check-migrations" "$config_file"
     "${compose[@]}" up -d --force-recreate --wait
+    check_specialist_topology_when_configured
     ;;
   *) usage ;;
 esac

@@ -12,6 +12,7 @@ runtime_mode_file="$smoke_tmp_dir/hermes-runtime-mode.env"
 compose=(docker compose --env-file "$config_file")
 source_cookie=/tmp/nix-os-source-cookie.txt
 source_response=/tmp/nix-os-source-response.json
+source_cookie_host="$smoke_tmp_dir/source-cookie.txt"
 restore_config=''
 archive_helper_image='postgres:17.11-alpine3.24@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24'
 
@@ -58,12 +59,20 @@ source_get() {
 }
 
 cleanup() {
+  local status=$?
+  if (( status != 0 )); then
+    printf 'Source Compose status at failure:\n' >&2
+    "${compose[@]}" ps >&2 || true
+    printf 'Source Paperclip logs at failure:\n' >&2
+    "${compose[@]}" logs --no-color --tail 200 paperclip >&2 || true
+  fi
   if [[ -n "$restore_config" && -f "$restore_config" ]]; then
     docker compose --env-file "$restore_config" down --volumes --remove-orphans >/dev/null 2>&1 || true
   fi
   "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
   docker volume rm "${restore_project}_paperclip_data" "${restore_project}_postgres_data" >/dev/null 2>&1 || true
   rm -rf "$smoke_tmp_dir"
+  return "$status"
 }
 trap cleanup EXIT
 
@@ -95,6 +104,7 @@ printf 'POSTGRES_PASSWORD=%s\nPAPERCLIP_DB_PASSWORD=%s\n' "$postgres_password" "
   printf 'TELEGRAM_ALLOW_ALL_USERS=false\nGATEWAY_ALLOW_ALL_USERS=false\n'
 } >"$smoke_tmp_dir/hermes.env"
 printf 'HERMES_TELEGRAM_MODE=disabled\n' >"$smoke_tmp_dir/hermes-telegram-mode.env"
+"$repo_root/tests/fixtures/create-slice3-secret-files" "$smoke_tmp_dir"
 mkdir "$smoke_tmp_dir/nix-brain"
 printf '# Recovery brain fixture\n' >"$smoke_tmp_dir/nix-brain/README.md"
 git -C "$smoke_tmp_dir/nix-brain" init -q
@@ -108,6 +118,15 @@ brain_gid=$(stat -c '%g' "$smoke_tmp_dir/nix-brain" 2>/dev/null || stat -f '%g' 
   printf 'PAPERCLIP_PUBLIC_URL=https://nix-os.test-tailnet.ts.net\nPAPERCLIP_LIOR_USER_ID=lior-test-user\nPAPERCLIP_HOST_PORT=0\n'
   printf 'POSTGRES_ENV_FILE=%s\nPAPERCLIP_ENV_FILE=%s\n' "$smoke_tmp_dir/postgres.env" "$smoke_tmp_dir/paperclip.env"
   printf 'HERMES_ENV_FILE=%s\nNIX_BRAIN_HOST_PATH=%s\n' "$smoke_tmp_dir/hermes.env" "$smoke_tmp_dir/nix-brain"
+  printf 'FOUNDER_RELAY_ENV_FILE=%s\n' "$smoke_tmp_dir/founder-relay.env"
+  printf 'SPECIALIST_PROVIDER_ENV_FILE=%s\n' "$smoke_tmp_dir/specialist-provider.env"
+  printf 'NIX_CHIEF_AGENT_ID=11111111-1111-4111-8111-111111111111\n'
+  printf 'NIX_APPROVED_PROJECT_ID=22222222-2222-4222-8222-222222222222\n'
+  printf 'NIX_PRODUCT_AGENT_ID=33333333-3333-4333-8333-333333333333\n'
+  printf 'NIX_GROWTH_AGENT_ID=44444444-4444-4444-8444-444444444444\n'
+  printf 'NIX_OPERATIONS_AGENT_ID=55555555-5555-4555-8555-555555555555\n'
+  printf 'NIX_SPECIALIST_AGENT_IDS=33333333-3333-4333-8333-333333333333,44444444-4444-4444-8444-444444444444,55555555-5555-4555-8555-555555555555\n'
+  printf 'NIX_SPECIALIST_ENVIRONMENT_ID=66666666-6666-4666-8666-666666666666\n'
   printf 'NIX_BRAIN_GID=%s\n' "$brain_gid"
   printf 'HERMES_TELEGRAM_BOT_USERNAME=the_nixos_bot\n'
   printf 'HERMES_TELEGRAM_MODE_FILE=%s\n' "$smoke_tmp_dir/hermes-telegram-mode.env"
@@ -456,6 +475,158 @@ source_access_events=$(source_get "/api/secrets/${secret_id}/access-events")
 jq -e --arg environment_id "$environment_id" '.[] | select(.outcome == "success" and .consumerType == "environment" and .consumerId == $environment_id)' \
   >/dev/null <<<"$source_access_events" || fail "source canary was not resolved successfully"
 
+# Build the complete Slice 3 topology through supported Board APIs. The exact
+# first-party Daytona worker is loaded, but this fixture never probes Daytona or
+# creates a paid sandbox.
+source_patch '/api/instance/settings/experimental' \
+  '{"enableEnvironments":true,"enableNativeRunner":true}' >/dev/null
+daytona_plugin=$(source_post '/api/plugins/install' \
+  '{"packageName":"@paperclipai/plugin-daytona","version":"2026.916.1"}')
+jq -e '
+  .packageName == "@paperclipai/plugin-daytona"
+  and .version == "0.1.7"
+  and .pluginKey == "paperclip.daytona-sandbox-provider"
+  and .status == "ready"
+  and .manifestJson.id == "paperclip.daytona-sandbox-provider"
+  and .manifestJson.version == "0.1.7"
+  and .manifestJson.capabilities == ["environment.drivers.register"]
+' >/dev/null <<<"$daytona_plugin" || fail "exact Daytona plugin fixture did not become ready"
+daytona_plugin_id=$(jq -er '.id' <<<"$daytona_plugin")
+source_capabilities=$(source_get "/api/companies/${company_id}/environments/capabilities")
+jq -e --arg plugin_id "$daytona_plugin_id" '
+  .sandboxProviders.daytona.status == "supported"
+  and .sandboxProviders.daytona.source == "plugin"
+  and .sandboxProviders.daytona.pluginId == $plugin_id
+  and .sandboxProviders.daytona.supportsSavedProbe == true
+  and .sandboxProviders.daytona.supportsUnsavedProbe == true
+  and .sandboxProviders.daytona.supportsRunExecution == true
+' >/dev/null <<<"$source_capabilities" || fail "Daytona fixture worker capabilities are incomplete"
+
+daytona_value=$(grep -E '^DAYTONA_API_KEY=' "$smoke_tmp_dir/specialist-provider.env" | cut -d= -f2-)
+opencode_value=$(grep -E '^OPENCODE_API_KEY=' "$smoke_tmp_dir/specialist-provider.env" | cut -d= -f2-)
+daytona_fingerprint=$(printf '%s' "$daytona_value" | hash_stream)
+opencode_fingerprint=$(printf '%s' "$opencode_value" | hash_stream)
+daytona_secret_body=$(jq -nc --arg value "$daytona_value" --arg fingerprint "$daytona_fingerprint" '{
+  name:"Nix specialist Daytona API key",key:"nix-specialist-daytona-api-key",
+  provider:"local_encrypted",value:$value,
+  description:("Nix Slice 3 daytona; sha256=" + $fingerprint)
+}')
+daytona_secret_json=$(source_post "/api/companies/${company_id}/secrets" "$daytona_secret_body")
+daytona_secret_id=$(jq -er '.id' <<<"$daytona_secret_json")
+opencode_secret_body=$(jq -nc --arg value "$opencode_value" --arg fingerprint "$opencode_fingerprint" '{
+  name:"Nix specialist OpenCode API key",key:"nix-specialist-opencode-api-key",
+  provider:"local_encrypted",value:$value,
+  description:("Nix Slice 3 provider; sha256=" + $fingerprint)
+}')
+opencode_secret_json=$(source_post "/api/companies/${company_id}/secrets" "$opencode_secret_body")
+opencode_secret_id=$(jq -er '.id' <<<"$opencode_secret_json")
+unset daytona_value opencode_value daytona_secret_body opencode_secret_body
+
+specialist_environment_body=$(jq -nc \
+  --arg daytona_secret_id "$daytona_secret_id" \
+  --arg opencode_secret_id "$opencode_secret_id" '{
+    name:"Nix task-scoped Daytona sandbox",
+    description:"Ephemeral first-party Daytona sandbox for task-scoped Nix specialists.",
+    driver:"sandbox",status:"active",
+    config:{
+      provider:"daytona",apiKey:$daytona_secret_id,apiUrl:null,target:"eu",snapshot:null,
+      image:"daytonaio/sandbox:0.8.0@sha256:eadf88e4391072b7ad4bed27d9cadfc9fe9d8ed375d9219d34c2ccb518f213e3",
+      language:null,timeoutMs:300000,livenessTimeoutMs:30000,cpu:1,memory:2,disk:5,gpu:null,
+      autoStopInterval:15,autoArchiveInterval:60,autoDeleteInterval:60,reuseLease:false,
+      archiveOnRelease:false,runnerLifecycleMode:"per_turn"
+    },
+    envVars:{OPENCODE_API_KEY:{
+      type:"secret_ref",secretId:$opencode_secret_id,version:"latest",
+      projectionClass:"unclassified",projectionAllowlistKey:null
+    }},
+    metadata:{nix:{kind:"nix-specialist-daytona",version:1}}
+  }')
+specialist_environment_json=$(source_post "/api/companies/${company_id}/environments" \
+  "$specialist_environment_body")
+specialist_environment_id=$(jq -er '.id' <<<"$specialist_environment_json")
+
+create_specialist_fixture() {
+  local slug=$1 name=$2 role=$3 capabilities=$4 instructions_file=$5 body row
+  body=$(jq -nc --arg name "$name" --arg role "$role" --arg chief "$hermes_agent_id" \
+    --arg capabilities "$capabilities" --arg environment "$specialist_environment_id" \
+    --arg slug "$slug" --rawfile instructions "$instructions_file" '{
+      name:$name,role:$role,title:("Task-scoped " + $name + " specialist"),reportsTo:$chief,
+      capabilities:$capabilities,adapterType:"paperclip_runner",
+      adapterConfig:{provider:"opencode",codexPermissionMode:"ask",model:"opencode/gpt-5.6-luna",opencodePermissionMode:"deny",lifecycleMode:"per_turn"},
+      instructionsBundle:{entryFile:"AGENTS.md",files:{"AGENTS.md":$instructions}},
+      runtimeConfig:{heartbeat:{enabled:false,maxConcurrentRuns:1}},defaultEnvironmentId:$environment,
+      budgetMonthlyCents:0,permissions:{canCreateAgents:false,canCreateSkills:false},
+      metadata:{nix:{kind:"nix-task-scoped-specialist",version:1},specialistRole:$slug}
+    }')
+  row=$(source_post "/api/companies/${company_id}/agents" "$body")
+  jq -er '.id' <<<"$row"
+}
+
+product_agent_id=$(create_specialist_fixture product Product pm \
+  'Product specialist for approved-project discovery, definition, and evidence.' \
+  "$repo_root/deploy/specialists/product.md")
+growth_agent_id=$(create_specialist_fixture growth Growth cmo \
+  'Growth specialist for marketing and sales work inside approved projects.' \
+  "$repo_root/deploy/specialists/growth.md")
+operations_agent_id=$(create_specialist_fixture operations Operations general \
+  'Operations specialist for bounded execution and verification.' \
+  "$repo_root/deploy/specialists/operations.md")
+specialist_ids_json=$(jq -nc --arg product "$product_agent_id" --arg growth "$growth_agent_id" \
+  --arg operations "$operations_agent_id" '[$product,$growth,$operations]')
+specialist_permissions=$(jq -nc --arg company "$company_id" --arg project "$project_id" \
+  --argjson agents "$specialist_ids_json" '{
+    canCreateAgents:false,canCreateSkills:false,canAssignTasks:true,trustPreset:"low_trust_review",
+    authorizationPolicy:{
+      trustPreset:"low_trust_review",
+      reviewPreset:{id:"low_trust_review",version:1,rawOutputDisposition:"quarantine"},
+      trustBoundary:{mode:"low_trust_review",companyId:$company,projectIds:[$project],allowedAgentIds:$agents,allowedToolClasses:["tests.local"]}
+    }
+  }')
+for specialist_agent_id in "$product_agent_id" "$growth_agent_id" "$operations_agent_id"; do
+  source_patch "/api/agents/${specialist_agent_id}/permissions" "$specialist_permissions" >/dev/null
+done
+
+sed \
+  -e "s/^NIX_CHIEF_AGENT_ID=.*/NIX_CHIEF_AGENT_ID=$hermes_agent_id/" \
+  -e "s/^NIX_APPROVED_PROJECT_ID=.*/NIX_APPROVED_PROJECT_ID=$project_id/" \
+  -e "s/^NIX_PRODUCT_AGENT_ID=.*/NIX_PRODUCT_AGENT_ID=$product_agent_id/" \
+  -e "s/^NIX_GROWTH_AGENT_ID=.*/NIX_GROWTH_AGENT_ID=$growth_agent_id/" \
+  -e "s/^NIX_OPERATIONS_AGENT_ID=.*/NIX_OPERATIONS_AGENT_ID=$operations_agent_id/" \
+  -e "s/^NIX_SPECIALIST_AGENT_IDS=.*/NIX_SPECIALIST_AGENT_IDS=$product_agent_id,$growth_agent_id,$operations_agent_id/" \
+  -e "s/^NIX_SPECIALIST_ENVIRONMENT_ID=.*/NIX_SPECIALIST_ENVIRONMENT_ID=$specialist_environment_id/" \
+  "$config_file" >"$smoke_tmp_dir/smoke-specialists.env"
+mv "$smoke_tmp_dir/smoke-specialists.env" "$config_file"
+chmod 0600 "$config_file"
+
+# Preserve the authenticated Board session across the deliberate Paperclip
+# recreation. The same private jar is supplied to backup and to the isolated
+# restored instance, proving the persisted session row and Better Auth key.
+"${compose[@]}" cp "paperclip:$source_cookie" "$source_cookie_host"
+chmod 0600 "$source_cookie_host"
+"${compose[@]}" up -d --no-deps --force-recreate --wait paperclip
+"${compose[@]}" cp "$source_cookie_host" "paperclip:$source_cookie"
+source_get '/api/auth/get-session' \
+  | jq -e '.user.id != null or .session.userId != null or .userId != null' >/dev/null \
+  || fail "source Board session did not survive specialist activation"
+source_get "/api/companies/${company_id}/environments/capabilities" \
+  | jq -e '.sandboxProviders.daytona.supportsRunExecution == true' >/dev/null \
+  || fail "Daytona plugin worker did not recover after Paperclip recreation"
+
+if ! NIX_ALLOW_TEST_CONFIG=1 NIX_REQUIRE_SPECIALIST_TOPOLOGY=1 \
+  "$repo_root/scripts/check-paperclip-specialist-topology" "$config_file" >/dev/null; then
+  source_get "/api/companies/${company_id}/agents" \
+    | jq -c --arg id "$product_agent_id" '
+      .[] | select(.id == $id) |
+      {name,role,title,reportsTo,status,adapterType,adapterConfig,runtimeConfig,
+       budgetMonthlyCents,defaultEnvironmentId,metadata}
+    ' >&2
+  source_get "/api/companies/${company_id}/environments" \
+    | jq -c --arg id "$specialist_environment_id" '
+      .[] | select(.id == $id) | {id,driver,status,config,envVars,metadata}
+    ' >&2
+  fail "source specialist topology did not match the production gate"
+fi
+
 "${compose[@]}" stop postgres
 health_status=$("${compose[@]}" exec -T paperclip sh -ec "curl --silent --output /tmp/database-down-health.json --write-out '%{http_code}' http://127.0.0.1:3100/api/health")
 [[ "$health_status" == 503 ]] || fail "expected health HTTP 503 with PostgreSQL stopped, got $health_status"
@@ -468,7 +639,53 @@ health_status=$("${compose[@]}" exec -T paperclip sh -ec "curl --silent --output
 # boundary.
 source_issue_status_at_backup=$(source_get "/api/issues/${issue_id}" | jq -er '.status')
 
-artifact=$(NIX_ALLOW_TEST_CONFIG=1 HERMES_TELEGRAM_MODE_FILE="$runtime_mode_file" \
+if NIX_ALLOW_TEST_CONFIG=1 NIX_REQUIRE_SPECIALIST_TOPOLOGY=1 \
+  HERMES_TELEGRAM_MODE_FILE="$runtime_mode_file" \
+  BACKUP_OUTPUT_DIR="$smoke_tmp_dir/backups" BACKUP_AGE_RECIPIENT="$backup_recipient" \
+  "$repo_root/scripts/backup" "$config_file" >/dev/null 2>&1; then
+  fail "specialist backup accepted a missing authenticated Board cookie"
+fi
+
+daytona_worker_path='/paperclip/.paperclip/plugins/node_modules/@paperclipai/plugin-daytona/dist/worker.js'
+"${compose[@]}" exec -T paperclip mv "$daytona_worker_path" "${daytona_worker_path}.nix-test-corrupt"
+if NIX_ALLOW_TEST_CONFIG=1 NIX_REQUIRE_SPECIALIST_TOPOLOGY=1 \
+  HERMES_TELEGRAM_MODE_FILE="$runtime_mode_file" \
+  BACKUP_PAPERCLIP_COOKIE_FILE="$source_cookie_host" \
+  BACKUP_OUTPUT_DIR="$smoke_tmp_dir/backups" BACKUP_AGE_RECIPIENT="$backup_recipient" \
+  "$repo_root/scripts/backup" "$config_file" >/dev/null 2>&1; then
+  fail "specialist backup accepted a missing installed plugin artifact"
+fi
+"${compose[@]}" exec -T paperclip mv "${daytona_worker_path}.nix-test-corrupt" "$daytona_worker_path"
+
+paperclip_unexpected_link='/paperclip/.paperclip/plugins/.nix-backup-unexpected-link'
+"${compose[@]}" exec -T paperclip \
+  ln -s package-lock.json "$paperclip_unexpected_link"
+if NIX_ALLOW_TEST_CONFIG=1 NIX_REQUIRE_SPECIALIST_TOPOLOGY=1 \
+  HERMES_TELEGRAM_MODE_FILE="$runtime_mode_file" \
+  BACKUP_PAPERCLIP_COOKIE_FILE="$source_cookie_host" \
+  BACKUP_OUTPUT_DIR="$smoke_tmp_dir/backups" BACKUP_AGE_RECIPIENT="$backup_recipient" \
+  "$repo_root/scripts/backup" "$config_file" >/dev/null 2>&1; then
+  fail "specialist backup accepted an unexpected internal Paperclip symlink"
+fi
+"${compose[@]}" up -d --wait postgres paperclip hermes >/dev/null
+"${compose[@]}" exec -T paperclip unlink "$paperclip_unexpected_link"
+
+hermes_unexpected_link='/opt/data/memories/.nix-backup-unexpected-link'
+"${compose[@]}" exec -T --user 10000:10000 hermes \
+  ln -s ../.paperclip-claim-receipt.json "$hermes_unexpected_link"
+if NIX_ALLOW_TEST_CONFIG=1 NIX_REQUIRE_SPECIALIST_TOPOLOGY=1 \
+  HERMES_TELEGRAM_MODE_FILE="$runtime_mode_file" \
+  BACKUP_PAPERCLIP_COOKIE_FILE="$source_cookie_host" \
+  BACKUP_OUTPUT_DIR="$smoke_tmp_dir/backups" BACKUP_AGE_RECIPIENT="$backup_recipient" \
+  "$repo_root/scripts/backup" "$config_file" >/dev/null 2>&1; then
+  fail "specialist backup accepted an unexpected internal Hermes symlink"
+fi
+"${compose[@]}" up -d --wait postgres paperclip hermes >/dev/null
+"${compose[@]}" exec -T --user 10000:10000 hermes unlink "$hermes_unexpected_link"
+
+artifact=$(NIX_ALLOW_TEST_CONFIG=1 NIX_REQUIRE_SPECIALIST_TOPOLOGY=1 \
+  HERMES_TELEGRAM_MODE_FILE="$runtime_mode_file" \
+  BACKUP_PAPERCLIP_COOKIE_FILE="$source_cookie_host" \
   BACKUP_OUTPUT_DIR="$smoke_tmp_dir/backups" BACKUP_AGE_RECIPIENT="$backup_recipient" \
   "$repo_root/scripts/backup" "$config_file" | tail -n 1)
 [[ -f "$artifact" ]] || fail "backup artifact missing: $artifact"
@@ -480,10 +697,21 @@ artifact="$download_dir/$(basename "$artifact")"
 restore_work_dir="$smoke_tmp_dir/restore"
 restore_config="$restore_work_dir/restore.env"
 RESTORE_PROJECT_NAME="$restore_project" RESTORE_KEEP=true RESTORE_WORK_DIR="$restore_work_dir" \
+  RESTORE_REQUIRE_SPECIALIST_TOPOLOGY=true \
+  RESTORE_PAPERCLIP_COOKIE_FILE="$source_cookie_host" \
+  RESTORE_NIX_CHIEF_AGENT_ID="$hermes_agent_id" \
+  RESTORE_NIX_APPROVED_PROJECT_ID="$project_id" \
+  RESTORE_NIX_PRODUCT_AGENT_ID="$product_agent_id" \
+  RESTORE_NIX_GROWTH_AGENT_ID="$growth_agent_id" \
+  RESTORE_NIX_OPERATIONS_AGENT_ID="$operations_agent_id" \
+  RESTORE_NIX_SPECIALIST_AGENT_IDS="$product_agent_id,$growth_agent_id,$operations_agent_id" \
+  RESTORE_NIX_SPECIALIST_ENVIRONMENT_ID="$specialist_environment_id" \
   NIX_RESTORE_INJECT_PROFILE_TELEGRAM_CANARY=1 \
   AGE_IDENTITY_FILE="$smoke_tmp_dir/backup-identity.txt" \
   RESTORE_POSTGRES_ENV_FILE="$smoke_tmp_dir/postgres.env" RESTORE_PAPERCLIP_ENV_FILE="$smoke_tmp_dir/paperclip.env" \
   RESTORE_HERMES_ENV_FILE="$smoke_tmp_dir/hermes.env" \
+  RESTORE_FOUNDER_RELAY_ENV_FILE="$smoke_tmp_dir/founder-relay.env" \
+  RESTORE_SPECIALIST_PROVIDER_ENV_FILE="$smoke_tmp_dir/specialist-provider.env" \
   "$repo_root/scripts/restore-smoke" "$artifact"
 
 [[ -f "$restore_config" ]] || fail "could not locate retained restore configuration"

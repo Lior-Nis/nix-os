@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+"""Verify a backup SHA256SUMS file without permitting path traversal."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import os
+from pathlib import Path, PurePosixPath
+import re
+
+
+LINE = re.compile(r"^([0-9a-f]{64}) [ *](.+)$")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("payload", type=Path)
+    arguments = parser.parse_args()
+    root = arguments.payload.resolve(strict=True)
+    manifest = root / "SHA256SUMS"
+    if not manifest.is_file() or manifest.is_symlink():
+        parser.exit(1, "backup checksum error: SHA256SUMS is missing or unsafe\n")
+
+    seen: set[str] = set()
+    for line in manifest.read_text(encoding="utf-8").splitlines():
+        match = LINE.fullmatch(line)
+        if match is None:
+            parser.exit(1, "backup checksum error: malformed SHA256SUMS entry\n")
+        expected, name = match.groups()
+        path = PurePosixPath(name)
+        if (
+            name.startswith("/")
+            or "\\" in name
+            or str(path) != name
+            or any(part in {"", ".", ".."} for part in path.parts)
+            or name in seen
+        ):
+            parser.exit(1, "backup checksum error: unsafe or duplicate SHA256SUMS path\n")
+        seen.add(name)
+        candidate = root.joinpath(*path.parts)
+        if not candidate.is_file() or candidate.is_symlink():
+            parser.exit(1, f"backup checksum error: missing or unsafe payload file: {name}\n")
+        resolved = candidate.resolve(strict=True)
+        if os.path.commonpath((str(root), str(resolved))) != str(root):
+            parser.exit(1, "backup checksum error: payload path escapes its root\n")
+        digest = hashlib.sha256()
+        with candidate.open("rb") as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(block)
+        if digest.hexdigest() != expected:
+            parser.exit(1, f"backup checksum error: checksum mismatch: {name}\n")
+    if not seen:
+        parser.exit(1, "backup checksum error: SHA256SUMS is empty\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
