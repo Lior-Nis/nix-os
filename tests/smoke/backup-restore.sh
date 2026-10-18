@@ -135,16 +135,22 @@ brain_gid=$(stat -c '%g' "$smoke_tmp_dir/nix-brain" 2>/dev/null || stat -f '%g' 
   printf 'NIX_SPECIALIST_ENVIRONMENT_ID=66666666-6666-4666-8666-666666666666\n'
   printf 'NIX_BRAIN_GID=%s\n' "$brain_gid"
   printf 'HERMES_TELEGRAM_BOT_USERNAME=the_nixos_bot\n'
-  printf 'HERMES_TELEGRAM_MODE_FILE=%s\n' "$runtime_mode_file"
+  printf 'HERMES_TELEGRAM_MODE_FILE=%s\n' "$smoke_tmp_dir/hermes-telegram-mode.env"
   printf 'PAPERCLIP_AUTH_DISABLE_SIGN_UP=false\nBACKUP_OUTPUT_DIR=%s\n' "$smoke_tmp_dir/backups"
 } >"$config_file"
 chmod 0600 "$smoke_tmp_dir"/*.env
+
+# Validate while the test runner can still read the marker. The pinned Hermes
+# startup boundary independently enforces root ownership after the next step.
+NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$config_file"
 docker run --rm --volume "$runtime_mode_file:/mode.env" "$archive_helper_image" sh -ec '
   chown 0:0 /mode.env
   chmod 0600 /mode.env
 '
-
-NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$config_file"
+# Compose interpolation honors this exported override in every direct command
+# and in backup's child process, while host-side check-config continues to
+# validate the equivalent runner-readable fixture named by the test config.
+export HERMES_TELEGRAM_MODE_FILE="$runtime_mode_file"
 docker volume create "${smoke_project}_hermes_data" >/dev/null
 docker run --rm --volume "${smoke_project}_hermes_data:/state" "$archive_helper_image" sh -ec '
   install -d /state/memories /state/sessions /state/logs/gateways/default
