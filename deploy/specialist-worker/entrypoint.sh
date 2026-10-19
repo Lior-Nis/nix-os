@@ -15,8 +15,6 @@ require_private_regular_file() {
   label=$2
   [ -f "$path" ] || fail "$label is missing or is not a regular file"
   [ ! -L "$path" ] || fail "$label must not be a symlink"
-  owner=$(stat -c '%u:%g' "$path")
-  [ "$owner" = 0:0 ] || fail "$label must be owned by root"
   mode=$(stat -c '%a' "$path")
   case "$mode" in 400|600) ;; *) fail "$label must have mode 0400 or 0600" ;; esac
 }
