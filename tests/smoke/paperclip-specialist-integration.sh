@@ -528,7 +528,7 @@ assert lease.get("status") in {"released", "failed", "expired"}, lease.get("stat
 # Its self-contained supported coverage ends at the exact fail-closed transport
 # gate after plugin activation, lease acquisition, workspace realization, and
 # cleanup. The instance-managed local environment is the smallest official,
-# secret-free path through runnerd and OpenCode in hosted CI; Daytona's
+# secret-free path through runnerd and OpenCode in hosted CI; the production
 # authenticated WSS transport remains a live-acceptance responsibility.
 request("PATCH", f"/api/agents/{state['specialistId']}", {
     "defaultEnvironmentId": state["localEnvironmentId"],

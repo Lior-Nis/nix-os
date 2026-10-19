@@ -1,0 +1,41 @@
+Port 2222
+ListenAddress 0.0.0.0
+AddressFamily any
+
+HostKey /run/secrets/specialist_host_key
+HostKeyAlgorithms ssh-ed25519
+PubkeyAcceptedAlgorithms ssh-ed25519
+
+AllowUsers worker
+AuthorizedKeysFile /run/secrets/specialist_authorized_keys
+AuthenticationMethods publickey
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitEmptyPasswords no
+PermitRootLogin no
+UsePAM no
+
+StrictModes yes
+DisableForwarding yes
+AllowAgentForwarding no
+AllowTcpForwarding no
+AllowStreamLocalForwarding no
+GatewayPorts no
+PermitTunnel no
+X11Forwarding no
+PermitTTY no
+PermitUserEnvironment no
+PermitUserRC no
+
+MaxAuthTries 3
+MaxSessions 4
+LoginGraceTime 20
+ClientAliveInterval 30
+ClientAliveCountMax 2
+
+PidFile /run/sshd/sshd.pid
+LogLevel INFO
+PrintMotd no
+PrintLastLog no
+Subsystem sftp internal-sftp

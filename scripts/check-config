@@ -110,6 +110,7 @@ fi
 
 project_name=$(require_config COMPOSE_PROJECT_NAME)
 public_url=$(require_config PAPERCLIP_PUBLIC_URL)
+runner_public_url=$(require_config PAPERCLIP_RUNNER_PUBLIC_URL)
 lior_paperclip_user_id=$(require_config PAPERCLIP_LIOR_USER_ID)
 host_port=$(require_config PAPERCLIP_HOST_PORT)
 postgres_env=$(require_config POSTGRES_ENV_FILE)
@@ -119,6 +120,9 @@ founder_relay_env=$(require_config FOUNDER_RELAY_ENV_FILE)
 hermes_telegram_bot_username=$(require_config HERMES_TELEGRAM_BOT_USERNAME)
 hermes_mode_file=$(require_config HERMES_TELEGRAM_MODE_FILE)
 specialist_provider_env=$(require_config SPECIALIST_PROVIDER_ENV_FILE)
+specialist_worker_host_key=$(require_config SPECIALIST_WORKER_HOST_KEY_FILE)
+specialist_worker_authorized_keys=$(require_config SPECIALIST_WORKER_AUTHORIZED_KEYS_FILE)
+specialist_worker_client_key=$(require_config SPECIALIST_WORKER_CLIENT_KEY_FILE)
 nix_brain_path=$(require_config NIX_BRAIN_HOST_PATH)
 nix_brain_gid=$(require_config NIX_BRAIN_GID)
 signup_disabled=$(require_config PAPERCLIP_AUTH_DISABLE_SIGN_UP)
@@ -130,7 +134,10 @@ specialist_keys=(
   NIX_GROWTH_AGENT_ID
   NIX_OPERATIONS_AGENT_ID
   NIX_SPECIALIST_AGENT_IDS
-  NIX_SPECIALIST_ENVIRONMENT_ID
+  NIX_PRODUCT_ENVIRONMENT_ID
+  NIX_GROWTH_ENVIRONMENT_ID
+  NIX_OPERATIONS_ENVIRONMENT_ID
+  NIX_SPECIALIST_ENVIRONMENT_IDS
 )
 for specialist_key in "${specialist_keys[@]}"; do
   grep -q "^${specialist_key}=" "$config_file" \
@@ -140,9 +147,14 @@ product_agent_id=$(read_config NIX_PRODUCT_AGENT_ID)
 growth_agent_id=$(read_config NIX_GROWTH_AGENT_ID)
 operations_agent_id=$(read_config NIX_OPERATIONS_AGENT_ID)
 specialist_agent_ids=$(read_config NIX_SPECIALIST_AGENT_IDS)
-specialist_environment_id=$(read_config NIX_SPECIALIST_ENVIRONMENT_ID)
+product_environment_id=$(read_config NIX_PRODUCT_ENVIRONMENT_ID)
+growth_environment_id=$(read_config NIX_GROWTH_ENVIRONMENT_ID)
+operations_environment_id=$(read_config NIX_OPERATIONS_ENVIRONMENT_ID)
+specialist_environment_ids=$(read_config NIX_SPECIALIST_ENVIRONMENT_IDS)
 
 [[ "$project_name" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || fail "COMPOSE_PROJECT_NAME must match [a-z0-9][a-z0-9_-]*"
+[[ "$runner_public_url" == "wss://${public_url#https://}" ]] \
+  || fail "PAPERCLIP_RUNNER_PUBLIC_URL must be the exact wss form of PAPERCLIP_PUBLIC_URL"
 [[ "$signup_disabled" == "true" || "$signup_disabled" == "false" ]] || fail "PAPERCLIP_AUTH_DISABLE_SIGN_UP must be true or false"
 [[ "$host_port" =~ ^[0-9]+$ ]] || fail "PAPERCLIP_HOST_PORT must be an integer"
 [[ "$lior_paperclip_user_id" =~ ^[A-Za-z0-9._:-]{3,200}$ ]] \
@@ -156,15 +168,17 @@ canonical_uuid='^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9
 specialist_present=0
 for specialist_value in \
   "$product_agent_id" "$growth_agent_id" "$operations_agent_id" \
-  "$specialist_agent_ids" "$specialist_environment_id"; do
+  "$specialist_agent_ids" "$product_environment_id" "$growth_environment_id" \
+  "$operations_environment_id" "$specialist_environment_ids"; do
   [[ -z "$specialist_value" ]] || ((specialist_present += 1))
 done
-if (( specialist_present != 0 && specialist_present != 5 )); then
+if (( specialist_present != 0 && specialist_present != 8 )); then
   fail "specialist IDs must be all empty before first bootstrap or all configured"
 fi
-if (( specialist_present == 5 )); then
+if (( specialist_present == 8 )); then
   for specialist_id in \
-    "$product_agent_id" "$growth_agent_id" "$operations_agent_id" "$specialist_environment_id"; do
+    "$product_agent_id" "$growth_agent_id" "$operations_agent_id" \
+    "$product_environment_id" "$growth_environment_id" "$operations_environment_id"; do
     [[ "$specialist_id" =~ $canonical_uuid ]] \
       || fail "specialist agent and environment IDs must be canonical lowercase UUIDs"
   done
@@ -176,13 +190,14 @@ if (( specialist_present == 5 )); then
     && "$chief_agent_id" != "$growth_agent_id" \
     && "$chief_agent_id" != "$operations_agent_id" ]] \
     || fail "the Chief must not appear in the specialist allowlist"
-  [[ "$specialist_environment_id" != "$chief_agent_id" \
-    && "$specialist_environment_id" != "$product_agent_id" \
-    && "$specialist_environment_id" != "$growth_agent_id" \
-    && "$specialist_environment_id" != "$operations_agent_id" ]] \
-    || fail "the specialist environment ID must be distinct from every agent ID"
+  [[ "$product_environment_id" != "$growth_environment_id" \
+    && "$product_environment_id" != "$operations_environment_id" \
+    && "$growth_environment_id" != "$operations_environment_id" ]] \
+    || fail "specialist environment IDs must be distinct"
   [[ "$specialist_agent_ids" == "$product_agent_id,$growth_agent_id,$operations_agent_id" ]] \
     || fail "NIX_SPECIALIST_AGENT_IDS must exactly list Product,Growth,Operations in order"
+  [[ "$specialist_environment_ids" == "$product_environment_id,$growth_environment_id,$operations_environment_id" ]] \
+    || fail "NIX_SPECIALIST_ENVIRONMENT_IDS must exactly list Product,Growth,Operations environments in order"
 fi
 [[ "$hermes_telegram_bot_username" =~ ^[A-Za-z0-9_]{5,32}$ ]] \
   || fail "HERMES_TELEGRAM_BOT_USERNAME must be a bare Telegram username"
@@ -204,6 +219,9 @@ secret_files=(
   "$hermes_env"
   "$founder_relay_env"
   "$specialist_provider_env"
+  "$specialist_worker_host_key"
+  "$specialist_worker_authorized_keys"
+  "$specialist_worker_client_key"
 )
 for (( secret_index = 0; secret_index < ${#secret_files[@]}; secret_index += 1 )); do
   secret_file=${secret_files[$secret_index]}
@@ -285,7 +303,6 @@ founder_relay_secret=$(secret_value "$founder_relay_env" NIX_FOUNDER_RELAY_SECRE
 founder_telegram_user=$(secret_value "$founder_relay_env" NIX_LIOR_TELEGRAM_USER_ID)
 founder_telegram_chat=$(secret_value "$founder_relay_env" NIX_LIOR_TELEGRAM_CHAT_ID)
 specialist_provider_key=$(secret_value "$specialist_provider_env" OPENCODE_API_KEY)
-specialist_daytona_key=$(secret_value "$specialist_provider_env" DAYTONA_API_KEY)
 
 if grep -Eq '^[[:space:]]*(export[[:space:]]+)?OPENCODE_GO_BASE_URL[[:space:]]*=' "$hermes_env"; then
   fail "Hermes external environment must not override the reviewed OpenCode Go endpoint"
@@ -316,18 +333,26 @@ fi
   || fail "founder relay environment must contain exactly its three reviewed bindings"
 [[ $(wc -l <"$founder_relay_env" | tr -d ' ') == 3 ]] \
   || fail "founder relay environment must not contain additional bindings"
-[[ $(grep -Ec '^(DAYTONA_API_KEY|OPENCODE_API_KEY)=' "$specialist_provider_env" || true) == 2 ]] \
-  || fail "specialist provider import file must contain exactly DAYTONA_API_KEY and OPENCODE_API_KEY"
-[[ $(wc -l <"$specialist_provider_env" | tr -d ' ') == 2 ]] \
+[[ $(grep -Ec '^OPENCODE_API_KEY=' "$specialist_provider_env" || true) == 1 ]] \
+  || fail "specialist provider import file must contain exactly OPENCODE_API_KEY"
+[[ $(wc -l <"$specialist_provider_env" | tr -d ' ') == 1 ]] \
   || fail "specialist provider import file must not contain additional bindings"
-(( ${#specialist_daytona_key} >= 20 )) \
-  || fail "specialist DAYTONA_API_KEY is missing or too short"
 (( ${#specialist_provider_key} >= 20 )) \
   || fail "specialist OPENCODE_API_KEY is missing or too short"
-[[ "$specialist_daytona_key" != REPLACE_WITH_DAYTONA_API_KEY ]] \
-  || fail "specialist DAYTONA_API_KEY placeholder must be replaced"
 [[ "$specialist_provider_key" != REPLACE_WITH_RESTRICTED_OPENCODE_API_KEY ]] \
   || fail "specialist OPENCODE_API_KEY placeholder must be replaced"
+command -v ssh-keygen >/dev/null 2>&1 || fail "ssh-keygen is required"
+host_public=$(ssh-keygen -y -f "$specialist_worker_host_key" 2>/dev/null) \
+  || fail "specialist worker host key is invalid"
+client_public=$(ssh-keygen -y -f "$specialist_worker_client_key" 2>/dev/null) \
+  || fail "specialist worker client key is invalid"
+[[ "$host_public" == ssh-ed25519\ * && "$client_public" == ssh-ed25519\ * ]] \
+  || fail "specialist worker SSH keys must be Ed25519"
+authorized=$(cat "$specialist_worker_authorized_keys")
+[[ "$authorized" == "restrict $client_public"* ]] \
+  || fail "specialist worker authorized key does not match the configured client key"
+[[ $(awk 'NF { count += 1 } END { print count + 0 }' "$specialist_worker_authorized_keys") == 1 ]] \
+  || fail "specialist worker authorized-keys file must contain exactly one key"
 control_plane_secrets=(
   "$postgres_password"
   "$paperclip_db_password"
@@ -341,10 +366,7 @@ control_plane_secrets=(
 )
 secret_must_not_match_any \
   "specialist OPENCODE_API_KEY" \
-  "$specialist_provider_key" "$specialist_daytona_key" "${control_plane_secrets[@]}"
-secret_must_not_match_any \
-  "specialist DAYTONA_API_KEY" \
-  "$specialist_daytona_key" "$specialist_provider_key" "${control_plane_secrets[@]}"
+  "$specialist_provider_key" "${control_plane_secrets[@]}"
 if [[ ${NIX_ALLOW_TEST_CONFIG:-0} != 1 ]]; then
   [[ "$telegram_token" =~ ^[0-9]{6,}:[A-Za-z0-9_-]{30,}$ ]] || fail "TELEGRAM_BOT_TOKEN does not match the BotFather token shape"
 else

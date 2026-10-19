@@ -33,6 +33,7 @@ brain_gid=$(stat -c '%g' "$test_tmp_dir/nix-brain" 2>/dev/null || stat -f '%g' "
 {
   printf 'COMPOSE_PROJECT_NAME=nix-os-test\n'
   printf 'PAPERCLIP_PUBLIC_URL=https://nix-os.test-tailnet.ts.net\n'
+  printf 'PAPERCLIP_RUNNER_PUBLIC_URL=wss://nix-os.test-tailnet.ts.net\n'
   printf 'PAPERCLIP_LIOR_USER_ID=lior-test-user\n'
   printf 'PAPERCLIP_HOST_PORT=0\n'
   printf 'POSTGRES_ENV_FILE=%s\n' "$test_tmp_dir/postgres.env"
@@ -42,13 +43,19 @@ brain_gid=$(stat -c '%g' "$test_tmp_dir/nix-brain" 2>/dev/null || stat -f '%g' "
   printf 'HERMES_TELEGRAM_BOT_USERNAME=the_nixos_bot\n'
   printf 'HERMES_TELEGRAM_MODE_FILE=%s\n' "$test_tmp_dir/hermes-telegram-mode.env"
   printf 'SPECIALIST_PROVIDER_ENV_FILE=%s\n' "$test_tmp_dir/specialist-provider.env"
+  printf 'SPECIALIST_WORKER_HOST_KEY_FILE=%s\n' "$test_tmp_dir/specialist-host-key"
+  printf 'SPECIALIST_WORKER_AUTHORIZED_KEYS_FILE=%s\n' "$test_tmp_dir/specialist-authorized-keys"
+  printf 'SPECIALIST_WORKER_CLIENT_KEY_FILE=%s\n' "$test_tmp_dir/specialist-client-key"
   printf 'NIX_CHIEF_AGENT_ID=11111111-1111-4111-8111-111111111111\n'
   printf 'NIX_APPROVED_PROJECT_ID=22222222-2222-4222-8222-222222222222\n'
   printf 'NIX_PRODUCT_AGENT_ID=33333333-3333-4333-8333-333333333333\n'
   printf 'NIX_GROWTH_AGENT_ID=44444444-4444-4444-8444-444444444444\n'
   printf 'NIX_OPERATIONS_AGENT_ID=55555555-5555-4555-8555-555555555555\n'
   printf 'NIX_SPECIALIST_AGENT_IDS=33333333-3333-4333-8333-333333333333,44444444-4444-4444-8444-444444444444,55555555-5555-4555-8555-555555555555\n'
-  printf 'NIX_SPECIALIST_ENVIRONMENT_ID=66666666-6666-4666-8666-666666666666\n'
+  printf 'NIX_PRODUCT_ENVIRONMENT_ID=66666666-6666-4666-8666-666666666666\n'
+  printf 'NIX_GROWTH_ENVIRONMENT_ID=77777777-7777-4777-8777-777777777777\n'
+  printf 'NIX_OPERATIONS_ENVIRONMENT_ID=88888888-8888-4888-8888-888888888888\n'
+  printf 'NIX_SPECIALIST_ENVIRONMENT_IDS=66666666-6666-4666-8666-666666666666,77777777-7777-4777-8777-777777777777,88888888-8888-4888-8888-888888888888\n'
   printf 'NIX_BRAIN_HOST_PATH=%s\n' "$test_tmp_dir/nix-brain"
   printf 'NIX_BRAIN_GID=%s\n' "$brain_gid"
   printf 'PAPERCLIP_AUTH_DISABLE_SIGN_UP=true\n'
@@ -90,7 +97,8 @@ done
 cp "$test_tmp_dir/test.env" "$test_tmp_dir/empty-specialists.env"
 for specialist_key in \
   NIX_PRODUCT_AGENT_ID NIX_GROWTH_AGENT_ID NIX_OPERATIONS_AGENT_ID \
-  NIX_SPECIALIST_AGENT_IDS NIX_SPECIALIST_ENVIRONMENT_ID; do
+  NIX_SPECIALIST_AGENT_IDS NIX_PRODUCT_ENVIRONMENT_ID NIX_GROWTH_ENVIRONMENT_ID \
+  NIX_OPERATIONS_ENVIRONMENT_ID NIX_SPECIALIST_ENVIRONMENT_IDS; do
   sed "s|^${specialist_key}=.*$|${specialist_key}=|" \
     "$test_tmp_dir/empty-specialists.env" >"$test_tmp_dir/empty-specialists.next"
   mv "$test_tmp_dir/empty-specialists.next" "$test_tmp_dir/empty-specialists.env"
@@ -142,7 +150,7 @@ if NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$test_tmp_dir/miss
   exit 1
 fi
 
-for provider_secret in DAYTONA_API_KEY OPENCODE_API_KEY OPENCODE_GO_API_KEY OPENCODE_ZEN_API_KEY; do
+for provider_secret in OPENCODE_API_KEY OPENCODE_GO_API_KEY OPENCODE_ZEN_API_KEY; do
   cp "$test_tmp_dir/test.env" "$test_tmp_dir/provider-secret.env"
   printf '%s=test-secret-must-stay-external\n' "$provider_secret" >>"$test_tmp_dir/provider-secret.env"
   if NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$test_tmp_dir/provider-secret.env" >/dev/null 2>&1; then
@@ -179,21 +187,10 @@ mv "$test_tmp_dir/founder-relay-safe.env" "$test_tmp_dir/founder-relay.env"
 
 cp "$test_tmp_dir/specialist-provider.env" "$test_tmp_dir/specialist-provider-safe.env"
 {
-  printf 'DAYTONA_API_KEY=REPLACE_WITH_DAYTONA_API_KEY\n'
   printf 'OPENCODE_API_KEY=REPLACE_WITH_RESTRICTED_OPENCODE_API_KEY\n'
 } >"$test_tmp_dir/specialist-provider.env"
 if NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$test_tmp_dir/test.env" >/dev/null 2>&1; then
   printf 'placeholder specialist provider credential unexpectedly passed\n' >&2
-  exit 1
-fi
-mv "$test_tmp_dir/specialist-provider-safe.env" "$test_tmp_dir/specialist-provider.env"
-
-cp "$test_tmp_dir/specialist-provider.env" "$test_tmp_dir/specialist-provider-safe.env"
-daytona_fixture=$(grep '^DAYTONA_API_KEY=' "$test_tmp_dir/specialist-provider.env" | cut -d= -f2-)
-sed "s|^OPENCODE_API_KEY=.*$|OPENCODE_API_KEY=$daytona_fixture|" \
-  "$test_tmp_dir/specialist-provider-safe.env" >"$test_tmp_dir/specialist-provider.env"
-if NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$test_tmp_dir/test.env" >/dev/null 2>&1; then
-  printf 'reused Daytona key in specialist OpenCode binding unexpectedly passed\n' >&2
   exit 1
 fi
 mv "$test_tmp_dir/specialist-provider-safe.env" "$test_tmp_dir/specialist-provider.env"
@@ -204,16 +201,6 @@ sed "s|^OPENCODE_API_KEY=.*$|OPENCODE_API_KEY=$chief_provider_fixture|" \
   "$test_tmp_dir/specialist-provider-safe.env" >"$test_tmp_dir/specialist-provider.env"
 if NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$test_tmp_dir/test.env" >/dev/null 2>&1; then
   printf 'reused Chief provider key in specialist OpenCode binding unexpectedly passed\n' >&2
-  exit 1
-fi
-mv "$test_tmp_dir/specialist-provider-safe.env" "$test_tmp_dir/specialist-provider.env"
-
-cp "$test_tmp_dir/specialist-provider.env" "$test_tmp_dir/specialist-provider-safe.env"
-api_fixture=$(grep '^API_SERVER_KEY=' "$test_tmp_dir/hermes.env" | cut -d= -f2-)
-sed "s|^DAYTONA_API_KEY=.*$|DAYTONA_API_KEY=$api_fixture|" \
-  "$test_tmp_dir/specialist-provider-safe.env" >"$test_tmp_dir/specialist-provider.env"
-if NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$test_tmp_dir/test.env" >/dev/null 2>&1; then
-  printf 'reused Chief control credential in Daytona binding unexpectedly passed\n' >&2
   exit 1
 fi
 mv "$test_tmp_dir/specialist-provider-safe.env" "$test_tmp_dir/specialist-provider.env"

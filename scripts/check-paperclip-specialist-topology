@@ -20,13 +20,9 @@ UUID_RE = re.compile(
     r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-"
     r"[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}"
 )
-ENVIRONMENT_MARKER = {"kind": "nix-specialist-daytona", "version": 1}
+ENVIRONMENT_MARKER = {"kind": "nix-specialist-ssh-worker", "version": 1}
 AGENT_MARKER = {"kind": "nix-task-scoped-specialist", "version": 1}
 MODEL = "opencode/gpt-5.6-luna"
-DAYTONA_PACKAGE = "@paperclipai/plugin-daytona"
-DAYTONA_PLUGIN_KEY = "paperclip.daytona-sandbox-provider"
-DAYTONA_PLUGIN_MANIFEST_VERSION = "0.1.7"
-DAYTONA_IMAGE = "daytonaio/sandbox:0.8.0@sha256:eadf88e4391072b7ad4bed27d9cadfc9fe9d8ed375d9219d34c2ccb518f213e3"
 ARCHIVE_HELPER_IMAGE = "postgres:17.11-alpine3.24@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24"
 ROLE_SPECS = {
     "product": ("Product", "pm"),
@@ -82,21 +78,30 @@ def read_provider_key_file(path: pathlib.Path) -> dict[str, str]:
     values: dict[str, str] = {}
     for line in lines:
         key, separator, value = line.partition("=")
-        if separator != "=" or key not in {"DAYTONA_API_KEY", "OPENCODE_API_KEY"} or key in values:
+        if separator != "=" or key != "OPENCODE_API_KEY" or key in values:
             raise TopologyError(
-                "specialist provider import file must contain only its two reviewed bindings"
+                "specialist provider import file must contain only OPENCODE_API_KEY"
             )
         values[key] = value
-    if set(values) != {"DAYTONA_API_KEY", "OPENCODE_API_KEY"}:
-        raise TopologyError(
-            "specialist provider import file must contain DAYTONA_API_KEY and OPENCODE_API_KEY"
-        )
+    if set(values) != {"OPENCODE_API_KEY"}:
+        raise TopologyError("specialist provider import file must contain OPENCODE_API_KEY")
     if any(
         not value or value != value.strip() or value.startswith("REPLACE_WITH_") or "\x00" in value
         for value in values.values()
     ):
         raise TopologyError("specialist provider import file does not contain a usable key")
     return values
+
+
+def ssh_public_key(path: pathlib.Path, label: str) -> str:
+    read_locked_file(path, label)
+    completed = subprocess.run(
+        ["ssh-keygen", "-y", "-f", str(path)], check=False, capture_output=True, text=True
+    )
+    fields = completed.stdout.strip().split()
+    if completed.returncode != 0 or len(fields) < 2 or fields[0] != "ssh-ed25519":
+        raise TopologyError(f"{label} is not a valid Ed25519 key")
+    return f"{fields[0]} {fields[1]}"
 
 
 def require_uuid(value: str, label: str) -> str:
@@ -213,19 +218,20 @@ done'''
 def build_topology_query(
     chief_id: str,
     project_id: str,
-    environment_id: str,
+    environment_ids: dict[str, str],
     specialist_ids: dict[str, str],
 ) -> str:
     for label, value in {
         "Chief agent ID": chief_id,
         "approved project ID": project_id,
-        "specialist environment ID": environment_id,
+        **{f"{slug} environment ID": environment_id for slug, environment_id in environment_ids.items()},
         **{f"{slug} agent ID": agent_id for slug, agent_id in specialist_ids.items()},
     }.items():
         require_uuid(value, label)
     specialist_sql = ",".join(f"'{value}'::uuid" for value in specialist_ids.values())
+    environment_sql = ",".join(f"'{value}'::uuid" for value in environment_ids.values())
     marker = '{"kind":"nix-task-scoped-specialist","version":1}'
-    environment_marker = '{"kind":"nix-specialist-daytona","version":1}'
+    environment_marker = '{"kind":"nix-specialist-ssh-worker","version":1}'
     return f"""
 SELECT json_build_object(
   'chief', (
@@ -285,7 +291,7 @@ SELECT json_build_object(
       'metadata', metadata
     ) ORDER BY created_at)
     FROM environments
-    WHERE id = '{environment_id}'::uuid
+    WHERE id IN ({environment_sql})
        OR metadata->'nix' = '{environment_marker}'::jsonb
   ), '[]'::json),
   'secrets', COALESCE((
@@ -300,7 +306,7 @@ SELECT json_build_object(
     ) ORDER BY created_at)
     FROM company_secrets
     WHERE company_id = (SELECT company_id FROM agents WHERE id = '{chief_id}'::uuid)
-      AND key IN ('nix-specialist-daytona-api-key', 'nix-specialist-opencode-api-key')
+      AND key IN ('nix-specialist-worker-ssh-key', 'nix-specialist-opencode-api-key')
   ), '[]'::json),
   'bindings', COALESCE((
     SELECT json_agg(json_build_object(
@@ -311,35 +317,22 @@ SELECT json_build_object(
     FROM company_secret_bindings
     WHERE company_id = (SELECT company_id FROM agents WHERE id = '{chief_id}'::uuid)
       AND (
-        (target_type = 'environment' AND target_id = '{environment_id}')
+        (target_type = 'environment' AND target_id IN ({','.join(repr(value) for value in environment_ids.values())}))
         OR secret_id IN (
           SELECT id FROM company_secrets
           WHERE company_id = (SELECT company_id FROM agents WHERE id = '{chief_id}'::uuid)
-            AND key IN ('nix-specialist-daytona-api-key', 'nix-specialist-opencode-api-key')
+            AND key IN ('nix-specialist-worker-ssh-key', 'nix-specialist-opencode-api-key')
         )
       )
   ), '[]'::json),
-  'unsafeLeases', COALESCE((
-    SELECT json_agg(json_build_object('id', id::text, 'status', status))
-    FROM environment_leases
-    WHERE company_id = (SELECT company_id FROM agents WHERE id = '{chief_id}'::uuid)
-      AND (status IS NULL OR status NOT IN ('released', 'expired', 'failed'))
-      AND (environment_id = '{environment_id}'::uuid OR provider = 'daytona')
-  ), '[]'::json),
+  'unsafeLeases', '[]'::json,
   'unsafeRuns', COALESCE((
     SELECT json_agg(json_build_object('id', id::text, 'status', status, 'agentId', agent_id::text))
     FROM heartbeat_runs
     WHERE agent_id IN ({specialist_sql})
       AND (status IS NULL OR status NOT IN ('succeeded', 'interrupted', 'failed', 'cancelled', 'timed_out'))
   ), '[]'::json),
-  'plugins', COALESCE((
-    SELECT json_agg(json_build_object(
-      'id', id::text, 'pluginKey', plugin_key, 'packageName', package_name,
-      'version', version, 'status', status, 'manifest', manifest_json,
-      'lastError', last_error
-    ) ORDER BY installed_at)
-    FROM plugins WHERE plugin_key = 'paperclip.daytona-sandbox-provider'
-  ), '[]'::json),
+  'plugins', '[]'::json,
   'experimental', COALESCE((
     SELECT experimental FROM instance_settings WHERE singleton_key = 'default'
   ), '{{}}'::jsonb),
@@ -372,14 +365,16 @@ def is_engineering_manager(row: dict[str, Any]) -> bool:
 def validate_topology(expected: dict[str, Any], snapshot: dict[str, Any]) -> None:
     chief_id = str(expected.get("chiefId") or "")
     project_id = str(expected.get("projectId") or "")
-    environment_id = str(expected.get("environmentId") or "")
+    environment_ids = expected.get("environmentIds")
     specialist_ids = expected.get("specialistIds")
     if not isinstance(specialist_ids, dict) or set(specialist_ids) != set(ROLE_SPECS):
         raise TopologyError("expected specialist identity map is invalid")
+    if not isinstance(environment_ids, dict) or set(environment_ids) != set(ROLE_SPECS):
+        raise TopologyError("expected specialist environment map is invalid")
     for label, value in {
         "Chief agent ID": chief_id,
         "approved project ID": project_id,
-        "specialist environment ID": environment_id,
+        **{f"{slug} environment ID": str(value) for slug, value in environment_ids.items()},
         **{f"{slug} agent ID": str(value) for slug, value in specialist_ids.items()},
     }.items():
         require_uuid(value, label)
@@ -446,7 +441,7 @@ def validate_topology(expected: dict[str, Any], snapshot: dict[str, Any]) -> Non
     ):
         raise TopologyError("unexpected nonterminated paperclip_runner exists outside the specialist allowlist")
     if unsafe_leases:
-        raise TopologyError("nonterminal or unknown specialist Daytona lease blocks a safe backup")
+        raise TopologyError("nonterminal or unknown specialist run blocks a safe backup")
     if unsafe_runs:
         raise TopologyError("nonterminal or unknown specialist run blocks a safe backup")
 
@@ -482,7 +477,7 @@ def validate_topology(expected: dict[str, Any], snapshot: dict[str, Any]) -> Non
             or row.get("adapterConfig") != adapter_config
             or row.get("runtimeConfig") != {"heartbeat": {"enabled": False, "maxConcurrentRuns": 1}}
             or row.get("budgetMonthlyCents") != 0
-            or row.get("defaultEnvironmentId") != environment_id
+            or row.get("defaultEnvironmentId") != environment_ids[slug]
             or metadata.get("nix") != AGENT_MARKER
             or metadata.get("specialistRole") != slug
         ):
@@ -507,49 +502,55 @@ def validate_topology(expected: dict[str, Any], snapshot: dict[str, Any]) -> Non
     ):
         raise TopologyError("task-scoped specialist unexpectedly has an active API key")
 
-    if len(environments) != 1:
-        raise TopologyError("marked specialist Daytona environment is not unique")
-    environment = require_dict(environments[0], "specialist environment")
-    if environment.get("id") != environment_id:
-        raise TopologyError("marked specialist environment does not match deployment configuration")
-    environment_metadata = require_dict(environment.get("metadata"), "specialist environment metadata")
-    config = require_dict(environment.get("config"), "specialist environment config")
-    env_vars = require_dict(environment.get("envVars"), "specialist environment variables")
-    daytona_ref = config.get("apiKey")
-    expected_config = {
-        "provider": "daytona",
-        "apiKey": daytona_ref,
-        "apiUrl": None,
-        "target": "eu",
-        "snapshot": None,
-        "image": DAYTONA_IMAGE,
-        "language": None,
-        "timeoutMs": 300000,
-        "livenessTimeoutMs": 30000,
-        "cpu": 1,
-        "memory": 2,
-        "disk": 5,
-        "gpu": None,
-        "autoStopInterval": 15,
-        "autoArchiveInterval": 60,
-        "autoDeleteInterval": 60,
-        "reuseLease": False,
-        "archiveOnRelease": False,
-        "runnerLifecycleMode": "per_turn",
-    }
-    if (
-        environment.get("name") != "Nix task-scoped Daytona sandbox"
-        or environment.get("driver") != "sandbox"
-        or environment.get("status") != "active"
-        or environment_metadata.get("nix") != ENVIRONMENT_MARKER
-        or config != expected_config
-        or set(env_vars) != {"OPENCODE_API_KEY"}
-    ):
-        raise TopologyError("specialist Daytona environment configuration is unsafe")
-
-    provider_ref = env_vars.get("OPENCODE_API_KEY")
-    if not UUID_RE.fullmatch(str(daytona_ref or "")) or not isinstance(provider_ref, dict):
-        raise TopologyError("specialist environment secret references are invalid")
+    if len(environments) != 3:
+        raise TopologyError("exactly three specialist SSH environments are required")
+    known_hosts = str(expected.get("knownHosts") or "")
+    environment_by_role: dict[str, dict[str, Any]] = {}
+    provider_refs: set[str] = set()
+    ssh_refs: set[str] = set()
+    for raw_environment in environments:
+        environment = require_dict(raw_environment, "specialist environment")
+        metadata = require_dict(environment.get("metadata"), "specialist environment metadata")
+        slug = str(metadata.get("specialistRole") or "")
+        if slug not in ROLE_SPECS or slug in environment_by_role:
+            raise TopologyError("specialist environment role mapping is unsafe")
+        config = require_dict(environment.get("config"), "specialist environment config")
+        env_vars = require_dict(environment.get("envVars"), "specialist environment variables")
+        ssh_ref = config.get("privateKeySecretRef")
+        provider_ref = env_vars.get("OPENCODE_API_KEY")
+        expected_config = {
+            "host": "specialist-worker", "port": 2222, "username": "worker",
+            "remoteWorkspacePath": f"/workspaces/{slug}", "privateKey": None,
+            "privateKeySecretRef": ssh_ref, "knownHosts": known_hosts,
+            "strictHostKeyChecking": True,
+        }
+        if (
+            environment.get("id") != environment_ids[slug]
+            or environment.get("name") != f"Nix local specialist worker ({slug})"
+            or environment.get("driver") != "ssh"
+            or environment.get("status") != "active"
+            or metadata.get("nix") != ENVIRONMENT_MARKER
+            or config != expected_config
+            or set(env_vars) != {"OPENCODE_API_KEY"}
+            or not isinstance(ssh_ref, dict)
+            or not isinstance(provider_ref, dict)
+        ):
+            raise TopologyError(f"specialist {slug} SSH environment configuration is unsafe")
+        for ref in (ssh_ref, provider_ref):
+            if ref.get("type") != "secret_ref" or ref.get("version") != "latest" \
+                    or not UUID_RE.fullmatch(str(ref.get("secretId") or "")):
+                raise TopologyError("specialist environment secret references are invalid")
+        ssh_refs.add(str(ssh_ref["secretId"]))
+        provider_refs.add(str(provider_ref["secretId"]))
+        environment_by_role[slug] = environment
+    if len(ssh_refs) != 1 or len(provider_refs) != 1:
+        raise TopologyError("specialist environments must share exactly the two reviewed secrets")
+    ssh_ref_id = next(iter(ssh_refs))
+    provider_ref_id = next(iter(provider_refs))
+    provider_ref = require_dict(
+        require_dict(environment_by_role["product"].get("envVars"), "provider environment variables").get("OPENCODE_API_KEY"),
+        "specialist provider secret reference",
+    )
     if (
         set(provider_ref)
         != {
@@ -573,37 +574,41 @@ def validate_topology(expected: dict[str, Any], snapshot: dict[str, Any]) -> Non
         if isinstance(row, dict) and isinstance(row.get("key"), str)
     }
     if len(secrets) != 2 or set(secret_by_key) != {
-        "nix-specialist-daytona-api-key",
+        "nix-specialist-worker-ssh-key",
         "nix-specialist-opencode-api-key",
     }:
         raise TopologyError("specialist secret metadata is missing or duplicated")
     expected_refs = {
-        "nix-specialist-daytona-api-key": daytona_ref,
-        "nix-specialist-opencode-api-key": provider_ref["secretId"],
+        "nix-specialist-worker-ssh-key": ssh_ref_id,
+        "nix-specialist-opencode-api-key": provider_ref_id,
     }
     expected_bindings = {
-        (str(daytona_ref), "apiKey", "latest", True),
-        (str(provider_ref["secretId"]), "env.OPENCODE_API_KEY", "latest", True),
+        (ssh_ref_id, environment_id, "privateKeySecretRef", "latest", True)
+        for environment_id in environment_ids.values()
+    } | {
+        (provider_ref_id, environment_id, "env.OPENCODE_API_KEY", "latest", True)
+        for environment_id in environment_ids.values()
     }
     actual_bindings = {
         (
             str(row.get("secretId") or ""),
+            str(row.get("targetId") or ""),
             str(row.get("configPath") or ""),
             str(row.get("versionSelector") or ""),
             row.get("required"),
         )
         for row in bindings if isinstance(row, dict)
         and row.get("targetType") == "environment"
-        and row.get("targetId") == environment_id
+        and row.get("targetId") in set(environment_ids.values())
     }
-    if len(bindings) != 2 or actual_bindings != expected_bindings:
+    if len(bindings) != 6 or actual_bindings != expected_bindings:
         raise TopologyError("specialist environment secret binding rows are unsafe")
     fingerprints = expected.get("secretFingerprints")
     if not isinstance(fingerprints, dict) or set(fingerprints) != set(expected_refs):
         raise TopologyError("expected specialist secret fingerprints are invalid")
     for key, secret_id in expected_refs.items():
         row = secret_by_key[key]
-        kind = "daytona" if key == "nix-specialist-daytona-api-key" else "provider"
+        kind = "worker-ssh" if key == "nix-specialist-worker-ssh-key" else "provider"
         fingerprint = str(fingerprints.get(key) or "")
         if (
             not re.fullmatch(r"[0-9a-f]{64}", fingerprint)
@@ -616,28 +621,8 @@ def validate_topology(expected: dict[str, Any], snapshot: dict[str, Any]) -> Non
         ):
             raise TopologyError(f"specialist secret metadata is unsafe for {key}")
 
-    if len(plugins) != 1:
-        raise TopologyError("exactly one installed Daytona plugin is required")
-    plugin = require_dict(plugins[0], "Daytona plugin")
-    manifest = require_dict(plugin.get("manifest"), "Daytona plugin manifest")
-    drivers = manifest.get("environmentDrivers")
-    driver = next(
-        (row for row in drivers if isinstance(row, dict) and row.get("driverKey") == "daytona"),
-        None,
-    ) if isinstance(drivers, list) else None
-    if (
-        plugin.get("pluginKey") != DAYTONA_PLUGIN_KEY
-        or plugin.get("packageName") != DAYTONA_PACKAGE
-        or plugin.get("version") != DAYTONA_PLUGIN_MANIFEST_VERSION
-        or plugin.get("status") != "ready"
-        or plugin.get("lastError") not in (None, "")
-        or manifest.get("id") != DAYTONA_PLUGIN_KEY
-        or manifest.get("version") != DAYTONA_PLUGIN_MANIFEST_VERSION
-        or manifest.get("capabilities") != ["environment.drivers.register"]
-        or not isinstance(driver, dict)
-        or driver.get("kind") != "sandbox_provider"
-    ):
-        raise TopologyError("installed Daytona plugin metadata is unsafe")
+    if plugins:
+        raise TopologyError("specialist topology must not depend on a sandbox-provider plugin")
 
 
 def run(command: list[str], *, label: str) -> str:
@@ -665,15 +650,20 @@ def production_check(config_path: pathlib.Path) -> None:
     project_id = require_uuid(
         read_config(config_path, "NIX_APPROVED_PROJECT_ID"), "approved project ID"
     )
-    environment_id = require_uuid(
-        read_config(config_path, "NIX_SPECIALIST_ENVIRONMENT_ID"),
-        "specialist environment ID",
-    )
+    environment_ids = {
+        slug: require_uuid(
+            read_config(config_path, f"NIX_{slug.upper()}_ENVIRONMENT_ID"),
+            f"{slug} environment ID",
+        )
+        for slug in ROLE_SPECS
+    }
+    if read_config(config_path, "NIX_SPECIALIST_ENVIRONMENT_IDS").split(",") != list(environment_ids.values()):
+        raise TopologyError("NIX_SPECIALIST_ENVIRONMENT_IDS does not match the role environment IDs")
     specialist_ids = specialist_ids_from_config(config_path)
     provider_keys = read_provider_key_file(
         pathlib.Path(read_config(config_path, "SPECIALIST_PROVIDER_ENV_FILE"))
     )
-    query = build_topology_query(chief_id, project_id, environment_id, specialist_ids)
+    query = build_topology_query(chief_id, project_id, environment_ids, specialist_ids)
     compose = [
         "docker",
         "compose",
@@ -711,11 +701,12 @@ def production_check(config_path: pathlib.Path) -> None:
         {
             "chiefId": chief_id,
             "projectId": project_id,
-            "environmentId": environment_id,
+            "environmentIds": environment_ids,
             "specialistIds": specialist_ids,
+            "knownHosts": f"[specialist-worker]:2222 {ssh_public_key(pathlib.Path(read_config(config_path, 'SPECIALIST_WORKER_HOST_KEY_FILE')), 'specialist worker host key')}",
             "secretFingerprints": {
-                "nix-specialist-daytona-api-key": hashlib.sha256(
-                    provider_keys["DAYTONA_API_KEY"].encode()
+                "nix-specialist-worker-ssh-key": hashlib.sha256(
+                    read_locked_file(pathlib.Path(read_config(config_path, "SPECIALIST_WORKER_CLIENT_KEY_FILE")), "specialist worker client key").encode()
                 ).hexdigest(),
                 "nix-specialist-opencode-api-key": hashlib.sha256(
                     provider_keys["OPENCODE_API_KEY"].encode()

@@ -20,6 +20,12 @@ grep -Fq 'test ! -e /state/mcp-tokens/nix-os-paperclip-claim-stage.json' "$repo_
   || fail 'backup does not reject a staged claim secret'
 grep -Fq 'scripts/check-paperclip-specialist-topology' "$repo_root/scripts/backup" \
   || fail 'backup does not gate production capture on specialist topology'
+grep -Fq 'NIX_BACKUP_PRE_SPECIALIST_TRANSITION is allowed only before any Slice 3 identity is configured' \
+  "$repo_root/scripts/backup" \
+  || fail 'backup lacks the narrowly guarded Slice 2 to Slice 3 transition mode'
+# shellcheck disable=SC2016
+grep -Fq 'NIX_BACKUP_PRE_SPECIALIST_TRANSITION=1 "$repo_root/scripts/backup"' "$repo_root/scripts/ops" \
+  || fail 'upgrade does not use the guarded pre-specialist backup path'
 grep -Fq 'scripts/check-paperclip-specialist-topology' "$repo_root/scripts/restore-smoke" \
   || fail 'restore smoke does not validate the recovered specialist topology'
 restore_specialist_check_line=$(awk '
@@ -41,14 +47,12 @@ restore_paperclip_start_line=$(awk '
 grep -Fq 'restore_runner_cache_volume="${restore_project}_paperclip_runner_cache"' \
   "$repo_root/scripts/restore-smoke" \
   || fail 'restore smoke does not reject a colliding Paperclip runner cache volume'
-grep -Fq '/environments/capabilities' \
+grep -Fq '/probe?companyId=' \
   "$repo_root/scripts/restore-smoke" \
-  || fail 'restore smoke does not prove the restored Daytona worker is ready through Paperclip'
-grep -Fq '/secrets")' "$repo_root/scripts/restore-smoke" \
-  || fail 'restore smoke does not verify restored specialist secret metadata'
+  || fail 'restore smoke does not authenticate through each restored SSH environment'
 # shellcheck disable=SC2016
-grep -Fq 'test -z "${DAYTONA_API_KEY:-}"' "$repo_root/scripts/restore-smoke" \
-  || fail 'restore smoke does not reject host-environment Daytona credential leakage'
+grep -Fq 'test -z "${OPENCODE_API_KEY:-}"' "$repo_root/scripts/restore-smoke" \
+  || fail 'restore smoke does not reject host-environment provider credential leakage'
 # shellcheck disable=SC2016
 grep -Fq 'test ! -L "/state/$path"' "$repo_root/scripts/backup" \
   || fail 'backup does not reject dangling Slice 2 state symlinks before following them'
@@ -82,18 +86,24 @@ chmod 0750 "$test_tmp_dir/nix-brain"
 brain_gid=$(stat -c '%g' "$test_tmp_dir/nix-brain" 2>/dev/null || stat -f '%g' "$test_tmp_dir/nix-brain")
 {
   printf 'COMPOSE_PROJECT_NAME=nix-os-backup-policy-test\n'
-  printf 'PAPERCLIP_PUBLIC_URL=https://nix-os.test-tailnet.ts.net\nPAPERCLIP_LIOR_USER_ID=lior-test-user\nPAPERCLIP_HOST_PORT=0\n'
+  printf 'PAPERCLIP_PUBLIC_URL=https://nix-os.test-tailnet.ts.net\nPAPERCLIP_RUNNER_PUBLIC_URL=wss://nix-os.test-tailnet.ts.net\nPAPERCLIP_LIOR_USER_ID=lior-test-user\nPAPERCLIP_HOST_PORT=0\n'
   printf 'POSTGRES_ENV_FILE=%s\nPAPERCLIP_ENV_FILE=%s\n' "$test_tmp_dir/postgres.env" "$test_tmp_dir/paperclip.env"
   printf 'HERMES_ENV_FILE=%s\nNIX_BRAIN_HOST_PATH=%s\n' "$test_tmp_dir/hermes.env" "$test_tmp_dir/nix-brain"
   printf 'FOUNDER_RELAY_ENV_FILE=%s\n' "$test_tmp_dir/founder-relay.env"
   printf 'SPECIALIST_PROVIDER_ENV_FILE=%s\n' "$test_tmp_dir/specialist-provider.env"
+  printf 'SPECIALIST_WORKER_HOST_KEY_FILE=%s\n' "$test_tmp_dir/specialist-host-key"
+  printf 'SPECIALIST_WORKER_AUTHORIZED_KEYS_FILE=%s\n' "$test_tmp_dir/specialist-authorized-keys"
+  printf 'SPECIALIST_WORKER_CLIENT_KEY_FILE=%s\n' "$test_tmp_dir/specialist-client-key"
   printf 'NIX_CHIEF_AGENT_ID=11111111-1111-4111-8111-111111111111\n'
   printf 'NIX_APPROVED_PROJECT_ID=22222222-2222-4222-8222-222222222222\n'
   printf 'NIX_PRODUCT_AGENT_ID=33333333-3333-4333-8333-333333333333\n'
   printf 'NIX_GROWTH_AGENT_ID=44444444-4444-4444-8444-444444444444\n'
   printf 'NIX_OPERATIONS_AGENT_ID=55555555-5555-4555-8555-555555555555\n'
   printf 'NIX_SPECIALIST_AGENT_IDS=33333333-3333-4333-8333-333333333333,44444444-4444-4444-8444-444444444444,55555555-5555-4555-8555-555555555555\n'
-  printf 'NIX_SPECIALIST_ENVIRONMENT_ID=66666666-6666-4666-8666-666666666666\n'
+  printf 'NIX_PRODUCT_ENVIRONMENT_ID=66666666-6666-4666-8666-666666666666\n'
+  printf 'NIX_GROWTH_ENVIRONMENT_ID=77777777-7777-4777-8777-777777777777\n'
+  printf 'NIX_OPERATIONS_ENVIRONMENT_ID=88888888-8888-4888-8888-888888888888\n'
+  printf 'NIX_SPECIALIST_ENVIRONMENT_IDS=66666666-6666-4666-8666-666666666666,77777777-7777-4777-8777-777777777777,88888888-8888-4888-8888-888888888888\n'
   printf 'NIX_BRAIN_GID=%s\n' "$brain_gid"
   printf 'HERMES_TELEGRAM_BOT_USERNAME=the_nixos_bot\n'
   printf 'HERMES_TELEGRAM_MODE_FILE=%s\n' "$test_tmp_dir/hermes-telegram-mode.env"

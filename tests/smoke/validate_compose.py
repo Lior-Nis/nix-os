@@ -15,18 +15,20 @@ config = json.loads(compose_path.read_text())
 services = config.get("services", {})
 
 require(
-    set(services) == {"paperclip", "postgres", "hermes"},
+    set(services) == {"paperclip", "postgres", "hermes", "specialist-worker"},
     "Compose must contain only the accepted control plane",
 )
 for name, service in services.items():
     image = service.get("image", "")
-    require("@sha256:" in image, f"{name} image is not digest-pinned")
+    if name != "specialist-worker":
+        require("@sha256:" in image, f"{name} image is not digest-pinned")
     require(":latest" not in image, f"{name} uses latest")
     require(service.get("restart") == "unless-stopped", f"{name} restart policy is missing")
     require("healthcheck" in service, f"{name} healthcheck is missing")
 
 require(not services["postgres"].get("ports"), "PostgreSQL must not publish ports")
 require(not services["hermes"].get("ports"), "Hermes must not publish host ports")
+require(not services["specialist-worker"].get("ports"), "specialist worker must not publish host ports")
 paperclip_ports = services["paperclip"].get("ports", [])
 require(len(paperclip_ports) == 1, "Paperclip must publish exactly one loopback port")
 paperclip_port = paperclip_ports[0]
@@ -75,14 +77,60 @@ require(config.get("networks", {}).get("data", {}).get("internal") is True, "dat
 require(config.get("networks", {}).get("app", {}).get("internal") is not True, "Paperclip app network must allow outbound access")
 require(config.get("networks", {}).get("hermes_egress", {}).get("internal") is not True, "Hermes egress network must allow outbound access")
 require(config.get("networks", {}).get("agent", {}).get("internal") is True, "agent network must be internal")
-require(set(services["paperclip"].get("networks", {})) == {"app", "data", "agent"}, "Paperclip network boundary is wrong")
+require(config.get("networks", {}).get("specialist", {}).get("internal") is True, "specialist control network must be internal")
+require(config.get("networks", {}).get("specialist_egress", {}).get("internal") is not True, "specialist worker must reach its model provider")
+require(set(services["paperclip"].get("networks", {})) == {"app", "data", "agent", "specialist"}, "Paperclip network boundary is wrong")
 require(set(services["postgres"].get("networks", {})) == {"data"}, "PostgreSQL must remain on the internal data network")
 require(set(services["hermes"].get("networks", {})) == {"hermes_egress", "agent"}, "Hermes must use only its egress and agent networks")
+worker = services["specialist-worker"]
+require(worker.get("init") is True, "specialist worker must use an init process")
+require(worker.get("privileged") in (None, False), "specialist worker must not be privileged")
+require(not worker.get("env_file"), "specialist worker must not inherit an env file")
+require(not worker.get("devices"), "specialist worker must not receive host devices")
+for namespace in ("network_mode", "pid", "ipc"):
+    require(worker.get(namespace) not in {"host", "service:paperclip"}, f"specialist worker has unsafe {namespace}")
+require(set(worker.get("networks", {})) == {"specialist", "specialist_egress"}, "specialist worker network boundary is wrong")
+require(worker.get("read_only") is True, "specialist worker root filesystem must be read-only")
+require(worker.get("pids_limit") == 256, "specialist worker PID limit changed")
+require(str(worker.get("cpus")) in {"1", "1.0"}, "specialist worker CPU limit changed")
+require(str(worker.get("mem_limit")) in {"2147483648", "2g"}, "specialist worker memory limit changed")
+require(worker.get("cap_drop") == ["ALL"], "specialist worker must drop all capabilities first")
+require(set(worker.get("cap_add", [])) == {"CHOWN", "DAC_OVERRIDE", "KILL", "SETGID", "SETUID", "SYS_CHROOT"}, "specialist worker capability allowlist changed")
+require("no-new-privileges:true" in worker.get("security_opt", []), "specialist worker must set no-new-privileges")
+worker_mounts = worker.get("volumes", [])
+require(not any(m.get("source") in {"/var/run/docker.sock", "/run/docker.sock"} for m in worker_mounts), "specialist worker must not receive a Docker socket")
+require(all(m.get("target") in {"/workspaces", "/run/secrets/specialist_host_key", "/run/secrets/specialist_authorized_keys"} for m in worker_mounts), "specialist worker has an unexpected host mount")
+workspace_mount = next(m for m in worker_mounts if m.get("target") == "/workspaces")
+require(workspace_mount.get("type") == "volume", "specialist workspaces must use a Docker volume")
+for secret_target in (
+    "/run/secrets/specialist_host_key",
+    "/run/secrets/specialist_authorized_keys",
+):
+    secret_mount = next(m for m in worker_mounts if m.get("target") == secret_target)
+    require(secret_mount.get("type") == "bind", f"{secret_target} must be an explicit bind")
+    require(secret_mount.get("read_only") is True, f"{secret_target} must be read-only")
+tmpfs_targets = {
+    mount.get("target") if isinstance(mount, dict) else str(mount).split(":", 1)[0]
+    for mount in worker.get("tmpfs", [])
+}
+require(
+    tmpfs_targets == {"/run", "/tmp", "/home/worker/.cache", "/home/worker/.local"},
+    "specialist worker tmpfs boundary changed",
+)
+
+worker_dockerfile = (repo_root / "deploy/specialist-worker/Dockerfile").read_text()
+require(
+    worker_dockerfile.startswith("FROM node:22.20.0-bookworm-slim@sha256:"),
+    "specialist worker base image must be digest-pinned",
+)
+require("ARG OPENCODE_VERSION=1.18.29" in worker_dockerfile, "OpenCode version pin changed")
+require('"opencode-ai@${OPENCODE_VERSION}"' in worker_dockerfile, "OpenCode install must use the exact pin")
 
 paperclip_env = services["paperclip"].get("environment", {})
 require(paperclip_env.get("PAPERCLIP_DEPLOYMENT_MODE") == "authenticated", "Paperclip auth mode is wrong")
 require(paperclip_env.get("PAPERCLIP_DEPLOYMENT_EXPOSURE") == "private", "tailnet ingress must use private exposure mode")
 require(paperclip_env.get("PAPERCLIP_PUBLIC_URL") == "https://nix-os.test-tailnet.ts.net", "Paperclip public URL is wrong")
+require(paperclip_env.get("PAPERCLIP_RUNNER_PUBLIC_URL") == "wss://nix-os.test-tailnet.ts.net", "runner public URL is wrong")
 require(paperclip_env.get("PAPERCLIP_ALLOWED_HOSTNAMES") == "paperclip", "Paperclip must allow only its internal service hostname in addition to the configured public URL")
 require(paperclip_env.get("PAPERCLIP_MIGRATION_AUTO_APPLY") == "true", "migration policy must be explicit")
 require(paperclip_env.get("PAPERCLIP_ENABLE_COMPANY_DELETION") == "false", "company deletion must be disabled")

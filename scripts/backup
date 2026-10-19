@@ -124,9 +124,19 @@ if [[ $test_only_unencrypted == 0 ]]; then
   hermes_image=$("${compose[@]}" config --format json | jq -er '.services.hermes.image') \
     || fail "could not resolve the pinned Hermes image"
 fi
-
 specialist_topology_required=0
-if [[ ${NIX_ALLOW_TEST_CONFIG:-0} != 1 || ${NIX_REQUIRE_SPECIALIST_TOPOLOGY:-0} == 1 ]]; then
+pre_specialist_transition=${NIX_BACKUP_PRE_SPECIALIST_TRANSITION:-0}
+if [[ "$pre_specialist_transition" == 1 ]]; then
+  for key in NIX_PRODUCT_AGENT_ID NIX_GROWTH_AGENT_ID NIX_OPERATIONS_AGENT_ID \
+    NIX_SPECIALIST_AGENT_IDS NIX_PRODUCT_ENVIRONMENT_ID NIX_GROWTH_ENVIRONMENT_ID \
+    NIX_OPERATIONS_ENVIRONMENT_ID NIX_SPECIALIST_ENVIRONMENT_IDS; do
+    value=$(grep -E "^${key}=" "$config_file" | tail -n 1 | cut -d= -f2-)
+    [[ -z "$value" ]] \
+      || fail "NIX_BACKUP_PRE_SPECIALIST_TRANSITION is allowed only before any Slice 3 identity is configured"
+  done
+elif [[ "$pre_specialist_transition" != 0 ]]; then
+  fail "NIX_BACKUP_PRE_SPECIALIST_TRANSITION must be 0 or 1"
+elif [[ ${NIX_ALLOW_TEST_CONFIG:-0} != 1 || ${NIX_REQUIRE_SPECIALIST_TOPOLOGY:-0} == 1 ]]; then
   specialist_topology_required=1
 fi
 
@@ -170,168 +180,26 @@ check_backup_safety() {
     || fail "Hermes profile state contains invalid or external-only Telegram controls"
 }
 
+# Slice 3's local SSH worker has no hosted plugin/package state. The
+# non-mutating topology gate and live worker health are the backup boundary.
+# The topology verifier proves all environment and encrypted-secret bindings;
+# this check additionally requires the actual Compose worker to be healthy
+# before the coordinated stop/archive.
 check_live_specialist_readiness() {
-  local cookie_file=${BACKUP_PAPERCLIP_COOKIE_FILE:-}
-  local cookie_mode cookie_links cookie_header plugins_json plugin_id capabilities_json
-  local chief_id company_id environment_id environments_json secrets_json secret_ids
-  local daytona_secret_id opencode_secret_id
-
-  [[ -n "$cookie_file" && -f "$cookie_file" && ! -L "$cookie_file" ]] \
-    || fail "BACKUP_PAPERCLIP_COOKIE_FILE must name a private authenticated board cookie jar"
-  cookie_mode=$(stat -c '%a' "$cookie_file" 2>/dev/null || stat -f '%Lp' "$cookie_file")
-  (( (8#$cookie_mode & 077) == 0 )) \
-    || fail "BACKUP_PAPERCLIP_COOKIE_FILE must not be group/world accessible"
-  cookie_links=$(stat -c '%h' "$cookie_file" 2>/dev/null || stat -f '%l' "$cookie_file")
-  [[ "$cookie_links" == 1 ]] \
-    || fail "BACKUP_PAPERCLIP_COOKIE_FILE must have exactly one hard link"
-  cookie_header=$(cookie_header_from_file "$cookie_file") \
-    || fail "BACKUP_PAPERCLIP_COOKIE_FILE is invalid"
-
-  board_get() {
-    local path=$1
-    {
-      printf 'silent\nshow-error\nfail\n'
-      printf 'header = "Cookie: %s"\n' "$cookie_header"
-      printf 'header = "Origin: %s"\n' "$paperclip_public_url"
-      printf 'url = "http://127.0.0.1:3100%s"\n' "$path"
-    } | "${compose[@]}" exec -T paperclip curl -K -
-  }
-
-  chief_id=$(read_config NIX_CHIEF_AGENT_ID)
-  environment_id=$(read_config NIX_SPECIALIST_ENVIRONMENT_ID)
-  company_id=$("${compose[@]}" exec -T postgres psql --username paperclip --dbname paperclip \
-    --no-psqlrc --tuples-only --no-align \
-    --command "SELECT company_id FROM agents WHERE id = '$chief_id' LIMIT 1;" | tr -d '[:space:]')
-  [[ "$company_id" =~ ^[0-9a-fA-F-]{36}$ ]] \
-    || fail "could not resolve the specialist company for live backup readiness"
-
-  plugins_json=$(board_get '/api/plugins') \
-    || fail "could not read live Paperclip plugins with the authenticated board session"
-  jq -e '
-    [.[] | select(.packageName == "@paperclipai/plugin-daytona" and .version == "0.1.7")]
-    | length == 1
-    and .[0].status == "ready"
-    and .[0].pluginKey == "paperclip.daytona-sandbox-provider"
-    and .[0].manifestJson.id == "paperclip.daytona-sandbox-provider"
-    and .[0].manifestJson.version == "0.1.7"
-    and .[0].manifestJson.capabilities == ["environment.drivers.register"]
-  ' >/dev/null <<<"$plugins_json" || fail "live exact Daytona plugin is not ready"
-  plugin_id=$(jq -er '.[] | select(.pluginKey == "paperclip.daytona-sandbox-provider") | .id' \
-    <<<"$plugins_json") || fail "live Daytona plugin identifier is missing"
-
-  capabilities_json=$(board_get "/api/companies/${company_id}/environments/capabilities") \
-    || fail "could not read live environment capabilities"
-  jq -e --arg plugin_id "$plugin_id" '
-    .sandboxProviders.daytona.status == "supported"
-    and .sandboxProviders.daytona.source == "plugin"
-    and .sandboxProviders.daytona.pluginKey == "paperclip.daytona-sandbox-provider"
-    and .sandboxProviders.daytona.pluginId == $plugin_id
-    and .sandboxProviders.daytona.supportsSavedProbe == true
-    and .sandboxProviders.daytona.supportsUnsavedProbe == true
-    and .sandboxProviders.daytona.supportsRunExecution == true
-  ' >/dev/null <<<"$capabilities_json" \
-    || fail "live Daytona plugin worker is not execution-ready"
-
-  environments_json=$(board_get "/api/companies/${company_id}/environments") \
-    || fail "could not read the live specialist environment"
-  secret_ids=$(jq -er --arg id "$environment_id" '
-    (if type == "array" then . else (.environments // .items // .data // []) end) as $rows
-    | [($rows[] | select(.id == $id))] as $matches
-    | if ($matches | length) != 1 then error("specialist environment missing") else $matches[0] end
-    | .config.apiKey as $daytona
-    | .envVars.OPENCODE_API_KEY.secretId as $opencode
-    | if .name != "Nix task-scoped Daytona sandbox"
-        or .driver != "sandbox" or .status != "active"
-        or .metadata != {nix:{kind:"nix-specialist-daytona",version:1}}
-        or .config != {
-          provider:"daytona",apiKey:$daytona,apiUrl:null,target:"eu",snapshot:null,
-          image:"daytonaio/sandbox:0.8.0@sha256:eadf88e4391072b7ad4bed27d9cadfc9fe9d8ed375d9219d34c2ccb518f213e3",
-          language:null,timeoutMs:300000,livenessTimeoutMs:30000,cpu:1,memory:2,disk:5,gpu:null,
-          autoStopInterval:15,autoArchiveInterval:60,autoDeleteInterval:60,reuseLease:false,
-          archiveOnRelease:false,runnerLifecycleMode:"per_turn"
-        }
-        or .envVars != {OPENCODE_API_KEY:{
-          type:"secret_ref",secretId:$opencode,version:"latest",
-          projectionClass:"unclassified",projectionAllowlistKey:null
-        }}
-      then error("specialist Daytona environment drifted") else . end
-    | [$daytona, $opencode]
-    | if length != 2 or any(. == null or . == "") or .[0] == .[1]
-      then error("specialist secret references invalid") else .[] end
-  ' <<<"$environments_json") || fail "live specialist environment bindings are invalid"
-  secrets_json=$(board_get "/api/companies/${company_id}/secrets") \
-    || fail "could not read live specialist secret metadata"
-  daytona_secret_id=$(sed -n '1p' <<<"$secret_ids")
-  opencode_secret_id=$(sed -n '2p' <<<"$secret_ids")
-  jq -e --arg daytona "$daytona_secret_id" --arg opencode "$opencode_secret_id" '
-    . as $rows
-    | ([$rows[] | select(
-      .id == $daytona
-      and .key == "nix-specialist-daytona-api-key"
-      and .provider == "local_encrypted"
-      and .status == "active"
-      and .latestVersion >= 1
-      and (.description | test("^Nix Slice 3 daytona; sha256=[0-9a-f]{64}$"))
-    )] | length == 1)
-    and ([$rows[] | select(
-      .id == $opencode
-      and .key == "nix-specialist-opencode-api-key"
-      and .provider == "local_encrypted"
-      and .status == "active"
-      and .latestVersion >= 1
-      and (.description | test("^Nix Slice 3 provider; sha256=[0-9a-f]{64}$"))
-    )] | length == 1)
-  ' >/dev/null <<<"$secrets_json" \
-    || fail "live specialist secret metadata is incomplete"
-
-  # The database record alone is insufficient: /paperclip is the only copy of
-  # the installed npm package. Verify package-lock integrity and critical
-  # executable files before archiving the volume.
-  "${compose[@]}" exec -T paperclip node - <<'JS' \
-    || fail "installed Daytona plugin package artifacts are incomplete or changed"
-const fs = require("node:fs");
-const crypto = require("node:crypto");
-const root = "/paperclip/.paperclip/plugins";
-const packageRoot = `${root}/node_modules/@paperclipai/plugin-daytona`;
-const expected = {
-  "package.json": "0b96f641f9f3101179c488dcc68e40aea75963e80b981d0a3aa328b9cb932715",
-  "dist/index.js": "d2b4e4da5685aa0b0bd031fa08a1e20fd6c65a9fe26a5fbd927617f629909d7d",
-  "dist/manifest.js": "01c193593acd8c6b67d284356158dae3fe0b17c4121ad19614dfdb212c721484",
-  "dist/plugin.js": "1cdd3c802333e0e40e386f1b624eb9e2ea36a8cca131170fe06cf88e17db09c4",
-  "dist/worker.js": "9104ef61f80d1292618fd56d367f36ac90e2e255bac2ff34c928078d862cb3cb",
-};
-const lock = JSON.parse(fs.readFileSync(`${root}/package-lock.json`, "utf8"));
-const lockedRows = Object.entries(lock.packages ?? {}).filter(([key]) =>
-  key === "node_modules/@paperclipai/plugin-daytona" ||
-  key.endsWith("/node_modules/@paperclipai/plugin-daytona")
-);
-if (lockedRows.length !== 1) throw new Error("Daytona package-lock entry is absent or duplicated");
-const locked = lockedRows[0][1];
-if (locked?.version !== "2026.916.1" ||
-    locked?.integrity !== "sha512-rJOMUxFCEpXgaZ5gaD9OdSVNmg+5h9Gm77M/0mTD8MVVFgEw7yltrB7mzT0Ff09qb6lGkZgpVWkG7Glot/+g5A==") {
-  throw new Error("Daytona package-lock integrity is absent or changed");
-}
-for (const [relative, digest] of Object.entries(expected)) {
-  const path = `${packageRoot}/${relative}`;
-  const metadata = fs.lstatSync(path);
-  if (!metadata.isFile() || metadata.isSymbolicLink()) {
-    throw new Error(`Daytona package artifact is not a regular file: ${relative}`);
-  }
-  const actual = crypto.createHash("sha256").update(fs.readFileSync(path)).digest("hex");
-  if (actual !== digest) throw new Error(`Daytona package artifact changed: ${relative}`);
-}
-JS
-  "${compose[@]}" exec -T paperclip npm ls \
-    --prefix /paperclip/.paperclip/plugins --omit=dev --all --json >/dev/null \
-    || fail "installed Daytona plugin dependency tree is incomplete"
-  unset cookie_header plugins_json plugin_id capabilities_json environments_json secrets_json secret_ids
-  unset daytona_secret_id opencode_secret_id
+  local worker_status
+  "$repo_root/scripts/check-paperclip-specialist-topology" "$config_file" >/dev/null \
+    || fail "specialist SSH topology is unsafe"
+  worker_status=$("${compose[@]}" ps --format json specialist-worker | jq -sr '
+    if length == 1 then (.[0].Health // .[0].State // "") else "" end
+  ')
+  [[ "$worker_status" == healthy ]] \
+    || fail "specialist worker is not healthy"
 }
 
 check_backup_safety
 if [[ $specialist_topology_required == 1 ]]; then
   check_live_specialist_readiness \
-    || fail "Paperclip specialist live/package readiness is unsafe; refusing to capture a backup"
+    || fail "Paperclip specialist live readiness is unsafe; refusing to capture a backup"
 fi
 
 if "${compose[@]}" ps --status running --services | grep -qx hermes; then

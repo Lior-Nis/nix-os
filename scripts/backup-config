@@ -47,6 +47,9 @@ paperclip_env=$(read_config PAPERCLIP_ENV_FILE)
 hermes_env=$(read_config HERMES_ENV_FILE)
 founder_relay_env=$(read_config FOUNDER_RELAY_ENV_FILE)
 specialist_provider_env=$(read_config SPECIALIST_PROVIDER_ENV_FILE)
+specialist_worker_host_key=$(read_config SPECIALIST_WORKER_HOST_KEY_FILE)
+specialist_worker_authorized_keys=$(read_config SPECIALIST_WORKER_AUTHORIZED_KEYS_FILE)
+specialist_worker_client_key=$(read_config SPECIALIST_WORKER_CLIENT_KEY_FILE)
 output_dir=${BACKUP_OUTPUT_DIR:-$(read_config BACKUP_OUTPUT_DIR)}
 [[ -n "$output_dir" ]] || fail "BACKUP_OUTPUT_DIR is not configured"
 mkdir -p "$output_dir"
@@ -63,10 +66,13 @@ install -m 0600 "$paperclip_env" "$payload_dir/files/paperclip.env"
 install -m 0600 "$hermes_env" "$payload_dir/files/hermes.env"
 install -m 0600 "$founder_relay_env" "$payload_dir/files/founder-relay.env"
 install -m 0600 "$specialist_provider_env" "$payload_dir/files/specialist-provider.env"
+install -m 0600 "$specialist_worker_host_key" "$payload_dir/files/specialist-worker-host-key"
+install -m 0600 "$specialist_worker_authorized_keys" "$payload_dir/files/specialist-worker-authorized-keys"
+install -m 0600 "$specialist_worker_client_key" "$payload_dir/files/specialist-worker-client-key"
 
 git_commit=$(git -C "$repo_root" rev-parse HEAD 2>/dev/null || printf 'uncommitted')
 {
-  printf 'CONFIG_PACK_FORMAT_VERSION=4\n'
+  printf 'CONFIG_PACK_FORMAT_VERSION=5\n'
   printf 'CREATED_AT=%s\n' "$timestamp"
   printf 'GIT_COMMIT=%s\n' "$git_commit"
   printf 'POSTGRES_ENV_FILE=%s\n' "$postgres_env"
@@ -74,6 +80,9 @@ git_commit=$(git -C "$repo_root" rev-parse HEAD 2>/dev/null || printf 'uncommitt
   printf 'HERMES_ENV_FILE=%s\n' "$hermes_env"
   printf 'FOUNDER_RELAY_ENV_FILE=%s\n' "$founder_relay_env"
   printf 'SPECIALIST_PROVIDER_ENV_FILE=%s\n' "$specialist_provider_env"
+  printf 'SPECIALIST_WORKER_HOST_KEY_FILE=%s\n' "$specialist_worker_host_key"
+  printf 'SPECIALIST_WORKER_AUTHORIZED_KEYS_FILE=%s\n' "$specialist_worker_authorized_keys"
+  printf 'SPECIALIST_WORKER_CLIENT_KEY_FILE=%s\n' "$specialist_worker_client_key"
 } >"$payload_dir/manifest.env"
 (
   cd "$payload_dir"
@@ -84,6 +93,9 @@ git_commit=$(git -C "$repo_root" rev-parse HEAD 2>/dev/null || printf 'uncommitt
   hash_file files/hermes.env
   hash_file files/founder-relay.env
   hash_file files/specialist-provider.env
+  hash_file files/specialist-worker-host-key
+  hash_file files/specialist-worker-authorized-keys
+  hash_file files/specialist-worker-client-key
 ) >"$payload_dir/SHA256SUMS"
 
 artifact="$output_dir/${pack_name}.tar.gz.age"
