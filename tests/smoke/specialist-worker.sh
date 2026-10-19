@@ -56,7 +56,8 @@ docker run -d --name "$container" \
   "$image" >/dev/null
 
 authenticated=0
-for _ in $(seq 1 30); do
+ssh_error="$test_dir/ssh-error.log"
+for _ in $(seq 1 10); do
   if docker run --rm --network "$network" \
     --mount "type=bind,source=$test_dir/client,target=/run/client,readonly" \
     --mount "type=bind,source=$test_dir/known_hosts,target=/run/known_hosts,readonly" \
@@ -69,7 +70,7 @@ for _ in $(seq 1 30); do
        test -d /workspaces/product && test -d /workspaces/growth && test -d /workspaces/operations
        test ! -e /var/run/docker.sock && test ! -e /run/docker.sock
        ! touch /etc/nix-worker-rootfs-write-test
-       touch /workspaces/product/nix-worker-volume-write-test' >/dev/null 2>&1; then
+       touch /workspaces/product/nix-worker-volume-write-test' >/dev/null 2>"$ssh_error"; then
     authenticated=1
     break
   fi
@@ -77,6 +78,7 @@ for _ in $(seq 1 30); do
 done
 
 [[ $authenticated == 1 ]] || {
+  sed -n '1,80p' "$ssh_error" >&2
   docker logs "$container" >&2
   printf 'authenticated specialist worker boundary check failed\n' >&2
   exit 1
