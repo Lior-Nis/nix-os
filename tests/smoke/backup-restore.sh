@@ -574,7 +574,8 @@ operations_agent_id=$(create_specialist_fixture operations Operations general \
   'Operations specialist for bounded execution and verification.' \
   "$repo_root/deploy/specialists/operations.md")
 specialist_permissions=$(jq -nc '{
-  canCreateAgents:false,canCreateSkills:false,canAssignTasks:true
+  canCreateAgents:false,canCreateSkills:false,canAssignTasks:true,
+  trustPreset:"standard",authorizationPolicy:{trustPreset:"standard"}
 }')
 for specialist_agent_id in "$product_agent_id" "$growth_agent_id" "$operations_agent_id"; do
   source_patch "/api/agents/${specialist_agent_id}/permissions" "$specialist_permissions" >/dev/null
