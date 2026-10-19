@@ -13,7 +13,8 @@ RUN apt-get update \
     && useradd --uid 10001 --gid 10001 --create-home --shell /bin/sh worker \
     && usermod --password '*' worker \
     && install -d -o worker -g worker -m 0700 /home/worker/.ssh /workspaces \
-    && install -d -o root -g root -m 0755 /run/sshd
+    && install -d -o root -g root -m 0755 /run/sshd /opt/paperclip-runner \
+    && ln -s /runner-cache/nix-specialist-provider-pack /opt/paperclip-runner/provider-pack
 
 COPY sshd_config /etc/ssh/sshd_config
 COPY opencode.json /etc/opencode/opencode.json

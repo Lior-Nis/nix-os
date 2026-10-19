@@ -86,6 +86,7 @@ services:
       - no-new-privileges:true
     volumes:
       - specialist_workspaces:/workspaces
+      - paperclip_runner_cache:/runner-cache:ro
       - ${SPECIALIST_WORKER_HOST_KEY_FILE:?Set SPECIALIST_WORKER_HOST_KEY_FILE to the root-owned SSH host key}:/run/secrets/specialist_host_key:ro
       - ${SPECIALIST_WORKER_AUTHORIZED_KEYS_FILE:?Set SPECIALIST_WORKER_AUTHORIZED_KEYS_FILE to the root-owned authorized-keys file}:/run/secrets/specialist_authorized_keys:ro
     tmpfs:

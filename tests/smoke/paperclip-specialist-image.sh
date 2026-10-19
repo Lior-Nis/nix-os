@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 image='ghcr.io/paperclipai/paperclip:2026.916.1@sha256:a02ac35ac41df911af477422ea0e781cf41d2b2c600c66f0a5ac9d8c63f52c2c'
+worker_image="nix-specialist-provider-pack-worker:test-$$"
 
 python3 "$repo_root/tests/smoke/paperclip-specialist-patch.py"
 
@@ -23,7 +24,7 @@ docker run --rm --entrypoint sh \
 
 cache_volume="nix-paperclip-specialist-smoke-$$"
 docker volume create "$cache_volume" >/dev/null
-trap 'docker volume rm -f "$cache_volume" >/dev/null 2>&1 || true' EXIT
+trap 'docker volume rm -f "$cache_volume" >/dev/null 2>&1 || true; docker image rm -f "$worker_image" >/dev/null 2>&1 || true' EXIT
 entrypoint_args=(
   --rm
   --entrypoint /opt/nix/paperclip-entrypoint.sh
@@ -36,6 +37,26 @@ entrypoint_args=(
 docker run "${entrypoint_args[@]}"
 # A matching marker verifies and reuses the provider pack without rebuilding.
 docker run "${entrypoint_args[@]}"
+
+# SSH transports cannot upload a provider directory. The worker mounts this
+# reconstructible cache read-only and must be able to read every pack artifact
+# as its unprivileged uid.
+docker run --rm --entrypoint sh --user 10001:10001 \
+  -v "$cache_volume:/runner-cache:ro" "$image" -ec '
+    test -r /runner-cache/nix-specialist-provider-pack/provider-pack.json
+    test -x /runner-cache/nix-specialist-provider-pack/node_modules/.bin/opencode
+    test -z "$(find /runner-cache/nix-specialist-provider-pack -type f ! -readable -print -quit)"
+    ! printf tamper >> /runner-cache/nix-specialist-provider-pack/provider-pack.json
+  '
+
+docker build --quiet --tag "$worker_image" "$repo_root/deploy/specialist-worker" >/dev/null
+docker run --rm --entrypoint sh --user 10001:10001 \
+  -v "$cache_volume:/runner-cache:ro" "$worker_image" -ec '
+    pack=/opt/paperclip-runner/provider-pack
+    test -r "$pack/provider-pack.json"
+    test "$("$pack/node_modules/.bin/opencode" --version)" = 1.18.29
+    ! printf tamper >> "$pack/provider-pack.json"
+  '
 
 docker run --rm --entrypoint sh -v "$cache_volume:/runner-cache" "$image" -ec \
   'printf "tamper" >> /runner-cache/nix-specialist-provider-pack/dist/drivers/opencode/opencode-server-driver.js'
