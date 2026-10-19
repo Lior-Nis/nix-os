@@ -126,7 +126,14 @@ tmpfs_targets = {
     for mount in worker.get("tmpfs", [])
 }
 require(
-    tmpfs_targets == {"/run", "/tmp", "/home/worker/.cache", "/home/worker/.local"},
+    tmpfs_targets
+    == {
+        "/run",
+        "/tmp",
+        "/home/worker/.config",
+        "/home/worker/.cache",
+        "/home/worker/.local",
+    },
     "specialist worker tmpfs boundary changed",
 )
 worker_dockerfile = (repo_root / "deploy/specialist-worker/Dockerfile").read_text()
