@@ -3,9 +3,11 @@
 
 Paperclip v2026.916.1 ships the native runner surface needed by Slice 3, but
 its default tool catalog is company-wide and its OpenCode driver does not pass
-or redact the selected ``OPENCODE_API_KEY`` credential.  This installer changes
-only those pinned source and compiled files.  Every input and output is hash
-locked; an unknown image or partial patch refuses startup.
+or redact the selected ``OPENCODE_API_KEY`` credential. Its SSH command runner
+also drops the positional arguments required by the native runner's ``sh -c``
+launch contract. This installer changes only those pinned source and compiled
+files. Every input and output is hash locked; an unknown image or partial patch
+refuses startup.
 
 The bounded authority applies to every ``paperclip_runner`` session.  The
 configured specialist IDs narrow only peer discovery, child assignment, and
@@ -1172,6 +1174,27 @@ def patch_issues_route_js(source: str) -> str:
     return source
 
 
+def patch_ssh_command_args(source: str) -> str:
+    """Preserve positional arguments for the pinned SSH ``sh -c`` runner."""
+
+    return _replace_once(
+        source,
+        '''      const commandScript = command === "sh" || command === "bash"
+        ? (args[0] === "-c" || args[0] === "-lc") && typeof args[1] === "string"
+          ? `${exportPrefix}${args[1]}`
+          : `${envPrefix}exec ${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`
+        : `${envPrefix}exec ${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`;''',
+        '''      const commandScript = command === "sh" || command === "bash"
+        ? (args[0] === "-c" || args[0] === "-lc") && typeof args[1] === "string"
+          ? args.length > 2
+            ? `${exportPrefix}exec ${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`
+            : `${exportPrefix}${args[1]}`
+          : `${envPrefix}exec ${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`
+        : `${envPrefix}exec ${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`;''',
+        label="SSH sh -c positional arguments",
+    )
+
+
 @dataclass(frozen=True)
 class PatchSpec:
     relative_path: str
@@ -1181,6 +1204,12 @@ class PatchSpec:
 
 
 PATCH_SPECS = (
+    PatchSpec(
+        "packages/adapter-utils/src/ssh.ts",
+        "e7bbe4a33135be2fc937be9c88572fc561ba615956e1331e48299a35df4243f4",
+        "975db449ee560a7615f87026a509f423808750e10ee8eaafca0e83de030214b6",
+        patch_ssh_command_args,
+    ),
     PatchSpec(
         "server/src/middleware/http-log-redaction.ts",
         "482c2eb0a6cadb611b3959a477859d8d2a4aa9aaf1ee39fbc343b40ca61b3252",

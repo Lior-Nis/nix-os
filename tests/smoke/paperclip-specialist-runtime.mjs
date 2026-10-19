@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import vm from "node:vm";
 
 const appRoot = process.env.PAPERCLIP_APP_ROOT ?? "/app";
@@ -97,6 +99,43 @@ assert.ok(openCodeDriver.includes("OPENROUTER_API_KEY|OPENCODE_API_KEY|authoriza
 assert.ok(openCodeDriver.includes("tools: { question: false }"));
 assert.ok(openCodeDriver.includes('question: "deny"'));
 assert.ok(openCodeDriver.includes("nix_opencode_native_question_denied"));
+
+// Exercise the exact patched SSH adapter. The fake ssh binary executes only
+// its final remote-command argument locally, which proves the adapter retains
+// sh -c's argv[0] and positional arguments without requiring a network daemon.
+const fakeSshDir = await mkdtemp(path.join(os.tmpdir(), "nix-fake-ssh-"));
+const fakeSsh = path.join(fakeSshDir, "ssh");
+await writeFile(fakeSsh, '#!/bin/sh\nfor value do remote=$value; done\nexec sh -c "$remote"\n');
+await chmod(fakeSsh, 0o755);
+const originalPath = process.env.PATH;
+process.env.PATH = `${fakeSshDir}:${originalPath}`;
+try {
+  const { createSshCommandManagedRuntimeRunner } = await import(
+    `${appRoot}/packages/adapter-utils/src/ssh.ts`
+  );
+  const sshRunner = createSshCommandManagedRuntimeRunner({
+    spec: {
+      host: "fixture.invalid",
+      port: 22,
+      username: "worker",
+      remoteCwd: "/tmp",
+      remoteWorkspacePath: "/tmp",
+      privateKey: null,
+      knownHosts: null,
+      strictHostKeyChecking: false,
+    },
+  });
+  const result = await sshRunner.execute({
+    command: "sh",
+    args: ["-c", 'set -eu; printf "%s|%s|%s" "$0" "$1" "$2"', "launch", "alpha", "beta"],
+    env: { NIX_POSITIONAL_TEST: "present" },
+  });
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.equal(result.stdout, "launch|alpha|beta");
+} finally {
+  process.env.PATH = originalPath;
+  await rm(fakeSshDir, { recursive: true, force: true });
+}
 
 const logRedaction = await import(
   `${appRoot}/server/dist/middleware/http-log-redaction.js`
