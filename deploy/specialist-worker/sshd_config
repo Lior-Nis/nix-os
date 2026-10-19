@@ -7,7 +7,7 @@ HostKeyAlgorithms ssh-ed25519
 PubkeyAcceptedAlgorithms ssh-ed25519
 
 AllowUsers worker
-AuthorizedKeysFile /run/secrets/specialist_authorized_keys
+AuthorizedKeysFile /run/sshd/authorized_keys
 AuthenticationMethods publickey
 PubkeyAuthentication yes
 PasswordAuthentication no

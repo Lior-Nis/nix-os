@@ -29,6 +29,7 @@ grep -Eq '^restrict ssh-ed25519 [A-Za-z0-9+/]+={0,3}( [^[:cntrl:]]+)?$' "$author
   || fail 'SSH authorized key must be one restricted Ed25519 key'
 
 install -d -o root -g root -m 0755 /run/sshd
+install -o root -g root -m 0644 "$authorized_keys" /run/sshd/authorized_keys
 install -d -o worker -g worker -m 0700 \
   /workspaces/product /workspaces/growth /workspaces/operations
 
