@@ -4,7 +4,9 @@
 The pinned Hermes release has no request-local bridge between ``/v1/runs`` and
 MCP calls.  This installer makes the smallest source change needed to carry an
 authenticated, UUID-shaped idempotency key through the executor thread and add
-it as MCP request metadata only for the server named ``paperclip``.
+it as MCP request metadata only for the server named ``paperclip``.  The same
+exact-pinned module reads already-bound Hermes session ContextVars so the local
+wrapper can distinguish Lior's Telegram DM from API, CLI, and run lanes.
 
 Every input and output file is hash locked.  A pristine pinned image is patched,
 an already-patched image is accepted, and every other state fails closed.
@@ -30,18 +32,31 @@ MCP_HANDLERS_SHA256 = "c4713aa289c7ca17b53c0ae53ceb6a276321f6d36e259084974e8b573
 PATCHED_API_SERVER_RUNS_SHA256 = "d5dd305a29441134b5b2531541ea23901da1d23d058990cb38226f867ca2ed7f"
 PATCHED_MCP_HANDLERS_SHA256 = "90b68aa75d4dc166d5bb827b99e6bb57cd5842d20a195846aa242513026b533a"
 
-CONTEXT_MODULE = '''"""Request-local Paperclip heartbeat attribution for the Nix Hermes pin."""
+CONTEXT_MODULE = '''"""Request-local Paperclip run and founder-chat context for the Nix Hermes pin."""
 
 from __future__ import annotations
 
 from contextvars import ContextVar, Token
+import os
+import re
 from typing import Optional
 import uuid
+
+from gateway import session_context
 
 
 _paperclip_run_id: ContextVar[Optional[str]] = ContextVar(
     "nix_paperclip_run_id", default=None
 )
+
+FOUNDER_CONTEXT_META_KEYS = {
+    "platform": "com.nix/hermes-platform",
+    "chat_type": "com.nix/hermes-chat-type",
+    "chat_id": "com.nix/hermes-chat-id",
+    "user_id": "com.nix/hermes-user-id",
+    "message_id": "com.nix/hermes-message-id",
+}
+POSITIVE_INTEGER = re.compile(r"^[1-9][0-9]*$")
 
 
 def validated_paperclip_run_id(value: object) -> Optional[str]:
@@ -65,12 +80,55 @@ def reset_paperclip_run_id(token: Token) -> None:
     _paperclip_run_id.reset(token)
 
 
+def _bound_session_value(variable_name: str) -> Optional[str]:
+    """Read a bound Hermes ContextVar without its CLI/environment fallback."""
+    variable = getattr(session_context, variable_name, None)
+    unset = getattr(session_context, "_UNSET", None)
+    if variable is None or not hasattr(variable, "get"):
+        return None
+    value = variable.get()
+    if value is unset or not isinstance(value, str) or not value:
+        return None
+    return value
+
+
+def founder_session_metadata() -> Optional[dict[str, str]]:
+    """Return a non-secret attestation seed only for Lior's configured DM."""
+    values = {
+        "platform": _bound_session_value("_SESSION_PLATFORM"),
+        "chat_type": _bound_session_value("_SESSION_CHAT_TYPE"),
+        "chat_id": _bound_session_value("_SESSION_CHAT_ID"),
+        "user_id": _bound_session_value("_SESSION_USER_ID"),
+        "message_id": _bound_session_value("_SESSION_MESSAGE_ID"),
+    }
+    configured_user = os.environ.get("TELEGRAM_ALLOWED_USERS", "")
+    configured_chat = os.environ.get("TELEGRAM_HOME_CHANNEL", "")
+    if (
+        values["platform"] != "telegram"
+        or values["chat_type"] != "dm"
+        or values["user_id"] != configured_user
+        or values["chat_id"] != configured_chat
+        or configured_user != configured_chat
+        or POSITIVE_INTEGER.fullmatch(configured_user) is None
+        or POSITIVE_INTEGER.fullmatch(values["message_id"] or "") is None
+    ):
+        return None
+    return {
+        FOUNDER_CONTEXT_META_KEYS[key]: value
+        for key, value in values.items()
+        if value is not None
+    }
+
+
 def paperclip_request_metadata(server_name: str) -> Optional[dict[str, str]]:
     """Metadata for the one trusted MCP server; all other lanes emit none."""
-    run_id = _paperclip_run_id.get()
-    if server_name != "paperclip" or run_id is None:
+    if server_name != "paperclip":
         return None
-    return {"com.paperclip/run-id": run_id}
+    metadata = founder_session_metadata() or {}
+    run_id = _paperclip_run_id.get()
+    if run_id is not None:
+        metadata["com.paperclip/run-id"] = run_id
+    return metadata or None
 '''
 CONTEXT_MODULE_SHA256 = hashlib.sha256(CONTEXT_MODULE.encode()).hexdigest()
 

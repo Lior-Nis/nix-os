@@ -24,6 +24,7 @@ printf 'PAPERCLIP_DB_PASSWORD=%s\n' "$paperclip_db_password" >>"$test_tmp_dir/po
   printf 'TELEGRAM_ALLOW_ALL_USERS=false\nGATEWAY_ALLOW_ALL_USERS=false\n'
 } >"$test_tmp_dir/hermes.env"
 printf 'HERMES_TELEGRAM_MODE=disabled\n' >"$test_tmp_dir/hermes-telegram-mode.env"
+"$repo_root/tests/fixtures/create-slice3-secret-files" "$test_tmp_dir"
 mkdir "$test_tmp_dir/nix-brain"
 brain_gid=$("$repo_root/tests/fixtures/select-brain-gid")
 chgrp "$brain_gid" "$test_tmp_dir/nix-brain"
@@ -37,8 +38,17 @@ brain_gid=$(stat -c '%g' "$test_tmp_dir/nix-brain" 2>/dev/null || stat -f '%g' "
   printf 'POSTGRES_ENV_FILE=%s\n' "$test_tmp_dir/postgres.env"
   printf 'PAPERCLIP_ENV_FILE=%s\n' "$test_tmp_dir/paperclip.env"
   printf 'HERMES_ENV_FILE=%s\n' "$test_tmp_dir/hermes.env"
+  printf 'FOUNDER_RELAY_ENV_FILE=%s\n' "$test_tmp_dir/founder-relay.env"
   printf 'HERMES_TELEGRAM_BOT_USERNAME=the_nixos_bot\n'
   printf 'HERMES_TELEGRAM_MODE_FILE=%s\n' "$test_tmp_dir/hermes-telegram-mode.env"
+  printf 'SPECIALIST_PROVIDER_ENV_FILE=%s\n' "$test_tmp_dir/specialist-provider.env"
+  printf 'NIX_CHIEF_AGENT_ID=11111111-1111-4111-8111-111111111111\n'
+  printf 'NIX_APPROVED_PROJECT_ID=22222222-2222-4222-8222-222222222222\n'
+  printf 'NIX_PRODUCT_AGENT_ID=33333333-3333-4333-8333-333333333333\n'
+  printf 'NIX_GROWTH_AGENT_ID=44444444-4444-4444-8444-444444444444\n'
+  printf 'NIX_OPERATIONS_AGENT_ID=55555555-5555-4555-8555-555555555555\n'
+  printf 'NIX_SPECIALIST_AGENT_IDS=33333333-3333-4333-8333-333333333333,44444444-4444-4444-8444-444444444444,55555555-5555-4555-8555-555555555555\n'
+  printf 'NIX_SPECIALIST_ENVIRONMENT_ID=66666666-6666-4666-8666-666666666666\n'
   printf 'NIX_BRAIN_HOST_PATH=%s\n' "$test_tmp_dir/nix-brain"
   printf 'NIX_BRAIN_GID=%s\n' "$brain_gid"
   printf 'PAPERCLIP_AUTH_DISABLE_SIGN_UP=true\n'
@@ -49,6 +59,55 @@ chmod 0600 "$test_tmp_dir"/*.env
 NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$test_tmp_dir/test.env"
 docker compose --env-file "$test_tmp_dir/test.env" config --format json >"$test_tmp_dir/compose.json"
 python3 "$repo_root/tests/smoke/validate_compose.py" "$test_tmp_dir/compose.json" "$repo_root"
+
+for specialist_mutation in \
+  'NIX_PRODUCT_AGENT_ID=' \
+  'NIX_PRODUCT_AGENT_ID=not-a-uuid' \
+  'NIX_GROWTH_AGENT_ID=33333333-3333-4333-8333-333333333333' \
+  'NIX_SPECIALIST_AGENT_IDS=33333333-3333-4333-8333-333333333333,55555555-5555-4555-8555-555555555555,44444444-4444-4444-8444-444444444444' \
+  'NIX_SPECIALIST_AGENT_IDS=11111111-1111-4111-8111-111111111111,44444444-4444-4444-8444-444444444444,55555555-5555-4555-8555-555555555555'; do
+  specialist_key=${specialist_mutation%%=*}
+  sed "s|^${specialist_key}=.*$|${specialist_mutation}|" \
+    "$test_tmp_dir/test.env" >"$test_tmp_dir/invalid-specialist.env"
+  if NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$test_tmp_dir/invalid-specialist.env" >/dev/null 2>&1; then
+    printf 'unsafe specialist identity configuration unexpectedly passed: %s\n' "$specialist_mutation" >&2
+    exit 1
+  fi
+done
+
+for identity_mutation in \
+  'NIX_CHIEF_AGENT_ID=REPLACE_WITH_CHIEF_AGENT_ID' \
+  'NIX_APPROVED_PROJECT_ID=NOT-A-UUID'; do
+  identity_key=${identity_mutation%%=*}
+  sed "s|^${identity_key}=.*$|${identity_mutation}|" \
+    "$test_tmp_dir/test.env" >"$test_tmp_dir/invalid-identity.env"
+  if NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$test_tmp_dir/invalid-identity.env" >/dev/null 2>&1; then
+    printf 'invalid Chief/project identity unexpectedly passed: %s\n' "$identity_mutation" >&2
+    exit 1
+  fi
+done
+
+cp "$test_tmp_dir/test.env" "$test_tmp_dir/empty-specialists.env"
+for specialist_key in \
+  NIX_PRODUCT_AGENT_ID NIX_GROWTH_AGENT_ID NIX_OPERATIONS_AGENT_ID \
+  NIX_SPECIALIST_AGENT_IDS NIX_SPECIALIST_ENVIRONMENT_ID; do
+  sed "s|^${specialist_key}=.*$|${specialist_key}=|" \
+    "$test_tmp_dir/empty-specialists.env" >"$test_tmp_dir/empty-specialists.next"
+  mv "$test_tmp_dir/empty-specialists.next" "$test_tmp_dir/empty-specialists.env"
+done
+NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$test_tmp_dir/empty-specialists.env" >/dev/null
+
+grep -Fq 'check_specialist_topology_when_configured' "$repo_root/scripts/ops"
+python3 - "$repo_root/scripts/ops" <<'PY'
+from pathlib import Path
+import sys
+
+source = Path(sys.argv[1]).read_text()
+restart = source.split("  restart)", 1)[1].split("    ;;", 1)[0]
+assert restart.count("check_specialist_topology_when_configured") == 2
+assert restart.index("check_specialist_topology_when_configured") < restart.index('up -d --force-recreate --wait')
+assert restart.rindex("check_specialist_topology_when_configured") > restart.index('up -d --force-recreate --wait')
+PY
 
 for invalid_brain_gid in 0 999999; do
   sed "s/^NIX_BRAIN_GID=.*$/NIX_BRAIN_GID=$invalid_brain_gid/" \
@@ -83,7 +142,7 @@ if NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$test_tmp_dir/miss
   exit 1
 fi
 
-for provider_secret in OPENCODE_GO_API_KEY OPENCODE_ZEN_API_KEY; do
+for provider_secret in DAYTONA_API_KEY OPENCODE_API_KEY OPENCODE_GO_API_KEY OPENCODE_ZEN_API_KEY; do
   cp "$test_tmp_dir/test.env" "$test_tmp_dir/provider-secret.env"
   printf '%s=test-secret-must-stay-external\n' "$provider_secret" >>"$test_tmp_dir/provider-secret.env"
   if NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$test_tmp_dir/provider-secret.env" >/dev/null 2>&1; then
@@ -109,6 +168,56 @@ if NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$test_tmp_dir/test
 fi
 mv "$test_tmp_dir/hermes-safe.env" "$test_tmp_dir/hermes.env"
 
+cp "$test_tmp_dir/founder-relay.env" "$test_tmp_dir/founder-relay-safe.env"
+sed 's/^NIX_LIOR_TELEGRAM_CHAT_ID=.*$/NIX_LIOR_TELEGRAM_CHAT_ID=987654321/' \
+  "$test_tmp_dir/founder-relay-safe.env" >"$test_tmp_dir/founder-relay.env"
+if NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$test_tmp_dir/test.env" >/dev/null 2>&1; then
+  printf 'mismatched founder relay Telegram identity unexpectedly passed\n' >&2
+  exit 1
+fi
+mv "$test_tmp_dir/founder-relay-safe.env" "$test_tmp_dir/founder-relay.env"
+
+cp "$test_tmp_dir/specialist-provider.env" "$test_tmp_dir/specialist-provider-safe.env"
+{
+  printf 'DAYTONA_API_KEY=REPLACE_WITH_DAYTONA_API_KEY\n'
+  printf 'OPENCODE_API_KEY=REPLACE_WITH_RESTRICTED_OPENCODE_API_KEY\n'
+} >"$test_tmp_dir/specialist-provider.env"
+if NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$test_tmp_dir/test.env" >/dev/null 2>&1; then
+  printf 'placeholder specialist provider credential unexpectedly passed\n' >&2
+  exit 1
+fi
+mv "$test_tmp_dir/specialist-provider-safe.env" "$test_tmp_dir/specialist-provider.env"
+
+cp "$test_tmp_dir/specialist-provider.env" "$test_tmp_dir/specialist-provider-safe.env"
+daytona_fixture=$(grep '^DAYTONA_API_KEY=' "$test_tmp_dir/specialist-provider.env" | cut -d= -f2-)
+sed "s|^OPENCODE_API_KEY=.*$|OPENCODE_API_KEY=$daytona_fixture|" \
+  "$test_tmp_dir/specialist-provider-safe.env" >"$test_tmp_dir/specialist-provider.env"
+if NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$test_tmp_dir/test.env" >/dev/null 2>&1; then
+  printf 'reused Daytona key in specialist OpenCode binding unexpectedly passed\n' >&2
+  exit 1
+fi
+mv "$test_tmp_dir/specialist-provider-safe.env" "$test_tmp_dir/specialist-provider.env"
+
+cp "$test_tmp_dir/specialist-provider.env" "$test_tmp_dir/specialist-provider-safe.env"
+chief_provider_fixture=$(grep '^OPENCODE_GO_API_KEY=' "$test_tmp_dir/hermes.env" | cut -d= -f2-)
+sed "s|^OPENCODE_API_KEY=.*$|OPENCODE_API_KEY=$chief_provider_fixture|" \
+  "$test_tmp_dir/specialist-provider-safe.env" >"$test_tmp_dir/specialist-provider.env"
+if NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$test_tmp_dir/test.env" >/dev/null 2>&1; then
+  printf 'reused Chief provider key in specialist OpenCode binding unexpectedly passed\n' >&2
+  exit 1
+fi
+mv "$test_tmp_dir/specialist-provider-safe.env" "$test_tmp_dir/specialist-provider.env"
+
+cp "$test_tmp_dir/specialist-provider.env" "$test_tmp_dir/specialist-provider-safe.env"
+api_fixture=$(grep '^API_SERVER_KEY=' "$test_tmp_dir/hermes.env" | cut -d= -f2-)
+sed "s|^DAYTONA_API_KEY=.*$|DAYTONA_API_KEY=$api_fixture|" \
+  "$test_tmp_dir/specialist-provider-safe.env" >"$test_tmp_dir/specialist-provider.env"
+if NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$test_tmp_dir/test.env" >/dev/null 2>&1; then
+  printf 'reused Chief control credential in Daytona binding unexpectedly passed\n' >&2
+  exit 1
+fi
+mv "$test_tmp_dir/specialist-provider-safe.env" "$test_tmp_dir/specialist-provider.env"
+
 cp "$test_tmp_dir/test.env" "$test_tmp_dir/invalid-bot.env"
 sed 's/^HERMES_TELEGRAM_BOT_USERNAME=the_nixos_bot$/HERMES_TELEGRAM_BOT_USERNAME=@the_nixos_bot/' \
   "$test_tmp_dir/invalid-bot.env" >"$test_tmp_dir/invalid-bot-new.env"
@@ -119,7 +228,7 @@ if NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$test_tmp_dir/inva
 fi
 
 age_private_pattern='AGE-SECRET-KEY-(PQ-)?1[[:alnum:]]{20,}|AGE-PLUGIN-[A-Z0-9-]+-1[[:alnum:]]{20,}'
-public_secret_pattern='[0-9]{8,}:[A-Za-z0-9_-]{30,}|pcp_(api|claim|invite|bootstrap)?[_-]?[A-Za-z0-9_-]{30,}|ya29\.[A-Za-z0-9._-]{20,}|"refresh_token"[[:space:]]*:[[:space:]]*"[A-Za-z0-9._/-]{20,}"|^API_SERVER_KEY=[A-Za-z0-9_-]{32,}|^OPENCODE_GO_API_KEY=[A-Za-z0-9_-]{40,}'
+public_secret_pattern='[0-9]{8,}:[A-Za-z0-9_-]{30,}|pcp_(api|claim|invite|bootstrap)?[_-]?[A-Za-z0-9_-]{30,}|ya29\.[A-Za-z0-9._-]{20,}|"refresh_token"[[:space:]]*:[[:space:]]*"[A-Za-z0-9._/-]{20,}"|^API_SERVER_KEY=[A-Za-z0-9_-]{32,}|^OPENCODE(_GO)?_API_KEY=[A-Za-z0-9_-]{40,}'
 
 if grep -RIlE --exclude-dir=.git --exclude='*.md' --exclude='.env.example' \
   '(ghp_[[:alnum:]]{20,}|github_pat_[[:alnum:]_]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|[0-9]{8,}:[A-Za-z0-9_-]{30,})' \

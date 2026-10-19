@@ -1,0 +1,121 @@
+#!/usr/bin/env python3
+"""Validate and optionally extract a Nix backup tar archive without path escapes."""
+
+from __future__ import annotations
+
+import argparse
+import os
+from pathlib import Path, PurePosixPath
+import shutil
+import stat
+import tarfile
+
+
+class UnsafeArchive(ValueError):
+    pass
+
+
+def validate_members(
+    archive: tarfile.TarFile,
+    required_prefix: str | None,
+    allow_dot_root: bool,
+) -> list[tarfile.TarInfo]:
+    members = archive.getmembers()
+    if not members:
+        raise UnsafeArchive("archive is empty")
+
+    seen: set[str] = set()
+    top_levels: set[str] = set()
+    for member in members:
+        name = member.name
+        if allow_dot_root:
+            if name == ".":
+                if not member.isdir():
+                    raise UnsafeArchive("dot-root archive root is not a directory")
+                logical_name = "."
+            elif name.startswith("./"):
+                logical_name = name[2:]
+            else:
+                raise UnsafeArchive(f"dot-root archive member lacks its exact ./ prefix: {name!r}")
+        else:
+            logical_name = name
+        path = PurePosixPath(logical_name)
+        if (
+            not logical_name
+            or logical_name.startswith("/")
+            or "\\" in logical_name
+            or (logical_name != "." and str(path) != logical_name)
+            or any(part in {"", ".."} for part in path.parts)
+            or (logical_name != "." and "." in path.parts)
+        ):
+            raise UnsafeArchive(f"unsafe or non-normalized archive member: {name!r}")
+        if logical_name in seen:
+            raise UnsafeArchive(f"duplicate archive member: {name!r}")
+        seen.add(logical_name)
+        top_levels.add("." if logical_name == "." else path.parts[0])
+        if not (member.isdir() or member.isreg()):
+            raise UnsafeArchive(f"unsupported archive member type: {name!r}")
+
+    if allow_dot_root:
+        if "." not in seen:
+            raise UnsafeArchive("dot-root archive is missing its root directory entry")
+        return members
+    if len(top_levels) != 1:
+        raise UnsafeArchive("archive must contain exactly one top-level directory")
+    top_level = next(iter(top_levels))
+    if required_prefix is not None and not top_level.startswith(required_prefix):
+        raise UnsafeArchive(f"archive top-level directory must start with {required_prefix!r}")
+    if top_level not in seen or not next(member for member in members if member.name == top_level).isdir():
+        raise UnsafeArchive("archive top-level directory entry is missing or is not a directory")
+    return members
+
+
+def safe_extract(archive: tarfile.TarFile, members: list[tarfile.TarInfo], destination: Path) -> None:
+    destination.mkdir(mode=0o700, parents=True, exist_ok=True)
+    root = destination.resolve(strict=True)
+    for member in members:
+        target = destination.joinpath(*PurePosixPath(member.name).parts)
+        parent = target.parent.resolve(strict=False)
+        if os.path.commonpath((str(root), str(parent))) != str(root):
+            raise UnsafeArchive(f"archive member escapes extraction root: {member.name!r}")
+        if member.isdir():
+            target.mkdir(mode=0o700, parents=True, exist_ok=True)
+            if target.is_symlink():
+                raise UnsafeArchive(f"archive directory resolved through a symlink: {member.name!r}")
+            continue
+        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        source = archive.extractfile(member)
+        if source is None:
+            raise UnsafeArchive(f"could not read archive member: {member.name!r}")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(target, flags, stat.S_IRUSR | stat.S_IWUSR)
+        with source, os.fdopen(descriptor, "wb") as output:
+            shutil.copyfileobj(source, output)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("archive", type=Path)
+    parser.add_argument("destination", type=Path, nargs="?")
+    parser.add_argument("--required-prefix")
+    parser.add_argument("--validate-only", action="store_true")
+    parser.add_argument("--allow-dot-root", action="store_true")
+    arguments = parser.parse_args()
+    if arguments.validate_only == (arguments.destination is not None):
+        parser.error("provide a destination unless --validate-only is used")
+
+    try:
+        with tarfile.open(arguments.archive, mode="r:gz") as archive:
+            members = validate_members(archive, arguments.required_prefix, arguments.allow_dot_root)
+            if not arguments.validate_only:
+                assert arguments.destination is not None
+                safe_extract(archive, members, arguments.destination)
+    except (OSError, tarfile.TarError, UnsafeArchive) as error:
+        parser.exit(1, f"safe tar error: {error}\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

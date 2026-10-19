@@ -1,6 +1,6 @@
 # Nix Business OS V0 architecture
 
-Status: Slices 0, 1, and 2 are accepted in production. The Slice 2 runtime implementation entered production through PR #16 merge `c765af0bca3987b949a2679d263f5fb7086e7d00`. Hosted CI, independent review and re-review, the restricted Chief boundary, native Telegram-to-Paperclip work creation, Paperclip-to-Chief execution, founder-question delivery, interrupted-run recovery, downloaded-artifact recovery, and routing preservation all pass as of 2026-10-18.
+Status: Slices 0, 1, and 2 are accepted in production. The Slice 2 runtime implementation entered production through PR #16 merge `c765af0bca3987b949a2679d263f5fb7086e7d00`. Hosted CI, independent review and re-review, the restricted Chief boundary, native Telegram-to-Paperclip work creation, Paperclip-to-Chief execution, founder-question delivery, interrupted-run recovery, downloaded-artifact recovery, and routing preservation all pass as of 2026-10-18. Slice 3 is implemented on its feature branch but remains pending independent review, hosted CI, merge, deployment, live founder-decision acceptance, and downloaded-artifact recovery; this document does not claim it is accepted.
 
 ## Purpose and scope
 
@@ -23,7 +23,7 @@ Lior
               │        │        │        │
               │        │        │        └── human-action projection ── n8n ── Todoist
               │        │        └── opencode_local ── OpenCode Engineer ── GitHub PR
-              │        └── task-scoped Product / Growth / Operations workers
+              │        └── paperclip_runner ── task-scoped Product / Growth / Operations workers
               └── hermes_gateway ── Chief execution
 
 nix-brain: separate Git repository for durable knowledge and roadmaps
@@ -50,17 +50,19 @@ There is no Engineering Manager in V0. The OpenCode-backed Engineer is a Papercl
 
 ## Identity mapping
 
-Only Chief is persistent and human-facing in initial V0. Product, Growth, and Operations are task-scoped Paperclip worker identities; their exact supported adapter/runtime is selected during the worker slice after upstream revalidation. They do not inherit Chief's credential or persistent Telegram context.
+Only Chief is persistent and human-facing in initial V0. Product, Growth, and Operations are task-scoped Paperclip worker identities using the built-in `paperclip_runner` adapter in ephemeral Daytona sandboxes. They do not inherit Chief's credential, Paperclip API key, memory, or persistent Telegram context.
 
 | Employee | Hermes | Paperclip adapter | Telegram |
 |---|---|---|---|
 | Chief of Staff | persistent isolated profile | `hermes_gateway` | Chief topic/context |
-| Product | none persistent; task-scoped runtime | selected supported task adapter | decisions routed through Chief |
-| Growth | none persistent; task-scoped runtime | selected supported task adapter | decisions routed through Chief |
-| Operations | none persistent; task-scoped runtime | selected supported task adapter | decisions routed through Chief |
+| Product | none persistent; task-scoped OpenCode runtime | `paperclip_runner` | decisions routed through Chief |
+| Growth | none persistent; task-scoped OpenCode runtime | `paperclip_runner` | decisions routed through Chief |
+| Operations | none persistent; task-scoped OpenCode runtime | `paperclip_runner` | decisions routed through Chief |
 | Engineer | none | `opencode_local` | reached through the assigning employee/Paperclip issue |
 
 Task-scoped specialists and temporary research subagents receive a bounded issue/question and fresh execution context. They are not persistent employees. Their work may remain inside the parent Paperclip issue; create a child issue when the result needs an independent owner, lifecycle, review, or cross-role handoff.
+
+The specialist execution environment is credential-minimal. Paperclip stores the Daytona API key and restricted OpenCode provider key as encrypted company secrets and resolves their references only for the environment/run that needs them. Configuration validation compares both values without logging them and rejects reuse of either value as the other provider key or as any loaded database, auth, Chief, Telegram, webhook, signing, or founder-relay credential. The first-party Daytona plugin creates a fresh `per_turn` sandbox with one CPU, 2 GiB memory, 5 GiB disk, lease reuse disabled, and a 60-minute deletion backstop. The sandbox receives no Chief, Telegram, Paperclip-control, GitHub, Todoist, or brain credential. Paperclip opens the authenticated preview WebSocket outbound to Daytona; there is no public Paperclip WebSocket listener, Funnel, or additional host port. Reconstructible sandboxes and the hash-locked Paperclip provider pack are caches, not business state.
 
 ## Core flows
 
@@ -92,6 +94,18 @@ The pinned upstreams do not carry a Paperclip run ID from the authenticated Runs
 - A substantive handoff creates or reassigns a Paperclip issue, normally a child of the initiating work.
 - The receiving employee wakes from Paperclip, not from an invisible agent-to-agent chat.
 - A quick factual lookup by a temporary subagent within the same employee run does not require a separate work item unless separately trackable.
+
+For the three Slice 3 specialists, Paperclip's native runner exposes only task context/history, issue-local documents, the specialist directory, progress, human-input requests, same-project child creation, and deliverable registration. Enforcement is server-side as well as instructional: a child must remain in the assigned approved project, its assignee must be one of the three configured specialists, every dependency must be a non-conversation issue in that same project, and the worker directory omits all other agents. Top-level project/goal, approval, hiring, arbitrary API, connector, shell, browser, and credential operations are absent.
+
+### Founder decision relay
+
+1. A specialist that has exhausted reasonable autonomous alternatives creates one `ask_user_questions` interaction on its assigned issue.
+2. Paperclip forces `human_only` resolution and the deployment-pinned Lior user; the issue remains authoritative and records the originating run and specialist.
+3. Chief's existing fixed Telegram notification path carries the question to Lior. No specialist gains a Telegram receiver and no Todoist item is created.
+4. Only Chief's bounded `nixResolveFounderDecision` tool, during the configured Lior direct-message turn, can attest the structured answer to Paperclip. API, CLI, Paperclip-run, wrong-user, wrong-chat, group, and forum contexts fail closed.
+5. Paperclip verifies the HMAC, timestamp, stable idempotency key, pending interaction, Lior identity, and immutable source-run origin. The origin must be the configured Chief or an allowlisted task-scoped specialist. The answer transaction locks the issue row and rechecks that it is still assigned to that origin; delivery then targets the immutable source-run employee rather than a mutable assignee snapshot. Assignment drift leaves the durable delivery retryable and returns `503` instead of waking another employee or claiming that continuation succeeded. It records Lior as resolver only after the locked check. The durable answer activity records the intended origin with `continuationStatus=pending` and no resumed employee; the response gains `resumedAgentId` only after a continuation run for the same origin exists. Exact replays retry pending delivery safely; a changed answer for the same key conflicts. Ordinary Board responses to these founder-routed interactions are rejected.
+
+This relay is a version-locked compatibility layer around the pinned Paperclip response route, not a second work graph or generic API. It carries one founder answer only and must be removed when the selected upstream provides an equivalent bounded supported surface.
 
 ### Durable learning
 
@@ -156,6 +170,7 @@ Per [ADR 0001](decisions/0001-single-vps-compose.md), V0 runs on one Hostinger L
 - Hermes Runs API and dashboard are private to the Compose network; Telegram access is outbound from Hermes.
 - Slice 1 runs one official Hermes container using its default profile as Chief of Staff. `/opt/data` is a named volume; Git supplies the read-only SOUL/config, and a clean private `nix-brain` clone is mounted read-only at `/workspace/nix-brain`. Hermes receives only the clone's explicitly validated numeric host group as a supplemental group. Validation requires a real non-symlink directory with group read/traverse and no permissions for other users, and rejects any numeric GID already assigned to a pinned-image system group except Hermes' own primary GID. Container startup creates only the dedicated collision-free reader group, maps it to the unprivileged Hermes account idempotently before upstream supervision (which otherwise drops unnamed supplemental groups), and live process verification confirms the gateway retained it. Runtime verification proves a tracked Markdown file is readable but not writable through the actual file tool.
 - Hermes and Paperclip share only the internal `agent` network. Paperclip calls `http://hermes:8642` with a dedicated API key; Hermes calls `http://paperclip:3100` through the pinned official MCP server with a different claimed agent key. The supported `PAPERCLIP_ALLOWED_HOSTNAMES=paperclip` setting admits that service hostname through Paperclip's private-host guard; Docker's internal network remains the reachability boundary. Neither internal endpoint is host-published. See [ADR 0006](decisions/0006-private-hermes-gateway-network.md).
+- Slice 3 installs the exact first-party `@paperclipai/plugin-daytona@2026.916.1` package into Paperclip. Paperclip uses its existing outbound application network to call Daytona and connect to the authenticated sandbox preview WebSocket; no Compose service, host listener, Tailscale route, or Funnel is added. Paperclip's native runner binary remains inside the pinned Paperclip image; the exact patched provider pack is kept in a separate reconstructible cache volume and copied to each ephemeral sandbox run.
 - n8n is absent until its first required workflow. When added, only its signed webhook routes and authenticated UI are exposed.
 - Containers run without privileged mode, Docker socket mounts, or host networking unless a documented upstream limitation and a new ADR require it.
 - Health checks cover process readiness and dependency reachability, not just open ports.
@@ -169,7 +184,7 @@ A fresh Paperclip volume is initialized with the pinned release's official `pape
 | Class | Examples | Location and recovery |
 |---|---|---|
 | Git-controlled configuration | Compose files, Tailscale Serve reconstruction command, redacted Hermes config/SOUL templates, policy text, tests, n8n workflow JSON after Slice 7 | GitHub `nix-os`; rebuildable from a commit |
-| External deployment configuration | deployment `.env`, PostgreSQL/Paperclip env files, and Hermes env file containing Telegram token/allowlist/home chat, Runs API key, provider key, and the distinct fixed decision-webhook secret | separate age-encrypted configuration pack, restored to recorded paths with mode `0600` and verified checksums |
+| External deployment configuration | deployment `.env`; PostgreSQL/Paperclip/Hermes/founder-relay env files; specialist provider-import file containing the Daytona and OpenCode keys | separate age-encrypted configuration pack, restored to recorded paths with mode `0600` and verified checksums |
 | Runtime state | Paperclip PostgreSQL data, Paperclip uploads/config, Hermes profile memory/sessions/gateway state, n8n database and storage, local worktrees/logs | named volumes/host state directory; restored from verified off-host backups |
 | Durable company knowledge | `nix-brain` Markdown and Git history | separate private GitHub repository; local clones are disposable |
 | Secrets | bot token, model credentials, Hermes API keys, Paperclip agent keys, DB passwords, GitHub App key, Todoist token, n8n encryption key | root-owned external files or the relevant encrypted persistent service state outside the checkout; per-service injection; separately backed up encrypted |
@@ -182,18 +197,18 @@ Slice 0 establishes the procedure; later slices extend its manifest.
 
 | State | Backup | Restore proof |
 |---|---|---|
-| External Slice 0 configuration/secrets | age-encrypted config pack after every change | restore `.env`, `postgres.env`, and `paperclip.env` with mode `0600`; internal and external checksums pass without logging contents |
-| Paperclip database | nightly compressed logical dump, encrypted and copied off-host | restore to an isolated database; CEO authenticates and real company/issue values and relationships match |
+| External deployment configuration/secrets | age-encrypted config pack after every change | restore every recorded env file with mode `0600`; verify founder identity, the exact Daytona/OpenCode provider bindings, and internal/external checksums without logging contents |
+| Paperclip database | manual coordinated state backup after meaningful work-graph changes and before/after consequential deployment or configuration transitions; encrypt and copy off-host | restore to an isolated database; CEO authenticates and real company/issue values and relationships match |
 | Paperclip home/storage | encrypted file backup coordinated with the database backup | attachment bytes match a known SHA-256; config and encrypted-secret master key are preserved |
 | Paperclip portable company bundle | periodic export including company, agents, projects, skills, issues | preview/import to a disposable company |
-| Hermes profile state | stop Hermes, archive the complete `/opt/data` volume with the coordinated Paperclip backup, including Runs idempotency and Paperclip-question delivery state when present | restored Hermes boots with Telegram disabled, rejects unauthenticated API access, accepts the restored API key, loads the exact restricted tool surface and profile state, preserves safe modes and contents for `runs_idempotency.db` and the question-delivery outbox, and resolves its claimed identity through bounded Paperclip MCP; live Telegram/provider operation is rechecked only after the isolated restore is destroyed |
+| Hermes profile state | stop Hermes, archive all durable `/opt/data` state with the coordinated Paperclip backup, including Runs idempotency and Paperclip-question delivery state when present; exclude only the reconstructible `.npm` and `home/.cache` package caches | restored Hermes rebuilds the exact pinned MCP package and uv caches, boots with Telegram disabled, rejects unauthenticated API access, accepts the restored API key, loads the exact restricted tool surface and profile state, preserves safe modes and contents for `runs_idempotency.db` and the question-delivery outbox, and resolves its claimed identity through bounded Paperclip MCP; live Telegram/provider operation is rechecked only after the isolated restore is destroyed |
 | `nix-os` source | public GitHub repository plus feature-branch/PR/green-CI convention | fresh clone and CI pass; secrets and runtime state remain excluded |
 | `nix-brain` | separate private GitHub repository | fresh authenticated clone and knowledge checks pass |
 | n8n (when added) | its database, storage volume, workflow exports, and `N8N_ENCRYPTION_KEY` | credentials decrypt and Todoist test workflow runs |
 
 The Paperclip portable bundle is not a full backup because upstream excludes approvals and activity/cost history. Database restore remains required. At least monthly, restore a downloaded off-host data artifact together with the original external configuration pack into an isolated Compose project. Verify CEO authentication, a company/issue relationship, attachment bytes, health, and a harmless encrypted-secret canary through a bound environment probe whose access event reports successful resolution without exposing its value; then record non-secret evidence in a Paperclip Operations issue.
 
-Target initial objectives: daily recovery point (RPO <= 24 hours) and same-day manual recovery (RTO <= 8 hours). These are operating targets, not an HA promise.
+V0 targets same-day manual recovery (RTO <= 8 hours) when a current verified artifact is available. It does not claim an unattended RPO: each state backup requires a short-lived authenticated Board session so the pre-stop gate can prove live specialist readiness, and that broad session must not be persisted for cron. Run the manual ceremony after meaningful non-reconstructible state changes and immediately before and after consequential deployment or configuration transitions. An unattended RPO may be adopted only when upstream provides a least-privilege readiness credential that can be safely automated without weakening the gate.
 
 ## Observability
 

@@ -1,6 +1,6 @@
 # Nix Business OS V0 implementation plan
 
-Status: **SLICE 0: ACCEPTED. SLICE 1: ACCEPTED. SLICE 2: ACCEPTED.** The accepted Slice 2 runtime entered production through PR #16 merge `c765af0bca3987b949a2679d263f5fb7086e7d00`. Hosted CI, independent review and re-review, run attribution, final Chief topology, both Telegram-to-Paperclip and Paperclip-to-Chief execution, founder-question delivery, interrupted-run recovery, encrypted downloaded-artifact recovery, and routing preservation pass. Updated 2026-10-18.
+Status: **SLICE 0: ACCEPTED. SLICE 1: ACCEPTED. SLICE 2: ACCEPTED. SLICE 3: IMPLEMENTED, NOT ACCEPTED.** The accepted Slice 2 runtime entered production through PR #16 merge `c765af0bca3987b949a2679d263f5fb7086e7d00`. Hosted CI, independent review and re-review, run attribution, final Chief topology, both Telegram-to-Paperclip and Paperclip-to-Chief execution, founder-question delivery, interrupted-run recovery, encrypted downloaded-artifact recovery, and routing preservation pass. Slice 3 repository implementation exists on its feature branch, but independent review, hosted CI, merge, production deployment, live specialist/founder-decision proof, reboot, and downloaded-artifact recovery remain required. Updated 2026-10-18.
 
 ## How to use this plan
 
@@ -47,7 +47,7 @@ If deploy credentials are unavailable, an agent may complete local automated wor
 | 0 | Authenticated Paperclip survives restart and a verified backup restore on the Compose foundation. |
 | 1 | Lior tells Chief of Staff in Telegram to create work and receives a real Paperclip issue ID. |
 | 2 | A Paperclip issue wakes the same Chief profile, which executes and updates the issue to a terminal or explicit blocked state. |
-| 3 | Product, Growth, and Operations join as isolated Telegram/Paperclip employees; cross-employee work is visible in Paperclip. |
+| 3 | Product, Growth, and Operations join as task-scoped Paperclip workers; Chief remains the only Telegram employee and cross-role work is visible in Paperclip. |
 | 4 | An employee reads `nix-brain`, opens a linked knowledge PR, gets hosted CI green and consequential review, then merges through the approved process. |
 | 5 | One proposal completes challenge → research → grilling → roadmap PR → approval → Paperclip project. |
 | 6 | A Paperclip engineering issue produces a tested GitHub pull request through OpenCode. |
@@ -418,6 +418,17 @@ Within an approved Paperclip project, Chief can create and assign bounded Produc
 
 Ask Chief in Telegram to execute one approved-project task requiring Product and Growth work. Confirm Paperclip shows the subordinate handoff, a real ambiguity returns to Chief for Lior's decision, the originating specialist resumes, and no specialist opens a separate persistent Telegram conversation.
 
+### Repository implementation record — pending production acceptance
+
+- The selected upstream path is Paperclip's built-in `paperclip_runner`, native runner daemon, and exact first-party `@paperclipai/plugin-daytona@2026.916.1` sandbox driver. Product, Growth, and Operations report to Chief, use fresh `per_turn` OpenCode sessions with model `opencode/gpt-5.6-luna`, have disabled heartbeats and zero monthly budget, and hold no Paperclip API keys.
+- Daytona uses the immutable `daytonaio/sandbox:0.8.0@sha256:eadf88e4391072b7ad4bed27d9cadfc9fe9d8ed375d9219d34c2ccb518f213e3` base, EU target, one CPU, 2 GiB memory, 5 GiB disk, no reusable lease, and a 60-minute auto-delete backstop. The Daytona and restricted OpenCode keys remain Paperclip-managed encrypted company secrets; only their references appear in environment metadata. No dedicated executor container or public WebSocket/Funnel route exists.
+- At Daytona's 2026-10-18 published pay-as-you-go rates, this allocation is approximately `$0.0828` per started sandbox-hour (`1 × $0.0504` vCPU plus `2 × $0.0162` GiB memory), billed per second; the configured 5 GiB is within the first 5 GiB storage allowance. Auto-stop after 15 idle minutes and auto-delete after 60 stopped minutes cap abandoned-run exposure. Pricing is operational context rather than an invariant: live acceptance must inspect Daytona usage and spending before marking the slice accepted.
+- The pinned Paperclip runtime is exact-source/output-hash patched because `v2026.916.1` does not propagate or redact `OPENCODE_API_KEY` for this path, its default native tool catalog is too broad, and its HTTP logger does not know the Nix founder-relay signature header. The patch disables OpenCode's provider-native question escape path and redacts the relay HMAC before request serialization. Startup fails on unknown or partially patched bytes. The same marker and artifact manifest bind the copied provider pack to the reviewed patch and upstream revision.
+- Specialist authority is server-enforced: the eleven-operation catalog is task/document/progress/human-input/child/deliverable scoped; child tasks, assignees, and dependencies stay inside the approved project and configured specialist set; questions are forced to `human_only` and the pinned Lior Paperclip user; conversation issues and non-specialist directory entries are unavailable.
+- The founder relay adds one Chief-only bounded tool to the existing Hermes surface. It is usable only from Lior's configured Telegram direct-message turn and sends an HMAC-attested structured answer to the pinned Paperclip response route. Paperclip verifies the pending interaction and its immutable source run, accepts only the configured Chief or a configured task-scoped specialist as origin, and locks/rechecks the issue assignment inside the answer transaction. Delivery remains bound to that immutable origin and returns retryable `503` until a continuation run for the same employee exists, so a concurrent reassignment can neither wake the replacement nor produce a false resume receipt. Paperclip records Lior as resolver, makes exact replay idempotent, and returns an origin/resume receipt that Hermes validates. Ordinary Board responses to those founder-routed interactions fail closed; this preserves the accepted Chief-origin question path while enforcing Telegram as the decision interface.
+- The external recovery contract now includes the separate founder HMAC/identity file and one provider-import file with exactly the Daytona and OpenCode bindings. The encrypted state backup requires both Chief and specialist topology gates before and after quiescing; those gates verify the exact installed plugin, environment/secret metadata, idle worker state, and exact Git-tracked managed role instruction bytes without revealing credentials. Nonterminal or unknown specialist run and Daytona-lease statuses block capture. The provider-pack cache and ephemeral Daytona sandboxes remain reconstructible and are not critical backup state.
+- Local static, contract, image, backup, and isolated-restore coverage is wired into CI. This record describes repository intent only. Do not add a live acceptance table or advance to Slice 4 until independent review/re-review, hosted CI, production deployment, real cross-role execution, real founder answer/resume, encrypted off-host restore, and post-reboot checks all pass.
+
 ### Failure modes
 
 Persistent specialist process/session appears, worker receives Chief/control-plane credentials, context leaks across tasks, work is handed off only in chat, a decision is inferred without Lior, or retry duplicates subordinate work. Fail closed at the affected Paperclip issue and keep Chief available for explanation.
@@ -731,7 +742,7 @@ Only files justified by failures observed during the real run; final runbooks, a
 7. If a genuine human-only action exists, it round-trips through Todoist; otherwise the test explicitly demonstrates zero spurious Todoist tasks.
 8. Approval gates prevent a rehearsed external-send, spend, destructive action, and top-level project bypass.
 9. Agents exhaust a documented autonomous alternative before one controlled escalation.
-10. Full backup and isolated restore meet the initial RPO/RTO targets, including Paperclip, all Hermes profiles, brain/source clones, and n8n credential decryption.
+10. Full backup and isolated restore meet the documented manual-backup and RTO posture, including Paperclip, all Hermes profiles, brain/source clones, and n8n credential decryption; V0 makes no unattended RPO claim while the live readiness gate requires a broad short-lived Board session.
 11. Every production image/package is pinned and the upstream snapshot reflects deployed reality.
 12. Post-run review removes or defers unused configuration; no speculative service remains.
 
@@ -787,4 +798,4 @@ Every locked requirement is implemented or explicitly delayed to a named slice.
 
 ## Exact next implementation task
 
-Implement Slice 3's minimal task-scoped Product, Growth, and Operations workers against freshly revalidated upstreams. Keep Chief as the only persistent human-facing employee, preserve the control-plane credential boundary, and prove a visible specialist-to-Chief-to-Telegram founder decision round trip before beginning durable brain writeback.
+Finish Slice 3 acceptance: independent review and remediation, hosted CI, merge, production deployment, live Product-to-Growth work, specialist-to-Chief-to-Telegram founder decision and same-specialist resume, encrypted Google Drive backup/download/restore, and post-reboot verification. Begin Slice 4 only after those gates pass.

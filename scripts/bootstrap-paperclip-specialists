@@ -1,0 +1,854 @@
+#!/usr/bin/env python3
+"""Converge the bounded Product, Growth, and Operations specialist topology."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import pathlib
+import re
+import runpy
+import stat
+import subprocess
+import sys
+import time
+import urllib.parse
+from typing import Any
+
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+CHIEF_HELPER = runpy.run_path(str(REPO_ROOT / "scripts/bootstrap-paperclip-chief"))
+SPECIALIST_TOPOLOGY_HELPER = runpy.run_path(
+    str(REPO_ROOT / "scripts/check-paperclip-specialist-topology")
+)
+Api = CHIEF_HELPER["Api"]
+BootstrapError = CHIEF_HELPER["BootstrapError"]
+require_dict = CHIEF_HELPER["require_dict"]
+revoke_board_token = CHIEF_HELPER["revoke_board_token"]
+q = CHIEF_HELPER["q"]
+TopologyError = SPECIALIST_TOPOLOGY_HELPER["TopologyError"]
+verify_instruction_bundles = SPECIALIST_TOPOLOGY_HELPER["verify_instruction_bundles"]
+
+ENVIRONMENT_NAME = "Nix task-scoped Daytona sandbox"
+ENVIRONMENT_MARKER = {"kind": "nix-specialist-daytona", "version": 1}
+AGENT_MARKER = {"kind": "nix-task-scoped-specialist", "version": 1}
+MODEL = "opencode/gpt-5.6-luna"
+DAYTONA_PACKAGE = "@paperclipai/plugin-daytona"
+DAYTONA_PACKAGE_VERSION = "2026.916.1"
+DAYTONA_PLUGIN_KEY = "paperclip.daytona-sandbox-provider"
+DAYTONA_PLUGIN_MANIFEST_VERSION = "0.1.7"
+DAYTONA_DRIVER = "daytona"
+PAPERCLIP_IMAGE = "ghcr.io/paperclipai/paperclip:2026.916.1@sha256:a02ac35ac41df911af477422ea0e781cf41d2b2c600c66f0a5ac9d8c63f52c2c"
+DAYTONA_IMAGE = "daytonaio/sandbox:0.8.0@sha256:eadf88e4391072b7ad4bed27d9cadfc9fe9d8ed375d9219d34c2ccb518f213e3"
+ROLES = (
+    ("product", "Product", "pm", "Product specialist for approved-project discovery, definition, and evidence."),
+    ("growth", "Growth", "cmo", "Growth specialist for marketing and sales work inside approved projects."),
+    ("operations", "Operations", "general", "Operations specialist for bounded execution and verification."),
+)
+SECRET_SPECS = (
+    ("daytona", "nix-specialist-daytona-api-key", "Nix specialist Daytona API key"),
+    ("provider", "nix-specialist-opencode-api-key", "Nix specialist OpenCode API key"),
+)
+UUID_RE = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-"
+    r"[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}"
+)
+
+
+def read_config(path: pathlib.Path, key: str) -> str:
+    values: list[str] = []
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        if raw.startswith(f"{key}="):
+            value = raw.split("=", 1)[1].strip()
+            if len(value) >= 2 and value[:1] == value[-1:] and value[0] in "\"'":
+                value = value[1:-1]
+            values.append(value)
+    if len(values) != 1 or not values[0]:
+        raise BootstrapError(f"{key} must appear exactly once and be nonempty in {path}")
+    return values[0]
+
+
+def read_optional_config(path: pathlib.Path, key: str) -> str:
+    values: list[str] = []
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        if raw.startswith(f"{key}="):
+            values.append(raw.split("=", 1)[1].strip())
+    if len(values) != 1:
+        raise BootstrapError(f"{key} must appear exactly once in {path}")
+    return values[0]
+
+
+def require_secret_file(path: pathlib.Path, label: str) -> str:
+    try:
+        metadata = path.lstat()
+    except OSError:
+        raise BootstrapError(f"{label} is missing") from None
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise BootstrapError(f"{label} must be a regular non-symlink file")
+    if stat.S_IMODE(metadata.st_mode) != 0o600:
+        raise BootstrapError(f"{label} must have mode 0600")
+    if os.geteuid() == 0 and metadata.st_uid != 0:
+        raise BootstrapError(f"{label} must be root-owned")
+    value = path.read_text(encoding="utf-8")
+    if not value.strip():
+        raise BootstrapError(f"{label} is empty")
+    return value
+
+
+def read_provider_keys(path: pathlib.Path) -> dict[str, str]:
+    contents = require_secret_file(path, "specialist provider import file")
+    values: dict[str, str] = {}
+    allowed = {"DAYTONA_API_KEY", "OPENCODE_API_KEY"}
+    for raw in contents.splitlines():
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        key, separator, value = raw.partition("=")
+        if separator != "=" or key not in allowed or key in values:
+            raise BootstrapError("specialist provider import file contains an unexpected binding")
+        values[key] = value.strip()
+    if set(values) != allowed or any(
+        not value or value.startswith("REPLACE_WITH_") for value in values.values()
+    ):
+        raise BootstrapError(
+            "specialist provider import file must contain one real DAYTONA_API_KEY and OPENCODE_API_KEY binding"
+        )
+    return values
+
+
+def authenticate(api: Any, company_id: str, expected_user_id: str) -> tuple[dict[str, Any], str]:
+    challenge = require_dict(
+        api.post(
+            "/api/cli-auth/challenges",
+            {
+                "command": "converge Nix task-scoped specialists",
+                "clientName": "nix-os specialist bootstrap",
+                "requestedAccess": "instance_admin_required",
+                "requestedCompanyId": company_id,
+            },
+        ),
+        "CLI authentication challenge",
+    )
+    challenge_id = str(challenge.get("id") or "")
+    challenge_secret = str(challenge.get("token") or "")
+    board_token = str(challenge.get("boardApiToken") or "")
+    approval_path = str(challenge.get("approvalPath") or "")
+    poll_path = str(challenge.get("pollPath") or "")
+    approval_url = str(challenge.get("approvalUrl") or "") or f"{api.base}{approval_path}"
+    if not all((challenge_id, challenge_secret, board_token, approval_path, poll_path)):
+        cleanup_errors: list[str] = []
+        if challenge_id and challenge_secret:
+            try:
+                Api(api.base).post(
+                    f"/api/cli-auth/challenges/{q(challenge_id)}/cancel",
+                    {"token": challenge_secret},
+                )
+            except BaseException as exc:
+                cleanup_errors.append(f"challenge cancellation failed: {exc}")
+        if board_token:
+            try:
+                api.token = board_token
+                revoke_board_token(api, "")
+            except BaseException as exc:
+                cleanup_errors.append(f"board credential revocation failed: {exc}")
+            finally:
+                api.token = ""
+        suffix = "; " + "; ".join(cleanup_errors) if cleanup_errors else ""
+        raise BootstrapError(f"Paperclip returned an incomplete CLI authentication challenge{suffix}")
+    approved = False
+    key_id = ""
+    try:
+        print("Approve this ephemeral specialist-bootstrap action as Lior:", file=sys.stderr)
+        print(approval_url, file=sys.stderr)
+        interval = max(0.1, min(5.0, float(challenge.get("suggestedPollIntervalMs") or 1000) / 1000))
+        deadline = time.monotonic() + 600
+        while time.monotonic() < deadline:
+            status = require_dict(
+                api.get(f"/api{poll_path}?token={urllib.parse.quote(challenge_secret, safe='')}"),
+                "CLI authentication status",
+            )
+            state = status.get("status")
+            if state == "approved":
+                approved = True
+                api.token = board_token
+                identity = require_dict(api.get("/api/cli-auth/me"), "board identity")
+                key_id = str(identity.get("keyId") or "")
+                approved_by = status.get("approvedByUser")
+                approved_user = str(approved_by.get("id") or "") if isinstance(approved_by, dict) else ""
+                memberships = identity.get("memberships")
+                authorized = isinstance(memberships, list) and any(
+                    isinstance(row, dict)
+                    and row.get("companyId") == company_id
+                    and row.get("status") == "active"
+                    and row.get("membershipRole") in ("owner", "admin")
+                    for row in memberships
+                )
+                if (
+                    identity.get("source") != "board_key"
+                    or identity.get("userId") != expected_user_id
+                    or identity.get("isInstanceAdmin") is not True
+                    or approved_user != expected_user_id
+                    or not key_id
+                    or not authorized
+                ):
+                    raise BootstrapError("approval is not the pinned Lior owner/admin identity")
+                return identity, key_id
+            if state in ("cancelled", "expired"):
+                raise BootstrapError(f"Paperclip CLI authentication was {state}")
+            time.sleep(interval)
+        raise BootstrapError("Paperclip CLI authentication timed out")
+    except BaseException as original:
+        if not approved:
+            try:
+                Api(api.base).post(
+                    f"/api/cli-auth/challenges/{q(challenge_id)}/cancel",
+                    {"token": challenge_secret},
+                )
+            except BaseException:
+                pass
+        if board_token:
+            try:
+                api.token = board_token
+                revoke_board_token(api, key_id)
+            finally:
+                api.token = ""
+        raise original
+
+
+def list_dicts(api: Any, path: str, label: str) -> list[dict[str, Any]]:
+    value = api.get(path)
+    if not isinstance(value, list) or not all(isinstance(row, dict) for row in value):
+        raise BootstrapError(f"Paperclip returned an invalid {label}")
+    return value
+
+
+def ensure_secret(api: Any, company_id: str, kind: str, key: str, name: str, value: str) -> str:
+    rows = list_dicts(api, f"/api/companies/{q(company_id)}/secrets", "secret list")
+    matches = [row for row in rows if row.get("key") == key]
+    if len(matches) > 1:
+        raise BootstrapError(f"duplicate Paperclip secret key: {key}")
+    fingerprint = hashlib.sha256(value.encode()).hexdigest()
+    description = f"Nix Slice 3 {kind}; sha256={fingerprint}"
+    if not matches:
+        row = require_dict(
+            api.post(
+                f"/api/companies/{q(company_id)}/secrets",
+                {"name": name, "key": key, "value": value, "description": description},
+            ),
+            f"{kind} secret creation response",
+        )
+    else:
+        row = matches[0]
+        if row.get("status") != "active" or row.get("managedMode", "paperclip_managed") != "paperclip_managed":
+            raise BootstrapError(f"existing {kind} secret is not active and Paperclip-managed")
+        if row.get("description") != description:
+            row = require_dict(
+                api.post(
+                    f"/api/secrets/{q(str(row.get('id') or ''))}/rotate",
+                    {"value": value},
+                ),
+                f"{kind} secret rotation response",
+            )
+            row = require_dict(
+                api.patch(
+                    f"/api/secrets/{q(str(row.get('id') or ''))}",
+                    {"description": description},
+                ),
+                f"{kind} secret metadata update response",
+            )
+    secret_id = str(row.get("id") or "")
+    if not UUID_RE.fullmatch(secret_id):
+        raise BootstrapError(f"{kind} secret lacks a valid identifier")
+    return secret_id
+
+
+def marked(value: object, marker: dict[str, Any]) -> bool:
+    return isinstance(value, dict) and value.get("nix") == marker
+
+
+def verify_api_instruction_bundle(api: Any, slug: str, agent_id: str) -> None:
+    expected = (REPO_ROOT / f"deploy/specialists/{slug}.md").read_bytes()
+    detail = require_dict(
+        api.get(f"/api/agents/{q(agent_id)}/instructions-bundle/file?path=AGENTS.md"),
+        f"{slug} managed instruction file",
+    )
+    content = detail.get("content")
+    if (
+        detail.get("path") != "AGENTS.md"
+        or detail.get("size") != len(expected)
+        or detail.get("language") != "markdown"
+        or detail.get("isEntryFile") is not True
+        or detail.get("markdown") is not True
+        or detail.get("editable") is not True
+        or detail.get("virtual") is not False
+        or detail.get("deprecated") is not False
+        or not isinstance(content, str)
+        or content.encode("utf-8") != expected
+    ):
+        raise BootstrapError(f"existing {slug} specialist managed instructions drifted")
+
+
+def ensure_daytona_plugin(api: Any, company_id: str) -> str:
+    rows = list_dicts(api, "/api/plugins", "plugin list")
+    matches = [row for row in rows if row.get("pluginKey") == DAYTONA_PLUGIN_KEY]
+    if len(matches) > 1:
+        raise BootstrapError("duplicate Daytona plugin records")
+    if not matches:
+        row = require_dict(
+            api.post(
+                "/api/plugins/install",
+                {"packageName": DAYTONA_PACKAGE, "version": DAYTONA_PACKAGE_VERSION},
+            ),
+            "Daytona plugin installation response",
+        )
+    else:
+        row = matches[0]
+    manifest = row.get("manifestJson")
+    drivers = manifest.get("environmentDrivers") if isinstance(manifest, dict) else None
+    driver = next(
+        (
+            candidate
+            for candidate in drivers
+            if isinstance(candidate, dict) and candidate.get("driverKey") == DAYTONA_DRIVER
+        ),
+        None,
+    ) if isinstance(drivers, list) else None
+    if (
+        row.get("pluginKey") != DAYTONA_PLUGIN_KEY
+        or row.get("packageName") != DAYTONA_PACKAGE
+        # Pinned Paperclip stores the plugin manifest version in this API/DB
+        # field; npm artifact exactness is enforced by the install request and
+        # the entrypoint's package-lock/integrity verification.
+        or row.get("version") != DAYTONA_PLUGIN_MANIFEST_VERSION
+        or row.get("status") != "ready"
+        or not isinstance(manifest, dict)
+        or manifest.get("id") != DAYTONA_PLUGIN_KEY
+        or manifest.get("version") != DAYTONA_PLUGIN_MANIFEST_VERSION
+        or manifest.get("capabilities") != ["environment.drivers.register"]
+        or not isinstance(driver, dict)
+        or driver.get("kind") != "sandbox_provider"
+    ):
+        raise BootstrapError("installed Daytona plugin does not match the exact reviewed package")
+    plugin_id = str(row.get("id") or "")
+    if not UUID_RE.fullmatch(plugin_id):
+        raise BootstrapError("Daytona plugin lacks a valid identifier")
+    verify_daytona_capabilities(api, company_id, plugin_id)
+    return plugin_id
+
+
+def verify_daytona_capabilities(api: Any, company_id: str, plugin_id: str) -> None:
+    capabilities = require_dict(
+        api.get(f"/api/companies/{q(company_id)}/environments/capabilities"),
+        "environment capabilities",
+    )
+    providers = capabilities.get("sandboxProviders")
+    daytona = providers.get(DAYTONA_DRIVER) if isinstance(providers, dict) else None
+    if (
+        not isinstance(daytona, dict)
+        or daytona.get("status") != "supported"
+        or daytona.get("supportsSavedProbe") is not True
+        or daytona.get("supportsUnsavedProbe") is not True
+        or daytona.get("supportsRunExecution") is not True
+        or daytona.get("source") != "plugin"
+        or daytona.get("pluginKey") != DAYTONA_PLUGIN_KEY
+        or daytona.get("pluginId") != plugin_id
+    ):
+        raise BootstrapError("Daytona plugin worker is not exposed as a ready sandbox provider")
+
+
+def verify_live_paperclip_image(config_path: pathlib.Path) -> None:
+    try:
+        container = subprocess.run(
+            [
+                "docker", "compose", "--env-file", str(config_path),
+                "ps", "--status", "running", "-q", "paperclip",
+            ],
+            cwd=REPO_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError as exc:
+        raise BootstrapError("Docker Compose is unavailable for the specialist safety preflight") from exc
+    container_ids = [line.strip() for line in container.stdout.splitlines() if line.strip()]
+    if container.returncode != 0 or len(container_ids) != 1:
+        raise BootstrapError("exactly one running Paperclip container is required")
+    inspected = subprocess.run(
+        ["docker", "inspect", "--format", "{{.Config.Image}}", container_ids[0]],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if inspected.returncode != 0 or inspected.stdout.strip() != PAPERCLIP_IMAGE:
+        raise BootstrapError("running Paperclip container is not the exact pinned image digest")
+
+
+def preflight_specialist_floor(config_path: pathlib.Path) -> dict[str, str] | None:
+    keys = (
+        "NIX_PRODUCT_AGENT_ID",
+        "NIX_GROWTH_AGENT_ID",
+        "NIX_OPERATIONS_AGENT_ID",
+        "NIX_SPECIALIST_AGENT_IDS",
+        "NIX_SPECIALIST_ENVIRONMENT_ID",
+    )
+    values = {key: read_optional_config(config_path, key) for key in keys}
+    present = {key for key, value in values.items() if value}
+    if present and len(present) != len(keys):
+        raise BootstrapError("specialist bootstrap state is partial; all five specialist/environment IDs must be empty or configured")
+    configured: dict[str, str] | None = None
+    if present:
+        configured = {
+            "product": values["NIX_PRODUCT_AGENT_ID"],
+            "growth": values["NIX_GROWTH_AGENT_ID"],
+            "operations": values["NIX_OPERATIONS_AGENT_ID"],
+            "environment": values["NIX_SPECIALIST_ENVIRONMENT_ID"],
+        }
+        if any(not UUID_RE.fullmatch(value) for value in configured.values()):
+            raise BootstrapError("configured specialist recovery state contains an invalid identifier")
+        ordered = values["NIX_SPECIALIST_AGENT_IDS"].split(",")
+        expected = [configured[slug] for slug, *_ in ROLES]
+        if ordered != expected or len(set(ordered)) != 3:
+            raise BootstrapError("configured specialist recovery allowlist is inconsistent")
+    verify_live_paperclip_image(config_path)
+    run_compose(
+        config_path,
+        "exec", "-T", "paperclip", "python3", "/opt/nix/patch-specialist-runtime.py", "--verify",
+    )
+    expected_live = "" if configured is None else ",".join(configured[slug] for slug, *_ in ROLES)
+    command = [
+        "docker", "compose", "--env-file", str(config_path), "exec", "-T", "paperclip",
+        "sh", "-ec",
+        'live=${NIX_PAPERCLIP_SPECIALIST_AGENT_IDS:-}; test -z "$live" || test "$live" = "$1"',
+        "specialist-floor", expected_live,
+    ]
+    try:
+        completed = subprocess.run(command, check=False)
+    except OSError as exc:
+        raise BootstrapError("Docker Compose is unavailable for the specialist safety preflight") from exc
+    if completed.returncode != 0:
+        raise BootstrapError("running Paperclip specialist allowlist does not match empty or configured fail-closed state")
+    return configured
+
+
+def verify_configured_topology(api: Any, company_id: str, configured: dict[str, str]) -> None:
+    environments = list_dicts(api, f"/api/companies/{q(company_id)}/environments", "environment list")
+    matches = [row for row in environments if marked(row.get("metadata"), ENVIRONMENT_MARKER)]
+    if len(matches) != 1 or matches[0].get("id") != configured["environment"]:
+        raise BootstrapError("configured specialist recovery environment does not match Paperclip")
+    agents = list_dicts(api, f"/api/companies/{q(company_id)}/agents", "agent list")
+    marked_agents = [
+        row for row in agents
+        if isinstance(row.get("metadata"), dict) and row["metadata"].get("nix") == AGENT_MARKER
+    ]
+    if len(marked_agents) != 3 or {row.get("id") for row in marked_agents} != {
+        configured[slug] for slug, *_ in ROLES
+    }:
+        raise BootstrapError("configured specialist recovery identities do not exactly match Paperclip")
+    for slug, *_ in ROLES:
+        matches = [
+            row for row in agents
+            if isinstance(row.get("metadata"), dict)
+            and row["metadata"].get("nix") == AGENT_MARKER
+            and row["metadata"].get("specialistRole") == slug
+        ]
+        if (
+            len(matches) != 1
+            or matches[0].get("id") != configured[slug]
+            or matches[0].get("status") != "idle"
+        ):
+            raise BootstrapError(f"configured {slug} specialist recovery identity does not match Paperclip")
+        verify_api_instruction_bundle(api, slug, configured[slug])
+
+
+def ensure_environment(
+    api: Any,
+    company_id: str,
+    daytona_secret_id: str,
+    provider_secret_id: str,
+    *,
+    probe_environment: bool,
+) -> str:
+    rows = list_dicts(api, f"/api/companies/{q(company_id)}/environments", "environment list")
+    matches = [row for row in rows if marked(row.get("metadata"), ENVIRONMENT_MARKER)]
+    if len(matches) > 1:
+        raise BootstrapError("duplicate Nix specialist environments")
+    expected_config = {
+        "provider": DAYTONA_DRIVER,
+        "apiKey": daytona_secret_id,
+        "apiUrl": None,
+        "target": "eu",
+        "snapshot": None,
+        "image": DAYTONA_IMAGE,
+        "language": None,
+        "timeoutMs": 300000,
+        "livenessTimeoutMs": 30000,
+        "cpu": 1,
+        "memory": 2,
+        "disk": 5,
+        "gpu": None,
+        "autoStopInterval": 15,
+        "autoArchiveInterval": 60,
+        "autoDeleteInterval": 60,
+        "reuseLease": False,
+        "archiveOnRelease": False,
+        "runnerLifecycleMode": "per_turn",
+    }
+    expected_env = {
+        "OPENCODE_API_KEY": {
+            "type": "secret_ref",
+            "secretId": provider_secret_id,
+            "version": "latest",
+            "projectionClass": "unclassified",
+            "projectionAllowlistKey": None,
+        }
+    }
+    payload = {
+        "name": ENVIRONMENT_NAME,
+        "description": "Ephemeral first-party Daytona sandbox for task-scoped Nix specialists.",
+        "driver": "sandbox",
+        "status": "active",
+        "config": expected_config,
+        "envVars": expected_env,
+        "metadata": {"nix": ENVIRONMENT_MARKER},
+    }
+    if not matches:
+        row = require_dict(
+            api.post(f"/api/companies/{q(company_id)}/environments", payload),
+            "specialist environment creation response",
+        )
+    else:
+        row = matches[0]
+        if (
+            row.get("name") != ENVIRONMENT_NAME
+            or row.get("driver") != "sandbox"
+            or row.get("status") != "active"
+            or row.get("config") != expected_config
+            or row.get("envVars") != expected_env
+        ):
+            raise BootstrapError("existing Nix specialist environment drifted; refusing implicit repair")
+    environment_id = str(row.get("id") or "")
+    if not UUID_RE.fullmatch(environment_id):
+        raise BootstrapError("specialist environment lacks a valid identifier")
+    if probe_environment:
+        leases_path = f"/api/environments/{q(environment_id)}/leases"
+        existing_leases = list_dicts(api, leases_path, "specialist environment lease list")
+        if existing_leases:
+            if len(existing_leases) == 1 and is_completed_bootstrap_probe(
+                existing_leases[0], environment_id
+            ):
+                return environment_id
+            raise BootstrapError(
+                "specialist environment has prior or unresolved lease state; "
+                "inspect Daytona and reconcile it before retrying"
+            )
+        probe = require_dict(
+            api.post(f"/api/environments/{q(environment_id)}/probe?companyId={q(company_id)}"),
+            "specialist environment probe",
+        )
+        if probe.get("ok") is not True:
+            raise BootstrapError("specialist Daytona environment probe failed")
+        details = probe.get("details")
+        lease_id = str(details.get("leaseId") or "") if isinstance(details, dict) else ""
+        if not UUID_RE.fullmatch(lease_id):
+            raise BootstrapError("specialist Daytona probe did not return a durable lease receipt")
+        completed_leases = list_dicts(api, leases_path, "completed specialist probe lease list")
+        matching_leases = [lease for lease in completed_leases if lease.get("id") == lease_id]
+        if len(matching_leases) != 1 or not is_completed_bootstrap_probe(
+            matching_leases[0], environment_id
+        ):
+            raise BootstrapError("specialist Daytona probe lease did not finish cleanly")
+    return environment_id
+
+
+def is_completed_bootstrap_probe(lease: dict[str, Any], environment_id: str) -> bool:
+    return (
+        lease.get("environmentId") == environment_id
+        and lease.get("status") == "released"
+        and lease.get("provider") == DAYTONA_DRIVER
+        and lease.get("leasePolicy") == "ephemeral"
+        and lease.get("issueId") is None
+        and lease.get("heartbeatRunId") is None
+        and lease.get("executionWorkspaceId") is None
+        and isinstance(lease.get("providerLeaseId"), str)
+        and 1 <= len(lease["providerLeaseId"]) <= 255
+    )
+
+
+def expected_permissions(company_id: str, project_id: str, specialist_ids: list[str]) -> dict[str, Any]:
+    return {
+        "canCreateAgents": False,
+        "canCreateSkills": False,
+        "canAssignTasks": True,
+        "trustPreset": "low_trust_review",
+        "authorizationPolicy": {
+            "trustPreset": "low_trust_review",
+            "reviewPreset": {"id": "low_trust_review", "version": 1, "rawOutputDisposition": "quarantine"},
+            "trustBoundary": {
+                "mode": "low_trust_review",
+                "companyId": company_id,
+                "projectIds": [project_id],
+                "allowedAgentIds": specialist_ids,
+                "allowedToolClasses": ["tests.local"],
+            },
+        },
+    }
+
+
+def expected_adapter_config(company_id: str, agent_id: str) -> dict[str, Any]:
+    instructions_root = (
+        f"/paperclip/instances/default/companies/{company_id}/agents/{agent_id}/instructions"
+    )
+    return {
+        "provider": "opencode",
+        "codexPermissionMode": "ask",
+        "model": MODEL,
+        "opencodePermissionMode": "deny",
+        "lifecycleMode": "per_turn",
+        "instructionsFilePath": f"{instructions_root}/AGENTS.md",
+        "instructionsRootPath": instructions_root,
+        "instructionsEntryFile": "AGENTS.md",
+        "instructionsBundleMode": "managed",
+    }
+
+
+def ensure_agents(
+    api: Any,
+    company_id: str,
+    chief_id: str,
+    project_id: str,
+    environment_id: str,
+) -> dict[str, str]:
+    rows = list_dicts(api, f"/api/companies/{q(company_id)}/agents", "agent list")
+    result: dict[str, str] = {}
+    for slug, name, role, capabilities in ROLES:
+        matches = [
+            row for row in rows
+            if isinstance(row.get("metadata"), dict)
+            and row["metadata"].get("nix") == AGENT_MARKER
+            and row["metadata"].get("specialistRole") == slug
+        ]
+        if len(matches) > 1:
+            raise BootstrapError(f"duplicate Nix {slug} specialist")
+        instructions = (REPO_ROOT / f"deploy/specialists/{slug}.md").read_text(encoding="utf-8")
+        create_adapter_config = {
+            "provider": "opencode",
+            "codexPermissionMode": "ask",
+            "model": MODEL,
+            "opencodePermissionMode": "deny",
+            "lifecycleMode": "per_turn",
+        }
+        if not matches:
+            row = require_dict(
+                api.post(
+                    f"/api/companies/{q(company_id)}/agents",
+                    {
+                        "name": name,
+                        "role": role,
+                        "title": f"Task-scoped {name} specialist",
+                        "reportsTo": chief_id,
+                        "capabilities": capabilities,
+                        "adapterType": "paperclip_runner",
+                        "adapterConfig": create_adapter_config,
+                        "instructionsBundle": {"entryFile": "AGENTS.md", "files": {"AGENTS.md": instructions}},
+                        "runtimeConfig": {"heartbeat": {"enabled": False, "maxConcurrentRuns": 1}},
+                        "defaultEnvironmentId": environment_id,
+                        "budgetMonthlyCents": 0,
+                        "permissions": {"canCreateAgents": False, "canCreateSkills": False},
+                        "metadata": {"nix": AGENT_MARKER, "specialistRole": slug},
+                    },
+                ),
+                f"{slug} agent creation response",
+            )
+            rows.append(row)
+        else:
+            row = matches[0]
+        agent_id = str(row.get("id") or "")
+        if not UUID_RE.fullmatch(agent_id):
+            raise BootstrapError(f"{slug} specialist lacks a valid identifier")
+        if (
+            row.get("name") != name
+            or row.get("role") != role
+            or row.get("reportsTo") != chief_id
+            or row.get("adapterType") != "paperclip_runner"
+            or row.get("adapterConfig") != expected_adapter_config(company_id, agent_id)
+            or row.get("defaultEnvironmentId") != environment_id
+            or row.get("budgetMonthlyCents") != 0
+            or row.get("runtimeConfig") != {"heartbeat": {"enabled": False, "maxConcurrentRuns": 1}}
+            or row.get("status") != "idle"
+        ):
+            raise BootstrapError(f"existing {slug} specialist drifted; refusing implicit repair")
+        keys = list_dicts(api, f"/api/agents/{q(agent_id)}/keys", f"{slug} key list")
+        if any(not key.get("revokedAt") for key in keys):
+            raise BootstrapError(f"{slug} specialist unexpectedly has an active API key")
+        verify_api_instruction_bundle(api, slug, agent_id)
+        result[slug] = agent_id
+
+    specialist_ids = [result[slug] for slug, *_ in ROLES]
+    if any(
+        row.get("status") != "terminated"
+        and row.get("adapterType") == "paperclip_runner"
+        and row.get("id") not in specialist_ids
+        for row in rows
+    ):
+        raise BootstrapError("unexpected nonterminated paperclip_runner exists outside the specialist allowlist")
+    permissions = expected_permissions(company_id, project_id, specialist_ids)
+    for agent_id in specialist_ids:
+        api.patch(f"/api/agents/{q(agent_id)}/permissions", permissions)
+    return result
+
+
+def update_config(path: pathlib.Path, values: dict[str, str]) -> None:
+    original = path.read_text(encoding="utf-8")
+    lines = original.splitlines()
+    seen: set[str] = set()
+    output: list[str] = []
+    for line in lines:
+        key = line.split("=", 1)[0] if "=" in line else ""
+        if key in values:
+            if key in seen:
+                raise BootstrapError(f"duplicate {key} in {path}")
+            output.append(f"{key}={values[key]}")
+            seen.add(key)
+        else:
+            output.append(line)
+    for key, value in values.items():
+        if key not in seen:
+            output.append(f"{key}={value}")
+    temporary = path.with_name(f".{path.name}.specialists-{os.getpid()}")
+    temporary.write_text("\n".join(output) + "\n", encoding="utf-8")
+    os.chmod(temporary, stat.S_IMODE(path.stat().st_mode))
+    os.replace(temporary, path)
+
+
+def run_compose(config_path: pathlib.Path, *arguments: str) -> None:
+    command = ["docker", "compose", "--env-file", str(config_path), *arguments]
+    try:
+        completed = subprocess.run(command, check=False)
+    except OSError as exc:
+        raise BootstrapError("Docker Compose is unavailable for the specialist safety transition") from exc
+    if completed.returncode != 0:
+        raise BootstrapError("Docker Compose failed during the specialist safety transition")
+
+
+def activate_specialists(
+    api: Any,
+    config_path: pathlib.Path,
+    company_id: str,
+    chief_id: str,
+    project_id: str,
+    environment_id: str,
+    configured: dict[str, str] | None = None,
+) -> dict[str, str]:
+    # The exact runtime patch treats an empty specialist allowlist as a
+    # fail-closed restriction on every paperclip_runner identity. Create the
+    # three IDs under that floor, publish them atomically, then reload both
+    # consumers before any work is assigned. No host executor is involved.
+    specialists = ensure_agents(api, company_id, chief_id, project_id, environment_id)
+    try:
+        verify_instruction_bundles(config_path, company_id, specialists)
+    except TopologyError as exc:
+        raise BootstrapError(str(exc)) from exc
+    if configured is not None and (
+        environment_id != configured["environment"]
+        or any(specialists[slug] != configured[slug] for slug, *_ in ROLES)
+    ):
+        raise BootstrapError("recovered specialist topology does not match the published configuration")
+    update_config(
+        config_path,
+        {
+            "NIX_PRODUCT_AGENT_ID": specialists["product"],
+            "NIX_GROWTH_AGENT_ID": specialists["growth"],
+            "NIX_OPERATIONS_AGENT_ID": specialists["operations"],
+            "NIX_SPECIALIST_AGENT_IDS": ",".join(specialists[slug] for slug, *_ in ROLES),
+            "NIX_SPECIALIST_ENVIRONMENT_ID": environment_id,
+        },
+    )
+    run_compose(
+        config_path,
+        "up", "-d", "--no-deps", "--wait", "--force-recreate", "paperclip", "hermes",
+    )
+    plugin_rows = list_dicts(api, "/api/plugins", "plugin list")
+    plugin_matches = [row for row in plugin_rows if row.get("pluginKey") == DAYTONA_PLUGIN_KEY]
+    if len(plugin_matches) != 1:
+        raise BootstrapError("Daytona plugin disappeared during specialist activation")
+    verify_daytona_capabilities(api, company_id, str(plugin_matches[0].get("id") or ""))
+    return specialists
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("company_id")
+    parser.add_argument("--config", default=".env")
+    args = parser.parse_args(argv)
+    config_path = pathlib.Path(args.config).resolve()
+    if os.geteuid() != 0:
+        raise BootstrapError("run this operator helper as root")
+    company_id = args.company_id
+    expected_user_id = read_config(config_path, "PAPERCLIP_LIOR_USER_ID")
+    chief_id = read_config(config_path, "NIX_CHIEF_AGENT_ID")
+    project_id = read_config(config_path, "NIX_APPROVED_PROJECT_ID")
+    public_url = read_config(config_path, "PAPERCLIP_PUBLIC_URL")
+    provider_path = pathlib.Path(read_config(config_path, "SPECIALIST_PROVIDER_ENV_FILE"))
+
+    for label, value in (("company", company_id), ("Chief", chief_id), ("project", project_id)):
+        if not UUID_RE.fullmatch(value):
+            raise BootstrapError(f"{label} identifier is not a canonical UUID")
+    provider_keys = read_provider_keys(provider_path)
+    configured = preflight_specialist_floor(config_path)
+
+    api = Api(public_url)
+    key_id = ""
+    try:
+        _, key_id = authenticate(api, company_id, expected_user_id)
+        if configured is not None:
+            verify_configured_topology(api, company_id, configured)
+            try:
+                verify_instruction_bundles(
+                    config_path,
+                    company_id,
+                    {slug: configured[slug] for slug, *_ in ROLES},
+                )
+            except TopologyError as exc:
+                raise BootstrapError(str(exc)) from exc
+        experimental = require_dict(api.get("/api/instance/settings/experimental"), "experimental settings")
+        if experimental.get("enableEnvironments") is not True or experimental.get("enableNativeRunner") is not True:
+            api.patch(
+                "/api/instance/settings/experimental",
+                {"enableEnvironments": True, "enableNativeRunner": True},
+            )
+        ensure_daytona_plugin(api, company_id)
+        daytona_secret = ensure_secret(
+            api, company_id, *SECRET_SPECS[0], provider_keys["DAYTONA_API_KEY"]
+        )
+        provider_secret = ensure_secret(
+            api, company_id, *SECRET_SPECS[1], provider_keys["OPENCODE_API_KEY"]
+        )
+        environment_id = ensure_environment(
+            api,
+            company_id,
+            daytona_secret,
+            provider_secret,
+            probe_environment=configured is None,
+        )
+        if configured is not None and environment_id != configured["environment"]:
+            raise BootstrapError("configured specialist environment changed during recovery")
+        activate_specialists(
+            api, config_path, company_id, chief_id, project_id, environment_id, configured,
+        )
+        print("Paperclip task-scoped specialist topology converged; ephemeral board access revoked.")
+        return 0
+    finally:
+        if api.token:
+            try:
+                revoke_board_token(api, key_id)
+            finally:
+                api.token = ""
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except BootstrapError as exc:
+        print(f"Paperclip specialist bootstrap error: {exc}", file=sys.stderr)
+        raise SystemExit(1)

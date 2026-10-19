@@ -6,12 +6,14 @@ from __future__ import annotations
 import asyncio
 from contextlib import nullcontext
 from contextvars import ContextVar
+import os
 import threading
 from types import SimpleNamespace
 
 from gateway.paperclip_run_context import (
     paperclip_request_metadata,
 )
+from gateway.session_context import clear_session_vars, set_session_vars
 from gateway.platforms import api_server_runs as runs
 from tools import mcp_tool_handlers as handlers
 
@@ -198,6 +200,23 @@ def main() -> None:
     handlers._trust_gate_check = lambda *_args: None
     handlers._check_circuit_breaker = lambda *_args: None
     try:
+        os.environ["TELEGRAM_ALLOWED_USERS"] = "123456789"
+        os.environ["TELEGRAM_HOME_CHANNEL"] = "123456789"
+        telegram_context = set_session_vars(
+            platform="telegram", chat_type="dm", chat_id="123456789",
+            user_id="123456789", message_id="42",
+        )
+        try:
+            assert paperclip_request_metadata("paperclip") == {
+                "com.nix/hermes-platform": "telegram",
+                "com.nix/hermes-chat-type": "dm",
+                "com.nix/hermes-chat-id": "123456789",
+                "com.nix/hermes-user-id": "123456789",
+                "com.nix/hermes-message-id": "42",
+            }
+        finally:
+            clear_session_vars(telegram_context)
+
         canonical = asyncio.run(admit(RUN_ONE, "paperclip"))
         assert canonical["meta"] == {"com.paperclip/run-id": RUN_ONE}
 

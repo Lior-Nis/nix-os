@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import ContextVar
 import hashlib
 import importlib.util
 import os
@@ -29,13 +30,37 @@ def load_patcher():
 
 
 def load_context_module(source: str):
+    gateway = types.ModuleType("gateway")
+    session_context = types.ModuleType("gateway.session_context")
+    session_context._UNSET = object()
+    for name in (
+        "_SESSION_PLATFORM", "_SESSION_CHAT_TYPE", "_SESSION_CHAT_ID",
+        "_SESSION_USER_ID", "_SESSION_MESSAGE_ID",
+    ):
+        setattr(session_context, name, ContextVar(name, default=session_context._UNSET))
+    gateway.session_context = session_context
+    import sys
+    previous_gateway = sys.modules.get("gateway")
+    previous_session = sys.modules.get("gateway.session_context")
+    sys.modules["gateway"] = gateway
+    sys.modules["gateway.session_context"] = session_context
     module = types.ModuleType("gateway.paperclip_run_context")
-    exec(compile(source, "paperclip_run_context.py", "exec"), module.__dict__)
-    return module
+    try:
+        exec(compile(source, "paperclip_run_context.py", "exec"), module.__dict__)
+    finally:
+        if previous_gateway is None:
+            del sys.modules["gateway"]
+        else:
+            sys.modules["gateway"] = previous_gateway
+        if previous_session is None:
+            del sys.modules["gateway.session_context"]
+        else:
+            sys.modules["gateway.session_context"] = previous_session
+    return module, session_context
 
 
 def test_context_contract(patcher) -> None:
-    context = load_context_module(patcher.CONTEXT_MODULE)
+    context, session_context = load_context_module(patcher.CONTEXT_MODULE)
     run_one = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
     run_two = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 
@@ -65,6 +90,55 @@ def test_context_contract(patcher) -> None:
         else:
             os.environ["PAPERCLIP_RUN_ID"] = previous
     assert context.paperclip_request_metadata("paperclip") is None
+
+    previous_user = os.environ.get("TELEGRAM_ALLOWED_USERS")
+    previous_chat = os.environ.get("TELEGRAM_HOME_CHANNEL")
+    os.environ["TELEGRAM_ALLOWED_USERS"] = "123456789"
+    os.environ["TELEGRAM_HOME_CHANNEL"] = "123456789"
+    telegram_tokens = [
+        session_context._SESSION_PLATFORM.set("telegram"),
+        session_context._SESSION_CHAT_TYPE.set("dm"),
+        session_context._SESSION_CHAT_ID.set("123456789"),
+        session_context._SESSION_USER_ID.set("123456789"),
+        session_context._SESSION_MESSAGE_ID.set("42"),
+    ]
+    try:
+        assert context.paperclip_request_metadata("paperclip") == {
+            "com.nix/hermes-platform": "telegram",
+            "com.nix/hermes-chat-type": "dm",
+            "com.nix/hermes-chat-id": "123456789",
+            "com.nix/hermes-user-id": "123456789",
+            "com.nix/hermes-message-id": "42",
+        }
+        assert context.paperclip_request_metadata("other") is None
+        session_context._SESSION_USER_ID.set("987654321")
+        assert context.paperclip_request_metadata("paperclip") is None
+        session_context._SESSION_USER_ID.set("123456789")
+        session_context._SESSION_CHAT_TYPE.set("group")
+        assert context.paperclip_request_metadata("paperclip") is None
+        session_context._SESSION_CHAT_TYPE.set("dm")
+        session_context._SESSION_PLATFORM.set("api_server")
+        assert context.paperclip_request_metadata("paperclip") is None
+    finally:
+        for variable, token in zip(
+            (
+                session_context._SESSION_PLATFORM,
+                session_context._SESSION_CHAT_TYPE,
+                session_context._SESSION_CHAT_ID,
+                session_context._SESSION_USER_ID,
+                session_context._SESSION_MESSAGE_ID,
+            ),
+            telegram_tokens,
+        ):
+            variable.reset(token)
+        if previous_user is None:
+            del os.environ["TELEGRAM_ALLOWED_USERS"]
+        else:
+            os.environ["TELEGRAM_ALLOWED_USERS"] = previous_user
+        if previous_chat is None:
+            del os.environ["TELEGRAM_HOME_CHANNEL"]
+        else:
+            os.environ["TELEGRAM_HOME_CHANNEL"] = previous_chat
 
     # Simulate _run_agent_sync binding inside executor workers. The barrier
     # keeps both scopes live simultaneously and proves there is no global/env

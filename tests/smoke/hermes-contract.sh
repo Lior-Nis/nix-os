@@ -190,7 +190,7 @@ assert set(server["tools"]["include"]) == {
   "paperclipMe", "paperclipListIssues", "paperclipGetIssue",
   "paperclipListComments", "paperclipListProjects", "paperclipGetProject",
   "paperclipCreateIssue", "paperclipCheckoutIssue", "paperclipUpdateIssue",
-  "paperclipAddComment", "paperclipAskUserQuestions",
+  "paperclipAddComment", "paperclipAskUserQuestions", "nixResolveFounderDecision",
 }
 skill = pathlib.Path("/opt/hermes/optional-skills/software-development/grill-me/SKILL.md")
 assert skill.is_file()
@@ -202,6 +202,10 @@ mcp_listing=$(docker run --rm --entrypoint hermes \
   --env PAPERCLIP_COMPANY_ID=contract-company \
   --env PAPERCLIP_AGENT_ID=contract-agent \
   --env PAPERCLIP_LIOR_USER_ID=lior-contract-user \
+  --env NIX_FOUNDER_RELAY_SECRET=test-founder-relay-secret-at-least-thirty-two-characters \
+  --env NIX_PAPERCLIP_SPECIALIST_AGENT_IDS=11111111-1111-4111-8111-111111111111 \
+  --env TELEGRAM_ALLOWED_USERS=123456789 \
+  --env TELEGRAM_HOME_CHANNEL=123456789 \
   --volume "$repo_root/deploy/hermes/config.yaml:/opt/data/config.yaml:ro" \
   --volume "$repo_root/deploy/hermes/run-scoped-paperclip-mcp.py:/opt/nix/run-scoped-paperclip-mcp.py:ro" \
   --volume "$repo_root/deploy/hermes/paperclip_question_delivery.py:/opt/nix/paperclip_question_delivery.py:ro" \
@@ -209,7 +213,7 @@ mcp_listing=$(docker run --rm --entrypoint hermes \
   --env WEBHOOK_SECRET="$decision_webhook_secret" \
   "$image" mcp list)
 grep -q 'paperclip' <<<"$mcp_listing"
-grep -q '11 selected' <<<"$mcp_listing"
+grep -q '12 selected' <<<"$mcp_listing"
 grep -q 'enabled' <<<"$mcp_listing"
 
 docker run --rm --entrypoint python3 \
