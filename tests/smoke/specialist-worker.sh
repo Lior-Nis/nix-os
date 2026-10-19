@@ -20,7 +20,11 @@ ssh-keygen -q -t ed25519 -N '' -C test-host -f "$test_dir/host"
 ssh-keygen -q -t ed25519 -N '' -C test-client -f "$test_dir/client"
 { printf 'restrict '; cat "$test_dir/client.pub"; } >"$test_dir/authorized_keys"
 printf '[%s]:2222 %s\n' "$container" "$(cat "$test_dir/host.pub")" >"$test_dir/known_hosts"
-chmod 0600 "$test_dir/host" "$test_dir/client" "$test_dir/authorized_keys" "$test_dir/known_hosts"
+chmod 0600 "$test_dir/host" "$test_dir/authorized_keys"
+# These are disposable test-only inputs inside a mode-0700 temporary directory.
+# Make them readable through Docker user-namespace mappings, then copy them to
+# private files inside the client container before OpenSSH reads them.
+chmod 0644 "$test_dir/client" "$test_dir/known_hosts"
 
 # Linux bind mounts preserve host ownership. Match production's root-owned
 # worker files so sshd StrictModes validates the absolute authorized-keys path.
@@ -59,12 +63,15 @@ authenticated=0
 ssh_error="$test_dir/ssh-error.log"
 for _ in $(seq 1 10); do
   if docker run --rm --network "$network" \
-    --mount "type=bind,source=$test_dir/client,target=/run/client,readonly" \
-    --mount "type=bind,source=$test_dir/known_hosts,target=/run/known_hosts,readonly" \
+    --mount "type=bind,source=$test_dir/client,target=/run/client-source,readonly" \
+    --mount "type=bind,source=$test_dir/known_hosts,target=/run/known-hosts-source,readonly" \
     ghcr.io/paperclipai/paperclip:2026.916.1@sha256:a02ac35ac41df911af477422ea0e781cf41d2b2c600c66f0a5ac9d8c63f52c2c \
-    ssh -i /run/client -o BatchMode=yes -o IdentitiesOnly=yes \
-      -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/run/known_hosts \
-      -p 2222 "worker@$container" \
+    sh -ec '
+      install -m 0600 /run/client-source /tmp/client
+      install -m 0600 /run/known-hosts-source /tmp/known_hosts
+      exec ssh -i /tmp/client -o BatchMode=yes -o IdentitiesOnly=yes \
+        -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/tmp/known_hosts "$@"
+    ' sh -p 2222 "worker@$container" \
       'test "$(id -u):$(id -g)" = 10001:10001
        test "$(awk "/^CapEff:/ {print \$2}" /proc/self/status)" = 0000000000000000
        test -d /workspaces/product && test -d /workspaces/growth && test -d /workspaces/operations
