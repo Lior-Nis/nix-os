@@ -120,8 +120,10 @@ require(
 
 worker_dockerfile = (repo_root / "deploy/specialist-worker/Dockerfile").read_text()
 require(
-    worker_dockerfile.startswith("FROM node:22.20.0-bookworm-slim@sha256:"),
-    "specialist worker base image must be digest-pinned",
+    worker_dockerfile.startswith(
+        "FROM node:22.20.0-trixie-slim@sha256:f3bca16c4b87ad0c7abfad97f6803898ee9b08a1f153a269140f0a08f50231d2"
+    ),
+    "specialist worker base image must use the runner-compatible digest",
 )
 require("ARG OPENCODE_VERSION=1.18.29" in worker_dockerfile, "OpenCode version pin changed")
 require('"opencode-ai@${OPENCODE_VERSION}"' in worker_dockerfile, "OpenCode install must use the exact pin")
