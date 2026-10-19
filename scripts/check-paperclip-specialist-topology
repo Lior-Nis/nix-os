@@ -125,26 +125,14 @@ def specialist_ids_from_config(config_path: pathlib.Path) -> dict[str, str]:
 
 
 def expected_permissions(company_id: str, project_id: str, specialist_ids: list[str]) -> dict[str, Any]:
+    # The upstream low_trust_review preset only supports the sandbox driver.
+    # The SSH specialists rely on their explicit Paperclip authority patch and
+    # the credential-minimal Docker worker boundary instead.
+    del company_id, project_id, specialist_ids
     return {
         "canCreateAgents": False,
         "canCreateSkills": False,
         "canAssignTasks": True,
-        "trustPreset": "low_trust_review",
-        "authorizationPolicy": {
-            "trustPreset": "low_trust_review",
-            "reviewPreset": {
-                "id": "low_trust_review",
-                "version": 1,
-                "rawOutputDisposition": "quarantine",
-            },
-            "trustBoundary": {
-                "mode": "low_trust_review",
-                "companyId": company_id,
-                "projectIds": [project_id],
-                "allowedAgentIds": specialist_ids,
-                "allowedToolClasses": ["tests.local"],
-            },
-        },
     }
 
 
@@ -483,7 +471,7 @@ def validate_topology(expected: dict[str, Any], snapshot: dict[str, Any]) -> Non
         ):
             raise TopologyError(f"configured {slug} specialist topology is unsafe")
         if row.get("permissions") != permissions:
-            raise TopologyError(f"configured {slug} specialist trust boundary is unsafe")
+            raise TopologyError(f"configured {slug} specialist permissions are unsafe")
         same_name = [
             candidate
             for candidate in agents

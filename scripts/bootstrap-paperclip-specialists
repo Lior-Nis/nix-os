@@ -492,22 +492,15 @@ def ensure_environment(
 
 
 def expected_permissions(company_id: str, project_id: str, specialist_ids: list[str]) -> dict[str, Any]:
+    # Paperclip's low_trust_review preset is intentionally reserved for its
+    # sandbox environment driver. These specialists use the built-in SSH
+    # driver and are instead contained by the patched task/project authority
+    # checks plus the credential-minimal worker boundary.
+    del company_id, project_id, specialist_ids
     return {
         "canCreateAgents": False,
         "canCreateSkills": False,
         "canAssignTasks": True,
-        "trustPreset": "low_trust_review",
-        "authorizationPolicy": {
-            "trustPreset": "low_trust_review",
-            "reviewPreset": {"id": "low_trust_review", "version": 1, "rawOutputDisposition": "quarantine"},
-            "trustBoundary": {
-                "mode": "low_trust_review",
-                "companyId": company_id,
-                "projectIds": [project_id],
-                "allowedAgentIds": specialist_ids,
-                "allowedToolClasses": ["tests.local"],
-            },
-        },
     }
 
 

@@ -573,17 +573,9 @@ growth_agent_id=$(create_specialist_fixture growth Growth cmo \
 operations_agent_id=$(create_specialist_fixture operations Operations general \
   'Operations specialist for bounded execution and verification.' \
   "$repo_root/deploy/specialists/operations.md")
-specialist_ids_json=$(jq -nc --arg product "$product_agent_id" --arg growth "$growth_agent_id" \
-  --arg operations "$operations_agent_id" '[$product,$growth,$operations]')
-specialist_permissions=$(jq -nc --arg company "$company_id" --arg project "$project_id" \
-  --argjson agents "$specialist_ids_json" '{
-    canCreateAgents:false,canCreateSkills:false,canAssignTasks:true,trustPreset:"low_trust_review",
-    authorizationPolicy:{
-      trustPreset:"low_trust_review",
-      reviewPreset:{id:"low_trust_review",version:1,rawOutputDisposition:"quarantine"},
-      trustBoundary:{mode:"low_trust_review",companyId:$company,projectIds:[$project],allowedAgentIds:$agents,allowedToolClasses:["tests.local"]}
-    }
-  }')
+specialist_permissions=$(jq -nc '{
+  canCreateAgents:false,canCreateSkills:false,canAssignTasks:true
+}')
 for specialist_agent_id in "$product_agent_id" "$growth_agent_id" "$operations_agent_id"; do
   source_patch "/api/agents/${specialist_agent_id}/permissions" "$specialist_permissions" >/dev/null
 done
