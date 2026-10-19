@@ -472,7 +472,9 @@ sudo -E docker compose --env-file "$PWD/.env" up -d --wait specialist-worker pap
 
 The worker has no published port, Docker socket, host checkout, control-plane
 credential, or env file. Its root filesystem is read-only; only the named
-workspace volume and bounded tmpfs mounts are writable. It drops all
+workspace volume and bounded tmpfs mounts are writable. The reconstructible
+Paperclip provider-pack cache is mounted read-only at the upstream discovery
+path because the pinned SSH transport cannot upload a directory. It drops all
 capabilities before adding the minimum OpenSSH daemon set, uses
 `no-new-privileges`, and is limited to one CPU, 2 GiB RAM, and 256 PIDs.
 Paperclip reaches SSH only on the internal specialist network. The worker's

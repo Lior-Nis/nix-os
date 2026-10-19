@@ -25,9 +25,12 @@ else
 fi
 
 # The image starts as root and later drops to the configured node UID/GID.
-# Provider manifests are deliberately 0600, so transfer ownership explicitly.
+# This pack is reconstructible code, not a credential. Make it readable through
+# the worker's read-only cache mount so the SSH transport can use the exact
+# manifest-matched artifact without receiving cache write access.
 if [ "$(id -u)" -eq 0 ]; then
   chown -R "${USER_UID:-1000}:${USER_GID:-1000}" "$provider_pack"
+  chmod -R a+rX "$provider_pack"
 fi
 
 # Compose does not reliably retain an image CMD when the entrypoint is

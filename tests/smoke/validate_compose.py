@@ -99,9 +99,21 @@ require(set(worker.get("cap_add", [])) == {"CHOWN", "DAC_OVERRIDE", "KILL", "SET
 require("no-new-privileges:true" in worker.get("security_opt", []), "specialist worker must set no-new-privileges")
 worker_mounts = worker.get("volumes", [])
 require(not any(m.get("source") in {"/var/run/docker.sock", "/run/docker.sock"} for m in worker_mounts), "specialist worker must not receive a Docker socket")
-require(all(m.get("target") in {"/workspaces", "/run/secrets/specialist_host_key", "/run/secrets/specialist_authorized_keys"} for m in worker_mounts), "specialist worker has an unexpected host mount")
+require(all(m.get("target") in {"/workspaces", "/runner-cache", "/run/secrets/specialist_host_key", "/run/secrets/specialist_authorized_keys"} for m in worker_mounts), "specialist worker has an unexpected host mount")
 workspace_mount = next(m for m in worker_mounts if m.get("target") == "/workspaces")
 require(workspace_mount.get("type") == "volume", "specialist workspaces must use a Docker volume")
+runner_cache_mount = next(m for m in worker_mounts if m.get("target") == "/runner-cache")
+paperclip_runner_cache_mount = next(
+    m for m in paperclip_mounts if m.get("target") == "/runner-cache"
+)
+require(
+    runner_cache_mount.get("type") == "volume" and runner_cache_mount.get("read_only") is True,
+    "specialist worker must receive the reconstructible runner cache read-only",
+)
+require(
+    runner_cache_mount.get("source") == paperclip_runner_cache_mount.get("source"),
+    "Paperclip and the specialist worker must share the same runner cache volume",
+)
 for secret_target in (
     "/run/secrets/specialist_host_key",
     "/run/secrets/specialist_authorized_keys",
@@ -117,7 +129,6 @@ require(
     tmpfs_targets == {"/run", "/tmp", "/home/worker/.cache", "/home/worker/.local"},
     "specialist worker tmpfs boundary changed",
 )
-
 worker_dockerfile = (repo_root / "deploy/specialist-worker/Dockerfile").read_text()
 require(
     worker_dockerfile.startswith(
@@ -127,6 +138,11 @@ require(
 )
 require("ARG OPENCODE_VERSION=1.18.29" in worker_dockerfile, "OpenCode version pin changed")
 require('"opencode-ai@${OPENCODE_VERSION}"' in worker_dockerfile, "OpenCode install must use the exact pin")
+require(
+    "ln -s /runner-cache/nix-specialist-provider-pack /opt/paperclip-runner/provider-pack"
+    in worker_dockerfile,
+    "specialist worker must expose the preinstalled provider pack at Paperclip's discovery path",
+)
 
 paperclip_env = services["paperclip"].get("environment", {})
 require(paperclip_env.get("PAPERCLIP_DEPLOYMENT_MODE") == "authenticated", "Paperclip auth mode is wrong")

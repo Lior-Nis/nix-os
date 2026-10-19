@@ -76,6 +76,7 @@ for _ in $(seq 1 10); do
       'test "$(id -u):$(id -g)" = 10001:10001
        test "$(awk "/^CapEff:/ {print \$2}" /proc/self/status)" = 0000000000000000
        test -d /workspaces/product && test -d /workspaces/growth && test -d /workspaces/operations
+       test -L /opt/paperclip-runner/provider-pack
        test ! -e /var/run/docker.sock && test ! -e /run/docker.sock
        ! touch /etc/nix-worker-rootfs-write-test
        touch /workspaces/product/nix-worker-volume-write-test' >/dev/null 2>"$ssh_error"; then
