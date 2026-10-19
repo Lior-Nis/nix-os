@@ -50,7 +50,11 @@ docker run --rm --entrypoint sh --user 10001:10001 \
   '
 
 docker build --quiet --tag "$worker_image" "$repo_root/deploy/specialist-worker" >/dev/null
-docker run --rm --entrypoint sh --user 10001:10001 \
+docker run --rm --read-only --entrypoint sh --user 10001:10001 \
+  --tmpfs /tmp:mode=1777,size=256m \
+  --tmpfs /home/worker/.config:uid=10001,gid=10001,mode=0700,size=16m \
+  --tmpfs /home/worker/.cache:uid=10001,gid=10001,mode=0700,size=512m \
+  --tmpfs /home/worker/.local:uid=10001,gid=10001,mode=0700,size=256m \
   -v "$cache_volume:/runner-cache:ro" "$worker_image" -ec '
     pack=/opt/paperclip-runner/provider-pack
     test -r "$pack/provider-pack.json"

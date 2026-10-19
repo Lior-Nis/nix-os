@@ -56,6 +56,7 @@ docker run -d --name "$container" \
   --mount "type=bind,source=$test_dir/authorized_keys,target=/run/secrets/specialist_authorized_keys,readonly" \
   --tmpfs /run:size=16m,mode=0755 \
   --tmpfs /tmp:size=256m,mode=1777 \
+  --tmpfs /home/worker/.config:uid=10001,gid=10001,mode=0700,size=16m \
   --tmpfs /home/worker/.cache:uid=10001,gid=10001,mode=0700,size=512m \
   --tmpfs /home/worker/.local:uid=10001,gid=10001,mode=0700,size=256m \
   "$image" >/dev/null
