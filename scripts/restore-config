@@ -93,8 +93,11 @@ payload_dir=$(find "$restore_tmp_dir" -mindepth 1 -maxdepth 1 -type d -name 'nix
 "$repo_root/scripts/verify-backup-checksums" "$payload_dir"
 
 config_pack_format=$(manifest_value CONFIG_PACK_FORMAT_VERSION)
+target_specialist_worker_host_key=''
+target_specialist_worker_authorized_keys=''
+target_specialist_worker_client_key=''
 case "$config_pack_format" in
-  2|4) ;;
+  2|4|5) ;;
   *) fail "unsupported CONFIG_PACK_FORMAT_VERSION: ${config_pack_format:-missing}" ;;
 esac
 postgres_path=$(manifest_value POSTGRES_ENV_FILE)
@@ -103,7 +106,7 @@ hermes_path=$(manifest_value HERMES_ENV_FILE)
 validate_packed_path "$postgres_path"
 validate_packed_path "$paperclip_path"
 validate_packed_path "$hermes_path"
-if [[ "$config_pack_format" == 4 ]]; then
+if [[ "$config_pack_format" == 4 || "$config_pack_format" == 5 ]]; then
   founder_relay_path=$(manifest_value FOUNDER_RELAY_ENV_FILE)
   specialist_provider_env_path=$(manifest_value SPECIALIST_PROVIDER_ENV_FILE)
   for packed_path in \
@@ -112,29 +115,50 @@ if [[ "$config_pack_format" == 4 ]]; then
     validate_packed_path "$packed_path"
   done
 fi
+if [[ "$config_pack_format" == 5 ]]; then
+  specialist_worker_host_key_path=$(manifest_value SPECIALIST_WORKER_HOST_KEY_FILE)
+  specialist_worker_authorized_keys_path=$(manifest_value SPECIALIST_WORKER_AUTHORIZED_KEYS_FILE)
+  specialist_worker_client_key_path=$(manifest_value SPECIALIST_WORKER_CLIENT_KEY_FILE)
+  for packed_path in "$specialist_worker_host_key_path" "$specialist_worker_authorized_keys_path" "$specialist_worker_client_key_path"; do
+    validate_packed_path "$packed_path"
+  done
+fi
 if [[ "$restore_root" == / ]]; then
   target_postgres=$postgres_path
   target_paperclip=$paperclip_path
   target_hermes=$hermes_path
-  if [[ "$config_pack_format" == 4 ]]; then
+  if [[ "$config_pack_format" == 4 || "$config_pack_format" == 5 ]]; then
     target_founder_relay=$founder_relay_path
     target_specialist_provider_env=$specialist_provider_env_path
+  fi
+  if [[ "$config_pack_format" == 5 ]]; then
+    target_specialist_worker_host_key=$specialist_worker_host_key_path
+    target_specialist_worker_authorized_keys=$specialist_worker_authorized_keys_path
+    target_specialist_worker_client_key=$specialist_worker_client_key_path
   fi
 else
   target_postgres=$(target_below_restore_root "$postgres_path")
   target_paperclip=$(target_below_restore_root "$paperclip_path")
   target_hermes=$(target_below_restore_root "$hermes_path")
-  if [[ "$config_pack_format" == 4 ]]; then
+  if [[ "$config_pack_format" == 4 || "$config_pack_format" == 5 ]]; then
     target_founder_relay=$(target_below_restore_root "$founder_relay_path")
     target_specialist_provider_env=$(target_below_restore_root "$specialist_provider_env_path")
   fi
+  if [[ "$config_pack_format" == 5 ]]; then
+    target_specialist_worker_host_key=$(target_below_restore_root "$specialist_worker_host_key_path")
+    target_specialist_worker_authorized_keys=$(target_below_restore_root "$specialist_worker_authorized_keys_path")
+    target_specialist_worker_client_key=$(target_below_restore_root "$specialist_worker_client_key_path")
+  fi
 fi
 restore_targets=("$target_config" "$target_postgres" "$target_paperclip" "$target_hermes")
-if [[ "$config_pack_format" == 4 ]]; then
+if [[ "$config_pack_format" == 4 || "$config_pack_format" == 5 ]]; then
   restore_targets+=(
     "$target_founder_relay"
     "$target_specialist_provider_env"
   )
+fi
+if [[ "$config_pack_format" == 5 ]]; then
+  restore_targets+=("$target_specialist_worker_host_key" "$target_specialist_worker_authorized_keys" "$target_specialist_worker_client_key")
 fi
 for ((target_index = 0; target_index < ${#restore_targets[@]}; target_index += 1)); do
   target=${restore_targets[$target_index]}
@@ -152,18 +176,24 @@ for target in "${restore_targets[@]}"; do
 done
 if [[ "$restore_root" == / ]]; then
   install -m 0600 "$payload_dir/files/deployment.env" "$target_config"
-elif [[ "$config_pack_format" == 4 ]]; then
+elif [[ "$config_pack_format" == 4 || "$config_pack_format" == 5 ]]; then
   awk \
     -v pg="$target_postgres" \
     -v pc="$target_paperclip" \
     -v hm="$target_hermes" \
     -v fr="$target_founder_relay" \
-    -v spe="$target_specialist_provider_env" '
+    -v spe="$target_specialist_provider_env" \
+    -v swh="$target_specialist_worker_host_key" \
+    -v swa="$target_specialist_worker_authorized_keys" \
+    -v swc="$target_specialist_worker_client_key" '
     /^POSTGRES_ENV_FILE=/ { print "POSTGRES_ENV_FILE=" pg; next }
     /^PAPERCLIP_ENV_FILE=/ { print "PAPERCLIP_ENV_FILE=" pc; next }
     /^HERMES_ENV_FILE=/ { print "HERMES_ENV_FILE=" hm; next }
     /^FOUNDER_RELAY_ENV_FILE=/ { print "FOUNDER_RELAY_ENV_FILE=" fr; next }
     /^SPECIALIST_PROVIDER_ENV_FILE=/ { print "SPECIALIST_PROVIDER_ENV_FILE=" spe; next }
+    /^SPECIALIST_WORKER_HOST_KEY_FILE=/ { print "SPECIALIST_WORKER_HOST_KEY_FILE=" swh; next }
+    /^SPECIALIST_WORKER_AUTHORIZED_KEYS_FILE=/ { print "SPECIALIST_WORKER_AUTHORIZED_KEYS_FILE=" swa; next }
+    /^SPECIALIST_WORKER_CLIENT_KEY_FILE=/ { print "SPECIALIST_WORKER_CLIENT_KEY_FILE=" swc; next }
     { print }
   ' "$payload_dir/files/deployment.env" >"$target_config"
   chmod 0600 "$target_config"
@@ -179,9 +209,14 @@ fi
 install -m 0600 "$payload_dir/files/postgres.env" "$target_postgres"
 install -m 0600 "$payload_dir/files/paperclip.env" "$target_paperclip"
 install -m 0600 "$payload_dir/files/hermes.env" "$target_hermes"
-if [[ "$config_pack_format" == 4 ]]; then
+if [[ "$config_pack_format" == 4 || "$config_pack_format" == 5 ]]; then
   install -m 0600 "$payload_dir/files/founder-relay.env" "$target_founder_relay"
   install -m 0600 "$payload_dir/files/specialist-provider.env" "$target_specialist_provider_env"
+fi
+if [[ "$config_pack_format" == 5 ]]; then
+  install -m 0600 "$payload_dir/files/specialist-worker-host-key" "$target_specialist_worker_host_key"
+  install -m 0600 "$payload_dir/files/specialist-worker-authorized-keys" "$target_specialist_worker_authorized_keys"
+  install -m 0600 "$payload_dir/files/specialist-worker-client-key" "$target_specialist_worker_client_key"
 fi
 
 printf 'Configuration pack restored with mode 0600; contents were not logged.\n'
@@ -189,7 +224,12 @@ printf 'deployment.env sha256=%s\n' "$(hash_value "$target_config")"
 printf 'postgres.env sha256=%s\n' "$(hash_value "$target_postgres")"
 printf 'paperclip.env sha256=%s\n' "$(hash_value "$target_paperclip")"
 printf 'hermes.env sha256=%s\n' "$(hash_value "$target_hermes")"
-if [[ "$config_pack_format" == 4 ]]; then
+if [[ "$config_pack_format" == 4 || "$config_pack_format" == 5 ]]; then
   printf 'founder-relay.env sha256=%s\n' "$(hash_value "$target_founder_relay")"
   printf 'specialist-provider.env sha256=%s\n' "$(hash_value "$target_specialist_provider_env")"
+fi
+if [[ "$config_pack_format" == 5 ]]; then
+  printf 'specialist-worker-host-key sha256=%s\n' "$(hash_value "$target_specialist_worker_host_key")"
+  printf 'specialist-worker-authorized-keys sha256=%s\n' "$(hash_value "$target_specialist_worker_authorized_keys")"
+  printf 'specialist-worker-client-key sha256=%s\n' "$(hash_value "$target_specialist_worker_client_key")"
 fi

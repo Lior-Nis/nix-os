@@ -50,7 +50,7 @@ There is no Engineering Manager in V0. The OpenCode-backed Engineer is a Papercl
 
 ## Identity mapping
 
-Only Chief is persistent and human-facing in initial V0. Product, Growth, and Operations are task-scoped Paperclip worker identities using the built-in `paperclip_runner` adapter in ephemeral Daytona sandboxes. They do not inherit Chief's credential, Paperclip API key, memory, or persistent Telegram context.
+Only Chief is persistent and human-facing in initial V0. Product, Growth, and Operations are task-scoped Paperclip worker identities using the built-in `paperclip_runner` adapter through three SSH environments on one hardened local Docker worker. They do not inherit Chief's credential, Paperclip API key, memory, or persistent Telegram context.
 
 | Employee | Hermes | Paperclip adapter | Telegram |
 |---|---|---|---|
@@ -62,7 +62,15 @@ Only Chief is persistent and human-facing in initial V0. Product, Growth, and Op
 
 Task-scoped specialists and temporary research subagents receive a bounded issue/question and fresh execution context. They are not persistent employees. Their work may remain inside the parent Paperclip issue; create a child issue when the result needs an independent owner, lifecycle, review, or cross-role handoff.
 
-The specialist execution environment is credential-minimal. Paperclip stores the Daytona API key and restricted OpenCode provider key as encrypted company secrets and resolves their references only for the environment/run that needs them. Configuration validation compares both values without logging them and rejects reuse of either value as the other provider key or as any loaded database, auth, Chief, Telegram, webhook, signing, or founder-relay credential. The first-party Daytona plugin creates a fresh `per_turn` sandbox with one CPU, 2 GiB memory, 5 GiB disk, lease reuse disabled, and a 60-minute deletion backstop. The sandbox receives no Chief, Telegram, Paperclip-control, GitHub, Todoist, or brain credential. Paperclip opens the authenticated preview WebSocket outbound to Daytona; there is no public Paperclip WebSocket listener, Funnel, or additional host port. Reconstructible sandboxes and the hash-locked Paperclip provider pack are caches, not business state.
+The specialist execution environment is credential-minimal. Paperclip stores the restricted OpenCode provider key and worker SSH client key as encrypted company secrets and resolves them only for the environment/run that needs them. Product, Growth, and Operations have distinct `/workspaces/<role>` roots and one concurrent `per_turn` process each on a single one-CPU, 2-GiB worker container. The worker has a read-only root filesystem, a PID limit, no Docker socket, no host publication, no host filesystem mount beyond its SSH identity, and no Chief, Telegram, Paperclip-control, GitHub, Todoist, or brain credential. Paperclip uses its pinned built-in SSH driver with strict host-key checking; the native runner reconnects through the authenticated tailnet-only WebSocket endpoint. The image and workspaces are reconstructible, while the two specialist secrets are encrypted backup state.
+
+The three role paths share one Unix worker identity and a persistent named
+volume. They are routing/organization boundaries, not filesystem isolation;
+sequential jobs can observe files left by earlier jobs. V0 accepts this lean
+tradeoff because the worker is credential-poor and expected concurrency is
+low. Stronger role and per-run isolation becomes mandatory before sustained
+parallelism, multi-tenant work, untrusted third-party code, or broader worker
+credentials.
 
 ## Core flows
 
@@ -170,7 +178,7 @@ Per [ADR 0001](decisions/0001-single-vps-compose.md), V0 runs on one Hostinger L
 - Hermes Runs API and dashboard are private to the Compose network; Telegram access is outbound from Hermes.
 - Slice 1 runs one official Hermes container using its default profile as Chief of Staff. `/opt/data` is a named volume; Git supplies the read-only SOUL/config, and a clean private `nix-brain` clone is mounted read-only at `/workspace/nix-brain`. Hermes receives only the clone's explicitly validated numeric host group as a supplemental group. Validation requires a real non-symlink directory with group read/traverse and no permissions for other users, and rejects any numeric GID already assigned to a pinned-image system group except Hermes' own primary GID. Container startup creates only the dedicated collision-free reader group, maps it to the unprivileged Hermes account idempotently before upstream supervision (which otherwise drops unnamed supplemental groups), and live process verification confirms the gateway retained it. Runtime verification proves a tracked Markdown file is readable but not writable through the actual file tool.
 - Hermes and Paperclip share only the internal `agent` network. Paperclip calls `http://hermes:8642` with a dedicated API key; Hermes calls `http://paperclip:3100` through the pinned official MCP server with a different claimed agent key. The supported `PAPERCLIP_ALLOWED_HOSTNAMES=paperclip` setting admits that service hostname through Paperclip's private-host guard; Docker's internal network remains the reachability boundary. Neither internal endpoint is host-published. See [ADR 0006](decisions/0006-private-hermes-gateway-network.md).
-- Slice 3 installs the exact first-party `@paperclipai/plugin-daytona@2026.916.1` package into Paperclip. Paperclip uses its existing outbound application network to call Daytona and connect to the authenticated sandbox preview WebSocket; no Compose service, host listener, Tailscale route, or Funnel is added. Paperclip's native runner binary remains inside the pinned Paperclip image; the exact patched provider pack is kept in a separate reconstructible cache volume and copied to each ephemeral sandbox run.
+- Slice 3 adds one hardened local specialist worker service and uses Paperclip's built-in SSH environment driver. The worker publishes no host port and shares only an internal network with Paperclip plus outbound access for model inference. Paperclip's native runner binary remains inside the pinned Paperclip image; the exact patched provider pack is kept in a separate reconstructible cache volume and copied to each task-scoped run.
 - n8n is absent until its first required workflow. When added, only its signed webhook routes and authenticated UI are exposed.
 - Containers run without privileged mode, Docker socket mounts, or host networking unless a documented upstream limitation and a new ADR require it.
 - Health checks cover process readiness and dependency reachability, not just open ports.
@@ -184,7 +192,7 @@ A fresh Paperclip volume is initialized with the pinned release's official `pape
 | Class | Examples | Location and recovery |
 |---|---|---|
 | Git-controlled configuration | Compose files, Tailscale Serve reconstruction command, redacted Hermes config/SOUL templates, policy text, tests, n8n workflow JSON after Slice 7 | GitHub `nix-os`; rebuildable from a commit |
-| External deployment configuration | deployment `.env`; PostgreSQL/Paperclip/Hermes/founder-relay env files; specialist provider-import file containing the Daytona and OpenCode keys | separate age-encrypted configuration pack, restored to recorded paths with mode `0600` and verified checksums |
+| External deployment configuration | deployment `.env`; PostgreSQL/Paperclip/Hermes/founder-relay env files; specialist OpenCode import file and worker SSH identities | separate age-encrypted configuration pack, restored to recorded paths with mode `0600` and verified checksums |
 | Runtime state | Paperclip PostgreSQL data, Paperclip uploads/config, Hermes profile memory/sessions/gateway state, n8n database and storage, local worktrees/logs | named volumes/host state directory; restored from verified off-host backups |
 | Durable company knowledge | `nix-brain` Markdown and Git history | separate private GitHub repository; local clones are disposable |
 | Secrets | bot token, model credentials, Hermes API keys, Paperclip agent keys, DB passwords, GitHub App key, Todoist token, n8n encryption key | root-owned external files or the relevant encrypted persistent service state outside the checkout; per-service injection; separately backed up encrypted |
@@ -197,7 +205,7 @@ Slice 0 establishes the procedure; later slices extend its manifest.
 
 | State | Backup | Restore proof |
 |---|---|---|
-| External deployment configuration/secrets | age-encrypted config pack after every change | restore every recorded env file with mode `0600`; verify founder identity, the exact Daytona/OpenCode provider bindings, and internal/external checksums without logging contents |
+| External deployment configuration/secrets | age-encrypted config pack after every change | restore every recorded env/key file with mode `0600`; verify founder identity, the exact SSH/OpenCode specialist bindings, and internal/external checksums without logging contents |
 | Paperclip database | manual coordinated state backup after meaningful work-graph changes and before/after consequential deployment or configuration transitions; encrypt and copy off-host | restore to an isolated database; CEO authenticates and real company/issue values and relationships match |
 | Paperclip home/storage | encrypted file backup coordinated with the database backup | attachment bytes match a known SHA-256; config and encrypted-secret master key are preserved |
 | Paperclip portable company bundle | periodic export including company, agents, projects, skills, issues | preview/import to a disposable company |

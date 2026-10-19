@@ -1,6 +1,6 @@
 # Nix deployment runbook
 
-The accepted foundation runs Paperclip, PostgreSQL, and exactly one internal Hermes service with tailnet-only ingress on one Hostinger VPS. The Slice 3 extension adds task-scoped workers in fresh credential-minimal Daytona sandboxes while Chief remains the only persistent Telegram employee; it adds no internal executor service or host listener. Commands run from a clean clone at a reviewed commit. Tailscale is a host prerequisite, not a Compose service.
+The accepted foundation runs Paperclip, PostgreSQL, exactly one internal Hermes service, and one hardened local specialist worker with tailnet-only ingress on one Hostinger VPS. Chief remains the only persistent Telegram employee. Commands run from a clean clone at a reviewed commit. Tailscale is a host prerequisite, not a Compose service.
 
 ## Supported VPS baseline
 
@@ -17,7 +17,7 @@ Run the read-only check:
 - Public Internet: emergency SSH only for Nix; no Paperclip, PostgreSQL, or Nix listener is public. Independently owned cohosted services may have their own exposure policy.
 - Tailnet: ordinary SSH to `nix-os` and Paperclip HTTPS through Tailscale Serve.
 - Host loopback: Paperclip at `127.0.0.1:${PAPERCLIP_HOST_PORT:-3100}`.
-- Compose internal networks: PostgreSQL alone with Paperclip on `data`; Paperclip and Hermes on internal `agent`; Hermes alone on `hermes_egress`; Paperclip uses `app` for required outbound access, including Daytona.
+- Compose internal networks: PostgreSQL alone with Paperclip on `data`; Paperclip and Hermes on internal `agent`; Paperclip and the local worker on internal `specialist`; Hermes and the worker have separate least-purpose egress networks for their model providers.
 - Never run `tailscale funnel` for Paperclip or the Nix-owned `:443` endpoint.
 
 Keep the current `root@<VPS_PUBLIC_IP>` SSH recovery path until the `nix` path is proven. Resolve the real address from Lior's local SSH configuration; do not publish it in repository documentation. Do not change sshd or firewall recovery policy during this amendment.
@@ -412,61 +412,89 @@ After Paperclip accepts the reconciliation, verify that it—not an operator scr
 
 ## Slice 3 deployment: task-scoped specialists
 
-Use this section only from a reviewed, hosted-CI-green, merged Slice 3 commit. It installs the exact first-party Daytona sandbox plugin and adds three Paperclip worker records; it adds no Compose executor, Telegram receiver, public route, persistent specialist profile, Engineering Manager, or n8n service. Do not mark Slice 3 accepted until the live decision/resume, reboot, and downloaded Google Drive recovery gates pass.
+Use only a reviewed, hosted-CI-green, merged Slice 3 commit. Slice 3 adds one
+locally built specialist-worker container and three task-scoped Paperclip
+workers. It adds no public route, specialist Telegram identity, hosted sandbox
+platform, Engineering Manager, or n8n service.
 
-### 1. Prepare non-secret identities and external secrets
+### 1. Prepare the worker and restricted model credential
 
-Keep the accepted Chief and approved-project records. Set their exact UUIDs in the production deployment file before starting the Slice 3 services:
+Keep the accepted Chief and approved-project UUIDs in `.env`. Leave all three
+specialist agent IDs, all three role environment IDs, and both aggregate lists
+empty for first activation. Partial state fails closed.
 
-```text
-NIX_CHIEF_AGENT_ID=<accepted Chief UUID>
-NIX_APPROVED_PROJECT_ID=<already-approved Nix Business OS V0 project UUID>
-```
-
-Copy the remaining Slice 3 variable names and external paths from `.env.example`. For the first activation only, leave `NIX_PRODUCT_AGENT_ID`, `NIX_GROWTH_AGENT_ID`, `NIX_OPERATIONS_AGENT_ID`, `NIX_SPECIALIST_AGENT_IDS`, and `NIX_SPECIALIST_ENVIRONMENT_ID` empty during the safe pre-bootstrap phase. A nonempty placeholder or partial set is invalid. No specialist exists or is remotely invokable while the allowlist is empty. On a recovery rerun, preserve the complete values previously published by bootstrap: recovery accepts only a complete, internally consistent set whose marked Paperclip environment/agents match exactly and whose live allowlist is either still empty or already exact. It creates no replacement identities and completes the force-recreate. Do not create or approve a new top-level project.
-
-Create the founder-relay file and one root-owned provider-import file locally on the VPS:
+Create the founder relay, worker SSH identity, and provider file:
 
 ```sh
 sudo -E ./scripts/init-founder-relay-secret "$PWD/.env"
+sudo -E ./scripts/init-specialist-worker /etc/nix-os/specialist-worker
 sudo install -m 0600 -o root -g root /dev/null /etc/nix-os/specialist-provider.env
 sudoedit /etc/nix-os/specialist-provider.env
 ```
 
-Enter exactly `DAYTONA_API_KEY=<Daytona API key>` and `OPENCODE_API_KEY=<restricted-service-key>`, one per line. Use an OpenCode key limited to model requests; do not place Chief, Paperclip Board, Telegram, GitHub, Todoist, or brain credentials in this file. Never pass either value in a command argument, inherited host environment, issue, PR, or chat. The bootstrap imports/rotates both values into Paperclip's encrypted company secret store; the host file remains only for encrypted configuration backup and deliberate rotation.
+The provider file contains exactly
+`OPENCODE_API_KEY=<restricted-model-service-key>`. Do not put Paperclip,
+Telegram, GitHub, Todoist, brain, or host credentials there. Configure the
+three generated worker paths from `.env.example`. The encrypted configuration
+backup includes these non-reconstructible SSH keys.
 
-Validate the complete external contract without printing a credential:
+Set `PAPERCLIP_RUNNER_PUBLIC_URL` to the exact `wss://` transform of
+`PAPERCLIP_PUBLIC_URL`. It is Paperclip's authenticated runner transport, not
+a new public endpoint.
+
+For an accepted Slice 2 production upgrade, add every new Slice 3 configuration
+name and external file first, but keep all eight specialist agent/environment
+identity values empty. Then run:
+
+```sh
+sudo -E ./scripts/ops upgrade
+```
+
+`ops upgrade` detects that exact pre-specialist state and takes the ordinary
+encrypted pre-change state backup through a narrowly guarded transition mode.
+That mode still requires the accepted Chief topology and all credential/state
+safety checks; it only omits the not-yet-existing specialist topology and live
+worker gates. It refuses partial or already-configured specialist identity.
+After the upgrade starts the worker, continue with specialist convergence
+below. Never set `NIX_BACKUP_PRE_SPECIALIST_TRANSITION` manually for routine
+backups.
+
+### 2. Build and start the local worker
+
+Use this step on a fresh deployment. An accepted Slice 2 installation that ran
+the guarded `ops upgrade` above already built and started the worker.
 
 ```sh
 sudo -E ./scripts/check-config "$PWD/.env"
-sudo -E ./scripts/check-paperclip-chief-topology "$PWD/.env"
+sudo -E docker compose --env-file "$PWD/.env" build --pull specialist-worker
+sudo -E docker compose --env-file "$PWD/.env" up -d --wait specialist-worker paperclip
 ```
 
-`check-config` proves the exact two provider bindings, file permissions, and founder identity/secret separation. It must pass before any Compose change.
+The worker has no published port, Docker socket, host checkout, control-plane
+credential, or env file. Its root filesystem is read-only; only the named
+workspace volume and bounded tmpfs mounts are writable. It drops all
+capabilities before adding the minimum OpenSSH daemon set, uses
+`no-new-privileges`, and is limited to one CPU, 2 GiB RAM, and 256 PIDs.
+Paperclip reaches SSH only on the internal specialist network. The worker's
+separate egress network exists solely for the model provider.
 
-### 2. Activate the pinned Paperclip boundary
-
-Recreate Paperclip from the merged commit. Its entrypoint verifies exact pinned source/output hashes and builds or verifies the matching OpenCode provider pack in its separate cache volume:
-
-```sh
-sudo -E docker compose --env-file "$PWD/.env" up -d --no-deps --wait --force-recreate paperclip
-```
-
-An unknown Paperclip source, partial patch, stale matching marker, or changed provider artifact must leave Paperclip unhealthy. Do not bypass the patch verifier or edit the provider pack. The provider-import file is not mounted or injected into Paperclip, and no host port, public WebSocket, Tailscale handler, or Funnel route is added for Daytona.
-
-### 3. Converge the Paperclip environment and workers
-
-Run the reviewed one-shot bootstrap with the already-accepted company UUID:
+### 3. Converge Paperclip
 
 ```sh
 sudo -E ./scripts/bootstrap-paperclip-specialists <company-id> --config "$PWD/.env"
 ```
 
-The helper prints one ephemeral Paperclip CLI-approval URL. Open it as Lior, verify that it requests the instance-admin `converge Nix task-scoped specialists` Board action, and approve it. The helper requires `cli-auth/me.isInstanceAdmin=true`, verifies the pinned Lior owner/admin identity, and revokes the temporary Board credential on success or failure. On first activation, before requesting approval it requires all five specialist/environment ID fields to be empty, verifies the exact in-container runtime patch, and proves the running container has the empty fail-closed specialist floor. A recovery rerun instead requires the complete previously published identity set described above. Existing specialists must be exactly idle, and the helper reads each managed `AGENTS.md` back through Paperclip's supported instance-admin instructions-bundle API and compares the exact Git-tracked bytes; missing or drifted instructions fail without implicit repair. It creates workers only under that restrictive floor, verifies the same readback after creation, writes the final IDs atomically, then force-recreates Paperclip and Hermes with the exact allowlist.
+Approve the one temporary Paperclip CLI authorization as Lior. The helper
+imports the restricted OpenCode key and worker client key into Paperclip's
+encrypted secret store, derives strict known-hosts data from the pinned host
+key, then creates and authenticates three built-in SSH environments:
+`/workspaces/product`, `/workspaces/growth`, and
+`/workspaces/operations`. All target the same container but have distinct
+Paperclip environment IDs. It creates exactly Product, Growth, and Operations,
+each idle, task-scoped, without an API key, and bound to its role environment.
+A recovery rerun accepts only the complete previously published identity set.
 
-Within that approval, the helper enables Paperclip environments/native runner; installs and verifies exactly `@paperclipai/plugin-daytona@2026.916.1`; requires the live company capabilities route to expose the running Daytona provider for saved probes and run execution; imports or rotates exactly two Paperclip-managed encrypted secrets with non-secret fingerprints; and creates then probes one strict `sandbox/daytona` environment once. The environment pins the reviewed image digest, EU target, 1 CPU, 2 GiB RAM, 5 GiB disk, no lease reuse, `per_turn`, and 60-minute auto-delete. The probe's released lease is durable recovery evidence: if the process crashes after a clean probe but before publishing IDs, a rerun reuses that exact completed receipt instead of creating a second sandbox. Any active, failed, ambiguous, or unexpected lease stops recovery for operator reconciliation. Only after the probe succeeds does the helper create exactly Product, Growth, and Operations. They report to Chief, use `paperclip_runner`, `opencode/gpt-5.6-luna`, disabled scheduled heartbeat, `maxConcurrentRuns: 1`, zero monthly budget, and no API keys. They receive only the server-scoped Paperclip PRP catalog; OpenCode shell/file tools are denied. It writes only their non-secret agent/environment UUIDs back to `.env`, recreates the consumers, then rechecks live plugin-worker capabilities without creating a second paid sandbox. A drifted plugin, environment, secret binding, or worker is detected by bootstrap and the final topology gate and fails closed rather than being silently repaired.
-
-The helper already recreated Paperclip and Hermes with the final allowlist. Run every boundary/topology gate:
+Run every boundary gate:
 
 ```sh
 sudo -E ./scripts/check-config "$PWD/.env"
@@ -477,20 +505,28 @@ sudo -E docker compose --env-file "$PWD/.env" ps
 sudo ss -lntup
 ```
 
-The specialist topology gate must prove the exact three idle workers, their exact single-file managed instruction manifests and Git-tracked bytes, Chief manager, approved project boundary, low-trust permissions, specialist-only assignment set, exact Daytona plugin/environment/secret metadata and fingerprints, no worker API keys, and no Engineering Manager. It also blocks every nonterminal or unknown specialist run/Daytona-lease status. The Hermes verifier must still prove the accepted Chief boundary plus the one fixed founder-decision tool; no shell/process/browser/raw-API escape path is permitted. No new host listener is expected, and the existing Tailscale Serve/Funnel state must remain unchanged.
+The topology gate proves the three role-specific SSH environments, exact secret
+bindings and fingerprints, managed instruction bytes, low-trust approved-project
+boundary, no specialist API keys, no extra runner, no sandbox plugin dependency,
+and no nonterminal specialist run. Tailscale Serve and Funnel state must remain
+unchanged.
 
-### 4. Live founder-decision and cross-role acceptance
+### 4. Live acceptance and recovery
 
-Use the existing private `@the_nixos_bot` direct chat; do not create a specialist bot or Telegram topic. Ask Chief to create approved-project Product work whose definition of done requires a visible Product-to-Growth child handoff and one genuine consequential choice. Inspect Paperclip and require all of the following before answering:
+Use the existing private `@the_nixos_bot` chat. Have Chief create approved-
+project Product work with a Product-to-Growth child handoff and one consequential
+founder decision. The question must be a human-only Paperclip interaction,
+delivered and answered in Telegram, recorded as resolved by Lior, and resume
+only the originating specialist. Exact replay is idempotent; changed replay and
+non-Lior/group/API callers are rejected. Complete a separate Operations task
+and verify Paperclip supplies only that task's authoritative context. Do not
+use leftover workspace files as authoritative input: V0 intentionally shares
+one Unix identity and persistent reconstructible volume across sequential jobs.
 
-1. Product runs as the configured task-scoped specialist and records attributable progress in its assigned issue.
-2. Growth starts only after Product creates a same-project child assigned to Growth. No chat-only handoff or top-level project/goal appears.
-3. The ambiguity becomes one pending `ask_user_questions` interaction with `human_only`, Lior's immutable Paperclip user ID, the source run, and the Product issue. No Todoist object exists.
-4. Chief delivers the question through its existing Telegram chat. Reply there as Lior with an explicit option; Chief must use the exact issue/interaction identifiers and stable `founder-decision:<interaction-id>` key.
-5. Paperclip records Lior as resolver and returns a verified founder-relay receipt whose originating and resumed agent IDs are identical. Only that originating specialist resumes; Chief and another specialist do not take ownership.
-6. Exact replay of the same answer/key is idempotent; a changed answer for that key is rejected. A non-Lior DM, group/forum context, API/CLI call, or Paperclip-triggered Chief run cannot invoke the relay.
-7. Product and Growth finish with attributable evidence/status, and a fresh Operations issue also completes through a new bounded sandbox with no context from the prior tasks.
-
-Then restart the stack and reboot the VPS. Re-run both topology gates, `configure-hermes verify`, service health, provider inference, Telegram authorization, Paperclip issue/receipt readback, and the Tailscale route-preservation check. Chief remains the only persistent/human-facing employee.
-
-Finally create a consecutive encrypted configuration/state pair, upload it, download distinct copies from Google Drive, and run the isolated proof in `RESTORE.md`. The restored stack must pass both topology gates before application startup, recover the exact plugin/environment/secret metadata, and prove the live plugin worker through the supported capabilities route without exposing provider values. Record only non-secret IDs, timestamps, Git SHA, relationships, and ciphertext checksums in the Slice 3 acceptance record.
+Restart the stack, reboot the VPS, and rerun both topology gates, Hermes
+verification, service health, model inference, Telegram authorization, issue
+readback, and Tailscale route preservation. Then create and upload a consecutive
+encrypted configuration/state backup pair, download distinct Google Drive
+copies, and run the isolated recovery proof in `RESTORE.md`. Recovery must
+restore the worker SSH identity, start the worker automatically, authenticate
+all three saved SSH environment probes, and expose no provider value.

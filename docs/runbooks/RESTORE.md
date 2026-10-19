@@ -5,7 +5,7 @@
 | Layer | Contents | Recovery source |
 |---|---|---|
 | Git repository | Compose, scripts, tests, and redacted documentation | exact reviewed Git commit |
-| Encrypted configuration pack | deployment `.env`; PostgreSQL, Paperclip, Hermes, and founder-relay env files; and the specialist Daytona/OpenCode provider-import file | `gdrive:Nix/backups/config/` |
+| Encrypted configuration pack | deployment `.env`; PostgreSQL, Paperclip, Hermes, founder-relay, restricted specialist-provider, and specialist-worker SSH identity files | `gdrive:Nix/backups/config/` |
 | Encrypted data backup | PostgreSQL, complete `/paperclip` durable state, and Hermes `/opt/data` durable state, including Runs idempotency and question-delivery outbox databases when present; reconstructible npm/uv caches and npm `.bin` links are excluded | `gdrive:Nix/backups/state/` |
 | Nix-owned Tailscale Serve state | hostname and Paperclip `:443/` handler | replaceable from `scripts/configure-tailscale`; unrelated cohosted routes are preserved and remain separately owned |
 | Tailscale auth | external platform credential | reauthenticate; never Git or data backup |
@@ -36,13 +36,13 @@ sudo rclone --config /home/nix/.config/rclone/rclone.conf copyto --immutable \
   gdrive:Nix/backups/config/<config-artifact>.tar.gz.age.sha256
 ```
 
-The script reads the deployment file plus the referenced external credential files, creates no plaintext pack, uses mode `0600`, and logs only non-secret checksums/paths. `hermes.env` contains the Telegram, Runs API, OpenCode Go, and fixed decision-webhook credentials plus the external-only Telegram home-chat setting. `founder-relay.env` contains the separate relay HMAC secret and pinned direct-message identity. `specialist-provider.env` contains exactly the Daytona and restricted OpenCode values used only for deliberate import/rotation into Paperclip's encrypted company secret store; it is never mounted or injected into a service. The separately claimed Chief Paperclip agent key lives in the Hermes volume, while specialist secret values also survive inside the encrypted Paperclip database/volume state. A legacy or additional provider `auth.json` is preserved and permission-checked when present, but OpenCode Go recovery does not require synthetic OAuth state. The rclone config is intentionally excluded because it is the credential used to fetch these packs. Preserve the exact config in a separate age-encrypted escrow outside this Drive; a new or different OAuth client cannot assume visibility of the `drive.file` objects.
+The script reads the deployment file plus every referenced external credential and worker-identity file, creates no plaintext pack, uses mode `0600`, and logs only non-secret checksums/paths. `specialist-provider.env` contains exactly the restricted OpenCode value and is never mounted into a service. The worker host key, authorized-keys file, and Paperclip client key are non-reconstructible and are included. Paperclip also retains encrypted specialist secret values in its database. The rclone config and age private identity remain outside these artifacts.
 
 ## Back up Paperclip and Hermes data
 
-The data backup first requires both the accepted Chief topology and the complete specialist topology—including exactly three idle and no other nonterminated `paperclip_runner` workers, the exact Git-tracked Product/Growth/Operations managed instruction bytes, the ready Daytona manifest record, their bounded sandbox environment, the exact two secret-binding rows, two encrypted Paperclip secret records, and no specialist API keys. It also requires a private authenticated Board cookie jar and uses it before shutdown to prove that the live plugin worker advertises saved/unsaved probe and run execution, that the supported environment and secret-metadata APIs match the recorded topology, and that the installed `@paperclipai/plugin-daytona@2026.916.1` npm package under `/paperclip` retains the reviewed package-lock integrity, a complete dependency tree, and exact critical executable files. Paperclip records the plugin manifest version `0.1.7` in its API/database; the package lock is the authority for the distinct npm release version. This catches a loaded-but-deleted or partially damaged plugin before its only recoverable copy is archived. It refuses while any specialist run is queued, scheduled for retry, or running, or a Daytona lease is active, retained, or pending cleanup, so the database cannot preserve an ambiguous remote side effect. The query admits only the pinned release's documented terminal run and lease statuses; an unknown future status also blocks capture. It stops Hermes and Paperclip, repeats the database-and-volume topology gates against the quiesced state, then creates a coordinated PostgreSQL dump plus `/paperclip` and Hermes `/opt/data` archives; it does not require an application API after shutdown. It restarts Paperclip and then Hermes. The Hermes archive includes every durable `/opt/data` file, including `/opt/data/runs_idempotency.db` and `/opt/data/state/paperclip-question-delivery.db` when present; backup refuses either database if it is not a regular single-link uid/gid `10000:10000`, mode-`0600` file. The reconstructible `/opt/data/.npm` and `/opt/data/home/.cache` npm/uv caches are excluded and must be fetched again from exact package pins during recovery. Paperclip npm `.bin` links are also reconstructible and excluded, while all package files and dependency metadata remain archived. Any symlink outside those reviewed cache locations or any special file fails backup. Source hardlinks may be materialized as independent regular archive members—for example, Hermes uv lazy packages linked to its excluded cache—but the post-build validator rejects any link member encoded in either archive; published inner archives contain directories and regular files only. The databases are non-reconstructible execution/delivery evidence, not caches.
+The data backup first requires both accepted topology gates. The specialist gate proves exactly three idle task-scoped workers, three role-specific built-in SSH environments, their exact managed instructions and encrypted-secret bindings, no extra runner or plugin dependency, no worker API keys, and no nonterminal specialist run. It also requires the local worker to be healthy before capture. The script then stops Hermes and Paperclip, repeats the database and volume gates against quiesced state, creates the coordinated PostgreSQL dump and application archives, and restarts services. Reconstructible caches remain excluded; unexpected symlinks or special files fail closed.
 
-Before every state backup, create one dedicated authenticated Paperclip session immediately before capture. The backup uses it for the live specialist readiness check, and its server-side session row is then present in the PostgreSQL dump. Keep its Netscape cookie jar only on the trusted recovery path; it is a temporary broad board session, not a backup artifact, and must never be uploaded to Drive, committed, pasted into a command, or logged. For a downloaded-artifact acceptance drill, retain this same private jar until the isolated restore finishes; after an ordinary backup, securely discard it once capture succeeds:
+For a downloaded-artifact recovery drill, create one short-lived authenticated Paperclip Board session for the three saved-environment probes after restore. Keep its mode-`0600` Netscape cookie jar only on the trusted recovery path; never upload, commit, paste, or log it. Revoke the session and delete the jar after the drill.
 
 ```sh
 umask 077
@@ -179,6 +179,9 @@ sudo -E \
   RESTORE_HERMES_ENV_FILE="$recovery_dir/config-root/etc/nix-os/hermes.env" \
   RESTORE_FOUNDER_RELAY_ENV_FILE="$recovery_dir/config-root/etc/nix-os/founder-relay.env" \
   RESTORE_SPECIALIST_PROVIDER_ENV_FILE="$recovery_dir/config-root/etc/nix-os/specialist-provider.env" \
+  RESTORE_SPECIALIST_WORKER_HOST_KEY_FILE="$recovery_dir/config-root/etc/nix-os/specialist-worker/host_ed25519" \
+  RESTORE_SPECIALIST_WORKER_AUTHORIZED_KEYS_FILE="$recovery_dir/config-root/etc/nix-os/specialist-worker/authorized_keys" \
+  RESTORE_SPECIALIST_WORKER_CLIENT_KEY_FILE="$recovery_dir/config-root/etc/nix-os/specialist-worker/client_ed25519" \
   RESTORE_PAPERCLIP_COOKIE_FILE="$recovery_dir/paperclip-restore-cookie.<suffix>" \
   RESTORE_NIX_CHIEF_AGENT_ID='<restored NIX_CHIEF_AGENT_ID>' \
   RESTORE_NIX_APPROVED_PROJECT_ID='<restored NIX_APPROVED_PROJECT_ID>' \
@@ -186,11 +189,14 @@ sudo -E \
   RESTORE_NIX_GROWTH_AGENT_ID='<restored NIX_GROWTH_AGENT_ID>' \
   RESTORE_NIX_OPERATIONS_AGENT_ID='<restored NIX_OPERATIONS_AGENT_ID>' \
   RESTORE_NIX_SPECIALIST_AGENT_IDS='<restored NIX_SPECIALIST_AGENT_IDS>' \
-  RESTORE_NIX_SPECIALIST_ENVIRONMENT_ID='<restored NIX_SPECIALIST_ENVIRONMENT_ID>' \
+  RESTORE_NIX_PRODUCT_ENVIRONMENT_ID='<restored NIX_PRODUCT_ENVIRONMENT_ID>' \
+  RESTORE_NIX_GROWTH_ENVIRONMENT_ID='<restored NIX_GROWTH_ENVIRONMENT_ID>' \
+  RESTORE_NIX_OPERATIONS_ENVIRONMENT_ID='<restored NIX_OPERATIONS_ENVIRONMENT_ID>' \
+  RESTORE_NIX_SPECIALIST_ENVIRONMENT_IDS='<restored NIX_SPECIALIST_ENVIRONMENT_IDS>' \
   ./scripts/restore-smoke "$recovery_dir/<state-artifact>.tar.gz.age"
 ```
 
-The smoke refuses production project names and any pre-existing PostgreSQL, Paperclip, Hermes, or Paperclip runner-cache volume, then restores into fresh isolated state. It copies the original founder-relay and specialist provider files into the isolated root with mode `0600`; partial external-config input fails closed. `check-config` proves the restored HMAC identity matches the restored Hermes DM allowlist and the provider-import file contains exactly non-placeholder `DAYTONA_API_KEY` and `OPENCODE_API_KEY` bindings. The specialist agent/environment IDs supplied above are non-secret values from the restored deployment file; do not substitute invented identities during a production recovery drill. After `pg_restore` and before either application starts, the smoke requires both the Chief and specialist topology gates. `RESTORE_REQUIRE_SPECIALIST_TOPOLOGY=false` exists only for the repository's historical pre-Slice-3 recovery fixture and must never be used for a Slice 3 production artifact. After Paperclip starts, the private cookie permits only metadata/readiness verification through supported Board APIs: the exact installed plugin is ready, the live company capabilities route exposes the running Daytona worker for saved probes and run execution, the exact sandbox environment references both restored secret records, and neither credential appears in Paperclip's host environment. Recovery does not create a billable sandbox or reveal a credential. The accepted Slice 1 recovery evidence exercised its historical nine approved MCP operations across identity, existing-project reads, issue create/list/get/update, and comment add/list; that evidence remains unchanged. The Slice 2 configuration expands the exact boundary to eleven by adding checkout and structured questions while still exposing no project/goal/admin mutation or arbitrary API tool. Against the real pinned Paperclip server and official MCP package, the fixture uses supported heartbeat runs to prove checkout, run-attributed issue update/comment/child creation, a forced human-only question addressed to the pinned Lior user with the trusted source run, idempotent exact-key replay, a competing-run HTTP-409 checkout conflict, and transition to `in_review`. It cancels the runs and restores the agent's `hermes_gateway` configuration before backup. The authoritative interaction and genuine Runs idempotency state feed the recovery assertions; a synthetic transport-unknown delivery row additionally proves the conservative no-replay rule. Because Docker may seed a newly attached named volume from image contents during container creation, the script empties each already-validated fresh application volume immediately before extracting its archive. It compares database counts plus every `/paperclip` and Hermes `/opt/data` file hash and verifies Paperclip health. When `runs_idempotency.db` or `state/paperclip-question-delivery.db` was present in the manifest, restore additionally requires the corresponding file to be regular, single-link, uid/gid `10000:10000`, and mode `0600`. The in-memory contract model remains regression coverage only; this Docker smoke is the real pinned integration and restore evidence. It then boots restored Hermes behind a fresh root-owned disabled marker. The isolated checkout generator records the temporary brain directory's actual numeric group ID, and Compose grants only that supplemental group to Hermes; this works with ordinary Linux temporary directories and Docker Desktop bind mounts without making the checkout world-readable. The entrypoint uses the pinned dotenv parser to remove even BOM-prefixed or quoted legacy Telegram controls from restored profile state before clearing the external token and starting upstream supervision. The test proves Hermes health, API-server `401` without the restored key, authenticated API success, the exact restricted API/runtime tool surface and actual file boundary, fixed loopback webhook configuration, an exact file-tool read of tracked brain Markdown plus denied write, Chief profile and receipt presence, and bounded `paperclipMe` identity against isolated restored Paperclip. Neither the selected brain filename nor its contents are logged. CI additionally verifies login, company/project/parent-child relationships, comments, human-only interaction policy/run attribution, attachment checksum, and metadata-only specialist recovery without revealing plaintext. CI does not contact the real Telegram bot or model provider.
+The smoke refuses production project names and pre-existing target volumes, restores the original external files with mode `0600`, and rejects partial input. Before either application starts it requires both topology gates against the restored database and managed instruction bytes. Starting Paperclip also starts the restored local worker. Through the private Board session, recovery executes all three saved SSH environment probes and requires successful key authentication, while proving the OpenCode credential is not ambient in Paperclip. It then verifies database/file checksums, Hermes health, its restricted API and file boundaries, claimed Chief identity, durable idempotency/outbox state, and Telegram-disabled startup. CI never contacts the real Telegram bot or model provider.
 
 After the isolated proof and evidence capture finish, destroy the isolated Compose project and delete every copy of the dedicated cookie jar from the source and recovery hosts. Signing out that dedicated session in Paperclip is preferred when production remains available; deletion of the jar alone removes the local bearer but does not revoke the server-side session.
 
@@ -214,8 +220,8 @@ recovery-labelled company + related issue + known-byte attachment + harmless loc
 -> unauthenticated API gets 401; authenticated capabilities and exact restricted tool surfaces pass
 -> bounded Paperclip MCP resolves the restored Chief identity against isolated restored Paperclip
 -> the post-`pg_restore` read-only topology gate passes before either application starts: Paperclip has exactly one live root CEO (Chief), Chief has restricted explicit permissions and one receipt-matched Lior-owned standard key, and the retained bootstrap manager is `general`, reports to Chief, remains paused and credentialless, and has `/bin/false`, disabled heartbeat, zero budget, and stripped permissions
--> the post-`pg_restore` specialist topology gate also passes before application startup: exactly Product, Growth, and Operations use `paperclip_runner`, report to Chief, retain the exact Git-tracked managed instruction bundle bytes, share only the approved-project low-trust boundary and the exact Daytona environment, reference the two expected encrypted secrets, have no API keys, and no Engineering Manager exists
--> after Paperclip startup, the Daytona manifest record (`0.1.7`) is ready, the archived package lock proves npm release `@paperclipai/plugin-daytona@2026.916.1`, and the supported company capabilities route proves its worker can probe and execute saved environments; neither provider value is exposed or inherited as a host environment variable
+-> the post-`pg_restore` specialist topology gate passes before application startup: Product, Growth, and Operations use their distinct SSH environments, retain exact managed instructions and low-trust approved-project permissions, reference only the reviewed encrypted SSH/OpenCode secrets, have no API keys, and no Engineering Manager exists
+-> after Paperclip startup, the local worker is healthy and each restored Product, Growth, and Operations SSH environment probe authenticates successfully; the provider value remains absent from control-plane process environments
 -> Hermes has no staged claim or pending claim marker; backups are accepted only after the verified claim receipt and credential are fully converged
 -> when present, restored Hermes Runs idempotency and question-delivery databases match the archived bytes and retain safe ownership/mode; recovery does not replay `pending` or `unknown` Telegram delivery automatically
 -> after the isolated runtime is destroyed, production Telegram resumes and Chief answers only Lior
@@ -232,7 +238,7 @@ Record only non-secret IDs, relationships, SHA-256 values, timestamps, Git SHA, 
 
 Only after the isolated proof passes:
 
-1. Rebuild Ubuntu/Docker/Tailscale prerequisites, recreate/prove the `nix` operator, and clone the recorded Git SHA to `/opt/nix-os` as a non-symlinked checkout. Restore the downloaded config pack into the isolated recovery root described above; do not put the age identity on the replacement VPS. On that recovery host, package only the six restored deployment files, validate the transfer archive, create a checksum sidecar, preflight a new operator-owned destination, and send both files over the authenticated recovery SSH path:
+1. Rebuild Ubuntu/Docker/Tailscale prerequisites, recreate/prove the `nix` operator, and clone the recorded Git SHA to `/opt/nix-os` as a non-symlinked checkout. Restore the downloaded config pack into the isolated recovery root described above; do not put the age identity on the replacement VPS. On that recovery host, package only the nine restored deployment files (the deployment file, five service/relay/provider files, and all three worker identity files), validate the transfer archive, create a checksum sidecar, preflight a new operator-owned destination, and send both files over the authenticated recovery SSH path:
 
    ```sh
    # Run on the isolated recovery host after `restore-config` has succeeded.
@@ -246,6 +252,16 @@ Only after the isolated proof passes:
      source_file="$recovery_dir/config-root/etc/nix-os/$name.env"
      test -f "$source_file" && test ! -L "$source_file"
      install -m 0600 "$source_file" "$config_payload/$name.env"
+   done
+   worker_source="$recovery_dir/config-root/etc/nix-os/specialist-worker"
+   for mapping in host_ed25519:specialist-worker-host-key \
+     authorized_keys:specialist-worker-authorized-keys \
+     client_ed25519:specialist-worker-client-key; do
+     source_name=${mapping%%:*}
+     payload_name=${mapping#*:}
+     source_file="$worker_source/$source_name"
+     test -f "$source_file" && test ! -L "$source_file"
+     install -m 0600 "$source_file" "$config_payload/$payload_name"
    done
    config_archive="$recovery_dir/config-transfer.tar.gz"
    test ! -e "$config_archive" && test ! -e "$config_archive.sha256"
@@ -293,19 +309,33 @@ Only after the isolated proof passes:
    for name in deployment postgres paperclip hermes founder-relay specialist-provider; do
      test -f "$config_payload/$name.env" && test ! -L "$config_payload/$name.env"
    done
+   for name in specialist-worker-host-key specialist-worker-authorized-keys specialist-worker-client-key; do
+     test -f "$config_payload/$name" && test ! -L "$config_payload/$name"
+   done
    sudo sh -ec '
      test ! -e /opt/nix-os/.env
      test ! -e /etc/nix-os && test ! -L /etc/nix-os
      for name in postgres paperclip hermes founder-relay specialist-provider; do
        test ! -e "/etc/nix-os/$name.env"
      done
+     test ! -e /etc/nix-os/specialist-worker
    '
    sudo install -d -o root -g root -m 0700 /etc/nix-os
+   sudo install -d -o root -g root -m 0700 /etc/nix-os/specialist-worker
    sudo install -o root -g root -m 0600 "$config_payload/deployment.env" /opt/nix-os/.env
    for name in postgres paperclip hermes founder-relay specialist-provider; do
      sudo install -o root -g root -m 0600 \
        "$config_payload/$name.env" "/etc/nix-os/$name.env"
    done
+   sudo install -o root -g root -m 0600 \
+     "$config_payload/specialist-worker-host-key" \
+     /etc/nix-os/specialist-worker/host_ed25519
+   sudo install -o root -g root -m 0600 \
+     "$config_payload/specialist-worker-authorized-keys" \
+     /etc/nix-os/specialist-worker/authorized_keys
+   sudo install -o root -g root -m 0600 \
+     "$config_payload/specialist-worker-client-key" \
+     /etc/nix-os/specialist-worker/client_ed25519
    ```
 
    Do not run Compose yet. Keep both plaintext transfer archives and extracted work directories only until replacement-host acceptance is complete, then securely remove them on their respective hosts.
@@ -462,9 +492,9 @@ Only after the isolated proof passes:
    sudo -E docker compose --env-file "$PWD/.env" up -d --wait paperclip hermes
    ```
 
-   The Chief gate must prove the claimed Chief, restricted permissions, sole-root topology, inert bootstrap manager, and API-key ownership from the restored database and Hermes claim receipt. The specialist gate must prove the exact three task-scoped workers, approved-project trust boundary, exact Daytona plugin/environment metadata, secret-reference fingerprints, and absence of worker API keys or an Engineering Manager. Format-3 state artifacts carry the non-secret pinned Lior Paperclip user ID required for the Chief check. When recovering an older format-2 artifact, set `RESTORE_PAPERCLIP_LIOR_USER_ID` to the value in that artifact's matching external configuration pack. Paperclip must rebuild or verify its provider-pack cache and recover the installed plugin worker before it becomes healthy; verify that worker through the supported company capabilities route.
+   The Chief gate proves the claimed Chief, restricted permissions, sole-root topology, inert bootstrap manager, and receipt-matched key ownership. The specialist gate proves three role-specific SSH environments, exact encrypted secret bindings, managed instruction bytes, no extra runner or sandbox plugin, and no specialist API key or Engineering Manager. Paperclip starts the restored worker dependency and each saved environment is probed through the supported Board API.
 7. Run `scripts/configure-tailscale` to reconstruct the node name and Nix-owned Paperclip handler without changing unrelated routes. Verify tailnet health and Paperclip public non-exposure, including that Hermes ports 8642, 8644, and 9119 are not host-published.
-8. Run `scripts/configure-hermes verify` and both topology gates while Telegram remains disabled, then repeat CEO/company/issue/attachment/secret and Chief memory/Paperclip checks. In Paperclip, verify Chief is the only root CEO and the retained bootstrap manager is paused, credentialless, `general`, and reports to Chief; do not delete it on the pinned release. Verify Product, Growth, and Operations retain their exact task-scoped configuration and execute one harmless restored issue through a fresh Daytona sandbox without receiving an API key or Telegram identity. Inspect only supported plugin/environment/secret metadata and the resulting run evidence; never print process environments or secret values. Only after proving any previous poller for this exact bot token is stopped, run `scripts/configure-hermes telegram-enable`, force-recreate only Hermes, and immediately run the full verifier again. A gateway using a separately validated, distinct bot token is unrelated and remains active:
+8. Run `scripts/configure-hermes verify` and both topology gates while Telegram remains disabled. Verify Chief and the inert bootstrap manager, then execute one harmless restored issue per specialist role through its saved local SSH environment without giving any worker an API key or Telegram identity. Only after proving any previous poller for this exact bot token is stopped, enable Telegram, force-recreate only Hermes, and rerun the verifier:
 
    ```sh
    sudo -E ./scripts/configure-hermes telegram-enable "$PWD/.env"
