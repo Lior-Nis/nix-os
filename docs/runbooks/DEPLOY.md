@@ -506,7 +506,7 @@ sudo ss -lntup
 ```
 
 The topology gate proves the three role-specific SSH environments, exact secret
-bindings and fingerprints, managed instruction bytes, low-trust approved-project
+bindings and fingerprints, managed instruction bytes, bounded approved-project
 boundary, no specialist API keys, no extra runner, no sandbox plugin dependency,
 and no nonterminal specialist run. Tailscale Serve and Funnel state must remain
 unchanged.
