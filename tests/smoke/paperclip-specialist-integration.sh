@@ -1195,7 +1195,14 @@ assert chief_resumed.get("agentId") == state["chiefId"], chief_resumed
 chief_snapshot = chief_resumed.get("contextSnapshot") or {}
 assert chief_snapshot.get("interactionId") == chief_interaction["id"], chief_snapshot
 assert chief_snapshot.get("sourceRunId") == authority["chiefRunId"], chief_snapshot
-assert chief_snapshot.get("wakeReason") == "issue_commented", chief_snapshot
+# The immediate answer dispatch and the periodic continuation repair are both
+# valid upstream paths.  What matters here is that exactly the immutable Chief
+# origin is resumed for this answered interaction, which the assertions above
+# prove; do not make the integration test race those two schedulers.
+assert chief_snapshot.get("wakeReason") in {
+    "issue_commented",
+    "issue_continuation_needed",
+}, chief_snapshot
 chief_activity = request("GET", f"/api/issues/{chief_issue['id']}/activity")
 chief_reservations = [
     row for row in chief_activity
