@@ -7,6 +7,7 @@ container="nix-specialist-worker-test-$$"
 network="nix-specialist-worker-test-$$"
 volume="nix_specialist_worker_test_$$"
 image="nix-specialist-worker:test-$$"
+paperclip_image='ghcr.io/paperclipai/paperclip:2026.916.1@sha256:a02ac35ac41df911af477422ea0e781cf41d2b2c600c66f0a5ac9d8c63f52c2c'
 
 cleanup() {
   docker rm -f "$container" >/dev/null 2>&1 || true
@@ -90,6 +91,24 @@ done
   printf 'authenticated specialist worker boundary check failed\n' >&2
   exit 1
 }
+
+# Execute the exact runner artifact shipped by the pinned Paperclip image. This
+# catches worker-base ABI drift before a live task reaches provider startup.
+docker run --rm --entrypoint sh \
+  --mount "type=volume,source=$volume,target=/shared" \
+  "$paperclip_image" -ec '
+    cp /app/packages/paperclip-runner/dist/bin/paperclip-runnerd /shared/paperclip-runnerd
+    chmod 0755 /shared/paperclip-runnerd
+  '
+docker exec --user 10001:10001 "$container" \
+  /workspaces/paperclip-runnerd --build-metadata \
+  | python3 -c '
+import json, sys
+metadata = json.load(sys.stdin)
+assert metadata.get("schema") == "paperclip-runner/runnerd-build-metadata/v1"
+assert metadata.get("binaryContractVersion") == 2
+assert "dial_wss" in metadata.get("prpTransportModes", [])
+'
 
 [[ -z $(docker inspect --format '{{json .HostConfig.PortBindings}}' "$container" | grep -o 'HostPort' || true) ]] \
   || { printf 'specialist worker unexpectedly publishes a host port\n' >&2; exit 1; }

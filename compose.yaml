@@ -66,7 +66,7 @@ services:
   specialist-worker:
     build:
       context: ./deploy/specialist-worker
-    image: nix-specialist-worker:2026.10.19
+    image: nix-specialist-worker:2026.10.20
     restart: unless-stopped
     read_only: true
     init: true
