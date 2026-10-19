@@ -22,6 +22,12 @@ ssh-keygen -q -t ed25519 -N '' -C test-client -f "$test_dir/client"
 printf '[%s]:2222 %s\n' "$container" "$(cat "$test_dir/host.pub")" >"$test_dir/known_hosts"
 chmod 0600 "$test_dir/host" "$test_dir/client" "$test_dir/authorized_keys" "$test_dir/known_hosts"
 
+# Linux bind mounts preserve host ownership. Match production's root-owned
+# worker files so sshd StrictModes validates the absolute authorized-keys path.
+if [[ $(uname -s) == Linux && $(id -u) != 0 ]]; then
+  sudo -n chown root:root "$test_dir/host" "$test_dir/authorized_keys"
+fi
+
 docker build --pull --tag "$image" "$repo_root/deploy/specialist-worker"
 docker network create --internal "$network" >/dev/null
 docker volume create "$volume" >/dev/null
