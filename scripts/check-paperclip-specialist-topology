@@ -133,6 +133,8 @@ def expected_permissions(company_id: str, project_id: str, specialist_ids: list[
         "canCreateAgents": False,
         "canCreateSkills": False,
         "canAssignTasks": True,
+        "trustPreset": "standard",
+        "authorizationPolicy": {"trustPreset": "standard"},
     }
 
 

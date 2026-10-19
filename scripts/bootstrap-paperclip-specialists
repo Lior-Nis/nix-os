@@ -501,6 +501,10 @@ def expected_permissions(company_id: str, project_id: str, specialist_ids: list[
         "canCreateAgents": False,
         "canCreateSkills": False,
         "canAssignTasks": True,
+        # Paperclip merges permission PATCHes. Send both standard markers so a
+        # rerun also removes a previously configured low-trust policy.
+        "trustPreset": "standard",
+        "authorizationPolicy": {"trustPreset": "standard"},
     }
 
 
