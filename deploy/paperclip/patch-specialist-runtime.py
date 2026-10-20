@@ -2,11 +2,12 @@
 """Install Nix's fail-closed specialist boundary in the pinned Paperclip image.
 
 Paperclip v2026.916.1 ships the native runner surface needed by Slice 3, but
-its default tool catalog is company-wide and its OpenCode driver does not bind
-or redact the selected ``OPENCODE_API_KEY`` credential. Its SSH command runner
-also drops the positional arguments required by the native runner's ``sh -c``
-launch contract. This installer changes only those pinned source and compiled
-files. Every input and output is hash locked; an unknown image or partial patch
+its default tool catalog is company-wide and its runner allowlist does not
+propagate the selected ``OPENCODE_API_KEY`` credential. Its OpenCode driver
+also does not bind or redact that credential, and its SSH command runner drops
+the positional arguments required by the native runner's ``sh -c`` launch
+contract. This installer changes only those pinned source and compiled files.
+Every input and output is hash locked; an unknown image or partial patch
 refuses startup.
 
 The bounded authority applies to every ``paperclip_runner`` session.  The
@@ -360,6 +361,29 @@ def patch_native_environment(source: str) -> str:
          if '  "CODEX_HOME",\n' in source
          else '    "CODEX_HOME",\n    "OPENCODE_API_KEY",\n'),
         label="OpenCode provider host credential allowlist",
+    )
+
+
+def patch_runner_provider_environment(source: str) -> str:
+    typescript_anchor = (
+        '  "OPENROUTER_API_KEY",\n'
+        '  "ANTHROPIC_API_KEY",\n'
+    )
+    javascript_anchor = (
+        '    "OPENROUTER_API_KEY",\n'
+        '    "ANTHROPIC_API_KEY",\n'
+    )
+    old = typescript_anchor if typescript_anchor in source else javascript_anchor
+    return _replace_once(
+        source,
+        old,
+        old.replace(
+            '"ANTHROPIC_API_KEY",',
+            '"OPENCODE_API_KEY",\n'
+            + ('  ' if old == typescript_anchor else '    ')
+            + '"ANTHROPIC_API_KEY",',
+        ),
+        label="OpenCode runner provider credential allowlist",
     )
 
 
@@ -1277,6 +1301,24 @@ PATCH_SPECS = (
         "5dc6952fcbc9bb320b6cbbe5e390aee3067837d6f90e9d37bae5406086cc95ec",
         "1a2439cbffc5bef7f448cb253d2d19845cd58abaa006015e44509cd5820b02de",
         patch_native_environment,
+    ),
+    PatchSpec(
+        "packages/paperclip-runner/src/control-plane/durable-prp-control-plane.ts",
+        "ff4c389cdd5e285918e45ea266f6af35225811193076225b286461c03228b933",
+        "7e3dbfa0f0794793420b0a4816e201008a08071375daa990287e777785f7396b",
+        patch_runner_provider_environment,
+    ),
+    PatchSpec(
+        "packages/paperclip-runner/dist/control-plane/durable-prp-control-plane.js",
+        "e3984798d32665a39fe997f270f6af37a6c5130ef36ab2f74a75e18c4dad2813",
+        "96a00bdf01171f47c828d9a2e3f9dffbf653d2fcd9446d12d29bf82c6a1f4d21",
+        patch_runner_provider_environment,
+    ),
+    PatchSpec(
+        "server/dist/vendor/paperclip-runner/control-plane/durable-prp-control-plane.js",
+        "e3984798d32665a39fe997f270f6af37a6c5130ef36ab2f74a75e18c4dad2813",
+        "96a00bdf01171f47c828d9a2e3f9dffbf653d2fcd9446d12d29bf82c6a1f4d21",
+        patch_runner_provider_environment,
     ),
     PatchSpec(
         "server/src/services/native-runtime/paperclip-runner-tool-authority.ts",

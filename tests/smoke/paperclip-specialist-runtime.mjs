@@ -93,7 +93,18 @@ const nativeExecutor = await readFile(
 const openCodeDriver = await readFile(
   `${appRoot}/packages/paperclip-runner/dist/drivers/opencode/opencode-server-driver.js`, "utf8",
 );
+const runnerControlPlane = await readFile(
+  `${appRoot}/packages/paperclip-runner/dist/control-plane/durable-prp-control-plane.js`, "utf8",
+);
+const vendoredRunnerControlPlane = await readFile(
+  `${appRoot}/server/dist/vendor/paperclip-runner/control-plane/durable-prp-control-plane.js`, "utf8",
+);
 assert.ok(nativeExecutor.includes('"OPENCODE_API_KEY"'));
+for (const source of [runnerControlPlane, vendoredRunnerControlPlane]) {
+  assert.ok(source.includes(
+    '"OPENROUTER_API_KEY",\n    "OPENCODE_API_KEY",\n    "ANTHROPIC_API_KEY"',
+  ));
+}
 assert.ok(openCodeDriver.includes("environment?.OPENCODE_API_KEY"));
 assert.ok(openCodeDriver.includes(
   "options: { apiKey: input.options.environment?.OPENCODE_API_KEY }",
