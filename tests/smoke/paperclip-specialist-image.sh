@@ -18,6 +18,8 @@ docker run --rm --entrypoint sh \
     node --check /app/server/dist/services/native-runtime/paperclip-runner-tool-authority.js
     node --check /app/packages/paperclip-runner/dist/control-plane/durable-prp-control-plane.js
     node --check /app/server/dist/vendor/paperclip-runner/control-plane/durable-prp-control-plane.js
+    node --check /app/packages/paperclip-runner/dist/live/runnerd-codex-transport.js
+    node --check /app/server/dist/vendor/paperclip-runner/live/runnerd-codex-transport.js
     node --check /app/packages/paperclip-runner/dist/drivers/opencode/opencode-server-driver.js
     node --check /app/server/dist/vendor/paperclip-runner/drivers/opencode/opencode-server-driver.js
     node --check /app/packages/paperclip-runner/dist/cli/opencode-app-server-proxy.cjs

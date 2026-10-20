@@ -367,24 +367,25 @@ def patch_native_environment(source: str) -> str:
 def patch_runner_provider_environment(source: str) -> str:
     # The pinned Rust runnerd accepts OPENROUTER_API_KEY but filters the
     # OpenCode-native OPENCODE_API_KEY name before launching its provider.
-    # Keep OPENCODE_API_KEY as Paperclip's stored environment truth and create
-    # the compatibility alias only in the child runner process environment.
+    # Alias before the OpenCode transport sanitizer, which is the first
+    # production boundary that sees the resolved run environment.
     anchor = (
-        "    Object.assign(environment, githubCredentialEnvironment(explicitSource));\n"
-        if "    Object.assign(environment, githubCredentialEnvironment(explicitSource));\n" in source
-        else "        Object.assign(environment, githubCredentialEnvironment(explicitSource));\n"
+        "  const candidate = { ...process.env, ...source };\n"
+        if "  const candidate = { ...process.env, ...source };\n" in source
+        else "    const candidate = { ...process.env, ...source };\n"
     )
     indent = anchor[: len(anchor) - len(anchor.lstrip())]
     return _replace_once(
         source,
         anchor,
-        f'{indent}const opencodeApiKey = explicitSource.OPENCODE_API_KEY;\n'
-        f'{indent}const openrouterApiKey = environment.OPENROUTER_API_KEY;\n'
+        anchor
+        + f'{indent}const opencodeApiKey = source?.OPENCODE_API_KEY;\n'
+        f'{indent}const openrouterApiKey = candidate.OPENROUTER_API_KEY;\n'
         f'{indent}if (opencodeApiKey !== undefined && openrouterApiKey !== undefined && opencodeApiKey !== openrouterApiKey) {{\n'
         f'{indent}  throw new Error("nix_runner_provider_credential_conflict");\n'
         f'{indent}}}\n'
-        f'{indent}if (opencodeApiKey !== undefined) environment.OPENROUTER_API_KEY = opencodeApiKey;\n'
-        + anchor,
+        f'{indent}if (opencodeApiKey !== undefined) candidate.OPENROUTER_API_KEY = opencodeApiKey;\n'
+        f'{indent}delete candidate.OPENCODE_API_KEY;\n',
         label="OpenCode runner provider credential compatibility alias",
     )
 
@@ -1297,21 +1298,21 @@ PATCH_SPECS = (
         patch_native_environment,
     ),
     PatchSpec(
-        "packages/paperclip-runner/src/control-plane/durable-prp-control-plane.ts",
-        "ff4c389cdd5e285918e45ea266f6af35225811193076225b286461c03228b933",
-        "b8fcadabba38af74997ed2b04a9f268df307a4c9426991000c98d793f6ba344b",
+        "packages/paperclip-runner/src/live/runnerd-codex-transport.ts",
+        "f96149a30fe98fff575bcad7139b90474fde6483c178939facf861dcc33198ed",
+        "bf2606d9a670926af7c0449bbda25aedfec4a8a11019b1bf07fcb5733f81e480",
         patch_runner_provider_environment,
     ),
     PatchSpec(
-        "packages/paperclip-runner/dist/control-plane/durable-prp-control-plane.js",
-        "e3984798d32665a39fe997f270f6af37a6c5130ef36ab2f74a75e18c4dad2813",
-        "e20b372fafe574946a4b365c34d494f1579af01659f57ff1d68bdddb8e0af3a3",
+        "packages/paperclip-runner/dist/live/runnerd-codex-transport.js",
+        "8de15bc9aae1bff722cb958509f0e06d1f122ce86170bcd8d589164b0724d5a4",
+        "36edc8751afbddac6cce3988b14eb3767abc9f6db63159f61e01426fee4c35b0",
         patch_runner_provider_environment,
     ),
     PatchSpec(
-        "server/dist/vendor/paperclip-runner/control-plane/durable-prp-control-plane.js",
-        "e3984798d32665a39fe997f270f6af37a6c5130ef36ab2f74a75e18c4dad2813",
-        "e20b372fafe574946a4b365c34d494f1579af01659f57ff1d68bdddb8e0af3a3",
+        "server/dist/vendor/paperclip-runner/live/runnerd-codex-transport.js",
+        "8de15bc9aae1bff722cb958509f0e06d1f122ce86170bcd8d589164b0724d5a4",
+        "36edc8751afbddac6cce3988b14eb3767abc9f6db63159f61e01426fee4c35b0",
         patch_runner_provider_environment,
     ),
     PatchSpec(
