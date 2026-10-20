@@ -436,7 +436,10 @@ The provider file contains exactly
 `OPENCODE_API_KEY=<OpenCode-Go-model-key>`. Lean V0 may reuse the same
 model-only credential already stored as `OPENCODE_GO_API_KEY` in the external
 Hermes environment; the specialist file uses OpenCode CLI's expected variable
-name. Never copy the value through chat, command arguments, or Git. Do not put
+name. Paperclip resolves this one binding for the run, and the pinned-driver
+patch passes it directly as the ephemeral provider configuration's `apiKey`;
+do not add an `OPENAI_API_KEY` alias or second secret. Never copy the value
+through chat, command arguments, or Git. Do not put
 Paperclip, Telegram, GitHub, Todoist, brain, or host credentials there.
 Configure the three generated worker paths from `.env.example`. The encrypted
 configuration backup includes these non-reconstructible SSH keys and the

@@ -95,6 +95,10 @@ const openCodeDriver = await readFile(
 );
 assert.ok(nativeExecutor.includes('"OPENCODE_API_KEY"'));
 assert.ok(openCodeDriver.includes("environment?.OPENCODE_API_KEY"));
+assert.ok(openCodeDriver.includes(
+  "options: { apiKey: input.options.environment?.OPENCODE_API_KEY }",
+));
+assert.ok(!openCodeDriver.includes("environment?.OPENAI_API_KEY"));
 assert.ok(openCodeDriver.includes("OPENROUTER_API_KEY|OPENCODE_API_KEY|authorization"));
 assert.ok(openCodeDriver.includes("tools: { question: false }"));
 assert.ok(openCodeDriver.includes('question: "deny"'));
