@@ -4,10 +4,11 @@
 Paperclip v2026.916.1 ships the native runner surface needed by Slice 3, but
 its default tool catalog is company-wide and its runner allowlist does not
 propagate the selected ``OPENCODE_API_KEY`` credential. Its OpenCode driver
-also does not bind or redact that credential, stores ephemeral HOME data in the
-checkpointed session root, and its SSH command runner drops the positional
-arguments required by the native runner's ``sh -c`` launch contract. This
-installer changes only those pinned source and compiled files.
+also does not bind or redact that credential, stores reconstructible runtime
+state in the checkpointed session root, and its SSH command runner both drops
+the positional arguments required by the native runner's ``sh -c`` launch
+contract and emits invalid non-shell commands when an environment is present.
+This installer changes only those pinned source and compiled files.
 Every input and output is hash locked; an unknown image or partial patch
 refuses startup.
 
@@ -76,6 +77,31 @@ def _replace_once_in_region(
         )
     segment = source[start_index:end_index]
     patched = _replace_once(segment, old, new, label=label)
+    return source[:start_index] + patched + source[end_index:]
+
+
+def _replace_last_in_region(
+    source: str,
+    start: str,
+    end: str,
+    old: str,
+    new: str,
+    *,
+    label: str,
+) -> str:
+    start_index = source.find(start)
+    end_index = source.find(end, start_index + len(start))
+    if start_index < 0 or end_index < 0:
+        raise RuntimeError(
+            f"Paperclip specialist patch refused: {label} region missing"
+        )
+    segment = source[start_index:end_index]
+    match_index = segment.rfind(old)
+    if match_index < 0:
+        raise RuntimeError(
+            f"Paperclip specialist patch refused: {label} anchor missing"
+        )
+    patched = segment[:match_index] + new + segment[match_index + len(old):]
     return source[:start_index] + patched + source[end_index:]
 
 
@@ -425,13 +451,39 @@ def patch_opencode_driver(source: str) -> str:
         )
         source = _replace_once(
             source,
+            '  const configHome = join(input.root, "config");\n'
+            '  const dataHome = join(input.root, "data");\n'
+            '  const cacheHome = join(input.root, "cache");\n'
+            '  await Promise.all([\n'
+            '    mkdir(join(configHome, "opencode"), { recursive: true, mode: 0o700 }),\n'
+            '    mkdir(dataHome, { recursive: true, mode: 0o700 }),\n'
+            '    mkdir(cacheHome, { recursive: true, mode: 0o700 }),\n'
+            '  ]);\n'
+            '  // HOME contains a read-only skill snapshot, whose destination must be fresh.\n'
+            '  // Keep OpenCode\'s XDG data stable for provider-session recovery while giving\n'
+            '  // every launch (including retries and recovery) a new isolated HOME.\n'
             '  const isolatedHome = await mkdtemp(join(input.root, "home-"));\n',
-            '  const legacyHomes = (await readdir(input.root, { withFileTypes: true }))\n'
-            '    .filter((entry) => entry.name.startsWith("home-"));\n'
-            '  await Promise.all(legacyHomes.map((entry) =>\n'
+            '  const legacyRuntimeEntries = (await readdir(input.root, { withFileTypes: true }))\n'
+            '    .filter((entry) => entry.name === "config" || entry.name === "cache"\n'
+            '      || entry.name.startsWith("home-"));\n'
+            '  await Promise.all(legacyRuntimeEntries.map((entry) =>\n'
             '    rm(join(input.root, entry.name), { recursive: true, force: true })));\n'
-            '  const isolatedHome = await mkdtemp(join(tmpdir(), "paperclip-opencode-home-"));\n',
-            label="OpenCode TypeScript checkpoint-safe HOME",
+            '  const runtimeRoot = await mkdtemp(join(tmpdir(), "paperclip-opencode-runtime-"));\n'
+            '  let cleanupBridge: OpenCodeMcpBridge | null = null;\n'
+            '  let cleanupChild: ChildProcess | null = null;\n'
+            '  let runtimeOwnershipTransferred = false;\n'
+            '  try {\n'
+            '  const configHome = join(runtimeRoot, "config");\n'
+            '  const dataHome = join(input.root, "data");\n'
+            '  const cacheHome = join(runtimeRoot, "cache");\n'
+            '  const isolatedHome = join(runtimeRoot, "home");\n'
+            '  await Promise.all([\n'
+            '    mkdir(join(configHome, "opencode"), { recursive: true, mode: 0o700 }),\n'
+            '    mkdir(dataHome, { recursive: true, mode: 0o700 }),\n'
+            '    mkdir(cacheHome, { recursive: true, mode: 0o700 }),\n'
+            '    mkdir(isolatedHome, { recursive: true, mode: 0o700 }),\n'
+            '  ]);\n',
+            label="OpenCode TypeScript checkpoint-safe runtime roots",
         )
     else:
         source = _replace_once(
@@ -448,13 +500,131 @@ def patch_opencode_driver(source: str) -> str:
         )
         source = _replace_once(
             source,
+            '    const configHome = join(input.root, "config");\n'
+            '    const dataHome = join(input.root, "data");\n'
+            '    const cacheHome = join(input.root, "cache");\n'
+            '    await Promise.all([\n'
+            '        mkdir(join(configHome, "opencode"), { recursive: true, mode: 0o700 }),\n'
+            '        mkdir(dataHome, { recursive: true, mode: 0o700 }),\n'
+            '        mkdir(cacheHome, { recursive: true, mode: 0o700 }),\n'
+            '    ]);\n'
+            '    // HOME contains a read-only skill snapshot, whose destination must be fresh.\n'
+            '    // Keep OpenCode\'s XDG data stable for provider-session recovery while giving\n'
+            '    // every launch (including retries and recovery) a new isolated HOME.\n'
             '    const isolatedHome = await mkdtemp(join(input.root, "home-"));\n',
-            '    const legacyHomes = (await readdir(input.root, { withFileTypes: true }))\n'
-            '        .filter((entry) => entry.name.startsWith("home-"));\n'
-            '    await Promise.all(legacyHomes.map((entry) =>\n'
+            '    const legacyRuntimeEntries = (await readdir(input.root, { withFileTypes: true }))\n'
+            '        .filter((entry) => entry.name === "config" || entry.name === "cache"\n'
+            '            || entry.name.startsWith("home-"));\n'
+            '    await Promise.all(legacyRuntimeEntries.map((entry) =>\n'
             '        rm(join(input.root, entry.name), { recursive: true, force: true })));\n'
-            '    const isolatedHome = await mkdtemp(join(tmpdir(), "paperclip-opencode-home-"));\n',
-            label="OpenCode JavaScript checkpoint-safe HOME",
+            '    const runtimeRoot = await mkdtemp(join(tmpdir(), "paperclip-opencode-runtime-"));\n'
+            '    let cleanupBridge = null;\n'
+            '    let cleanupChild = null;\n'
+            '    let runtimeOwnershipTransferred = false;\n'
+            '    try {\n'
+            '    const configHome = join(runtimeRoot, "config");\n'
+            '    const dataHome = join(input.root, "data");\n'
+            '    const cacheHome = join(runtimeRoot, "cache");\n'
+            '    const isolatedHome = join(runtimeRoot, "home");\n'
+            '    await Promise.all([\n'
+            '        mkdir(join(configHome, "opencode"), { recursive: true, mode: 0o700 }),\n'
+            '        mkdir(dataHome, { recursive: true, mode: 0o700 }),\n'
+            '        mkdir(cacheHome, { recursive: true, mode: 0o700 }),\n'
+            '        mkdir(isolatedHome, { recursive: true, mode: 0o700 }),\n'
+            '    ]);\n',
+            label="OpenCode JavaScript checkpoint-safe runtime roots",
+        )
+    source = _replace_count(
+        source,
+        "await rm(isolatedHome, { recursive: true, force: true }).catch(",
+        "await rm(runtimeRoot, { recursive: true, force: true }).catch(",
+        count=4,
+        label="OpenCode temporary runtime cleanup",
+    )
+    if typescript_source:
+        source = _replace_once(
+            source,
+            "  const assignedMcp = nativeMcpLaunchBinding(\n",
+            "  cleanupBridge = bridge;\n"
+            "  const assignedMcp = nativeMcpLaunchBinding(\n",
+            label="OpenCode TypeScript bridge cleanup ownership",
+        )
+        source = _replace_once(
+            source,
+            "  if (child.pid !== undefined) {\n",
+            "  cleanupChild = child;\n"
+            "  if (child.pid !== undefined) {\n",
+            label="OpenCode TypeScript child cleanup ownership",
+        )
+        source = _replace_last_in_region(
+            source,
+            "async function startRuntime(input: {\n",
+            "export function normalizeOpenCodeQuestionSet(\n",
+            "    return {\n",
+            "    runtimeOwnershipTransferred = true;\n"
+            "    return {\n",
+            label="OpenCode TypeScript runtime ownership transfer",
+        )
+        source = _replace_last_in_region(
+            source,
+            "async function startRuntime(input: {\n",
+            "export function normalizeOpenCodeQuestionSet(\n",
+            "    throw error;\n"
+            "  }\n",
+            "    throw error;\n"
+            "  }\n"
+            "  } finally {\n"
+            "    if (!runtimeOwnershipTransferred) {\n"
+            "      await cleanupBridge?.close().catch(() => {});\n"
+            "      cleanupChild?.kill(\"SIGKILL\");\n"
+            "      await rm(runtimeRoot, { recursive: true, force: true }).catch(\n"
+            "        () => undefined,\n"
+            "      );\n"
+            "    }\n"
+            "  }\n",
+            label="OpenCode TypeScript complete temporary runtime cleanup",
+        )
+    else:
+        source = _replace_once(
+            source,
+            "    const assignedMcp = nativeMcpLaunchBinding(input.options.environment ?? process.env);\n",
+            "    cleanupBridge = bridge;\n"
+            "    const assignedMcp = nativeMcpLaunchBinding(input.options.environment ?? process.env);\n",
+            label="OpenCode JavaScript bridge cleanup ownership",
+        )
+        source = _replace_once(
+            source,
+            "    if (child.pid !== undefined) {\n",
+            "    cleanupChild = child;\n"
+            "    if (child.pid !== undefined) {\n",
+            label="OpenCode JavaScript child cleanup ownership",
+        )
+        source = _replace_last_in_region(
+            source,
+            "async function startRuntime(input) {\n",
+            "export function normalizeOpenCodeQuestionSet(nativeQuestions",
+            "        return {\n",
+            "        runtimeOwnershipTransferred = true;\n"
+            "        return {\n",
+            label="OpenCode JavaScript runtime ownership transfer",
+        )
+        source = _replace_last_in_region(
+            source,
+            "async function startRuntime(input) {\n",
+            "export function normalizeOpenCodeQuestionSet(nativeQuestions",
+            "        throw error;\n"
+            "    }\n",
+            "        throw error;\n"
+            "    }\n"
+            "    }\n"
+            "    finally {\n"
+            "        if (!runtimeOwnershipTransferred) {\n"
+            "            await cleanupBridge?.close().catch(() => { });\n"
+            "            cleanupChild?.kill(\"SIGKILL\");\n"
+            "            await rm(runtimeRoot, { recursive: true, force: true }).catch(() => undefined);\n"
+            "        }\n"
+            "    }\n",
+            label="OpenCode JavaScript complete temporary runtime cleanup",
         )
     provider_anchor = (
         "      [modelProvider!]: {\n        models: {\n"
@@ -532,13 +702,35 @@ def patch_opencode_proxy_bundle(source: str) -> str:
         )
         source = _replace_once(
             source,
+            '  const configHome = (0, import_node_path3.join)(input2.root, "config");\n'
+            '  const dataHome = (0, import_node_path3.join)(input2.root, "data");\n'
+            '  const cacheHome = (0, import_node_path3.join)(input2.root, "cache");\n'
+            '  await Promise.all([\n'
+            '    (0, import_promises3.mkdir)((0, import_node_path3.join)(configHome, "opencode"), { recursive: true, mode: 448 }),\n'
+            '    (0, import_promises3.mkdir)(dataHome, { recursive: true, mode: 448 }),\n'
+            '    (0, import_promises3.mkdir)(cacheHome, { recursive: true, mode: 448 })\n'
+            '  ]);\n'
             '  const isolatedHome = await (0, import_promises3.mkdtemp)((0, import_node_path3.join)(input2.root, "home-"));\n',
-            '  const legacyHomes = (await (0, import_promises3.readdir)(input2.root, { withFileTypes: true }))\n'
-            '    .filter((entry) => entry.name.startsWith("home-"));\n'
-            '  await Promise.all(legacyHomes.map((entry) =>\n'
+            '  const legacyRuntimeEntries = (await (0, import_promises3.readdir)(input2.root, { withFileTypes: true }))\n'
+            '    .filter((entry) => entry.name === "config" || entry.name === "cache" || entry.name.startsWith("home-"));\n'
+            '  await Promise.all(legacyRuntimeEntries.map((entry) =>\n'
             '    (0, import_promises3.rm)((0, import_node_path3.join)(input2.root, entry.name), { recursive: true, force: true })));\n'
-            '  const isolatedHome = await (0, import_promises3.mkdtemp)((0, import_node_path3.join)((0, import_node_os.tmpdir)(), "paperclip-opencode-home-"));\n',
-            label="bundled CommonJS checkpoint-safe HOME",
+            '  const runtimeRoot = await (0, import_promises3.mkdtemp)((0, import_node_path3.join)((0, import_node_os.tmpdir)(), "paperclip-opencode-runtime-"));\n'
+            '  let cleanupBridge = null;\n'
+            '  let cleanupChild = null;\n'
+            '  let runtimeOwnershipTransferred = false;\n'
+            '  try {\n'
+            '  const configHome = (0, import_node_path3.join)(runtimeRoot, "config");\n'
+            '  const dataHome = (0, import_node_path3.join)(input2.root, "data");\n'
+            '  const cacheHome = (0, import_node_path3.join)(runtimeRoot, "cache");\n'
+            '  const isolatedHome = (0, import_node_path3.join)(runtimeRoot, "home");\n'
+            '  await Promise.all([\n'
+            '    (0, import_promises3.mkdir)((0, import_node_path3.join)(configHome, "opencode"), { recursive: true, mode: 448 }),\n'
+            '    (0, import_promises3.mkdir)(dataHome, { recursive: true, mode: 448 }),\n'
+            '    (0, import_promises3.mkdir)(cacheHome, { recursive: true, mode: 448 }),\n'
+            '    (0, import_promises3.mkdir)(isolatedHome, { recursive: true, mode: 448 })\n'
+            '  ]);\n',
+            label="bundled CommonJS checkpoint-safe runtime roots",
         )
     else:
         source = _replace_once(
@@ -556,14 +748,104 @@ def patch_opencode_proxy_bundle(source: str) -> str:
         )
         source = _replace_once(
             source,
+            '  const configHome = join2(input2.root, "config");\n'
+            '  const dataHome = join2(input2.root, "data");\n'
+            '  const cacheHome = join2(input2.root, "cache");\n'
+            '  await Promise.all([\n'
+            '    mkdir2(join2(configHome, "opencode"), { recursive: true, mode: 448 }),\n'
+            '    mkdir2(dataHome, { recursive: true, mode: 448 }),\n'
+            '    mkdir2(cacheHome, { recursive: true, mode: 448 })\n'
+            '  ]);\n'
             '  const isolatedHome = await mkdtemp(join2(input2.root, "home-"));\n',
-            '  const legacyHomes = (await readdir2(input2.root, { withFileTypes: true }))\n'
-            '    .filter((entry) => entry.name.startsWith("home-"));\n'
-            '  await Promise.all(legacyHomes.map((entry) =>\n'
+            '  const legacyRuntimeEntries = (await readdir2(input2.root, { withFileTypes: true }))\n'
+            '    .filter((entry) => entry.name === "config" || entry.name === "cache" || entry.name.startsWith("home-"));\n'
+            '  await Promise.all(legacyRuntimeEntries.map((entry) =>\n'
             '    rm2(join2(input2.root, entry.name), { recursive: true, force: true })));\n'
-            '  const isolatedHome = await mkdtemp(join2(tmpdir(), "paperclip-opencode-home-"));\n',
-            label="bundled ESM checkpoint-safe HOME",
+            '  const runtimeRoot = await mkdtemp(join2(tmpdir(), "paperclip-opencode-runtime-"));\n'
+            '  let cleanupBridge = null;\n'
+            '  let cleanupChild = null;\n'
+            '  let runtimeOwnershipTransferred = false;\n'
+            '  try {\n'
+            '  const configHome = join2(runtimeRoot, "config");\n'
+            '  const dataHome = join2(input2.root, "data");\n'
+            '  const cacheHome = join2(runtimeRoot, "cache");\n'
+            '  const isolatedHome = join2(runtimeRoot, "home");\n'
+            '  await Promise.all([\n'
+            '    mkdir2(join2(configHome, "opencode"), { recursive: true, mode: 448 }),\n'
+            '    mkdir2(dataHome, { recursive: true, mode: 448 }),\n'
+            '    mkdir2(cacheHome, { recursive: true, mode: 448 }),\n'
+            '    mkdir2(isolatedHome, { recursive: true, mode: 448 })\n'
+            '  ]);\n',
+            label="bundled ESM checkpoint-safe runtime roots",
         )
+
+    cleanup_rm = (
+        "await (0, import_promises3.rm)(isolatedHome, { recursive: true, force: true }).catch("
+        if commonjs_bundle
+        else "await rm2(isolatedHome, { recursive: true, force: true }).catch("
+    )
+    runtime_cleanup_rm = cleanup_rm.replace("isolatedHome", "runtimeRoot")
+    source = _replace_count(
+        source,
+        cleanup_rm,
+        runtime_cleanup_rm,
+        count=4,
+        label="bundled OpenCode temporary runtime cleanup",
+    )
+    source = _replace_once(
+        source,
+        "  const assignedMcp = nativeMcpLaunchBinding(\n",
+        "  cleanupBridge = bridge;\n"
+        "  const assignedMcp = nativeMcpLaunchBinding(\n",
+        label="bundled OpenCode bridge cleanup ownership",
+    )
+    child_anchor = (
+        "  if (child.pid !== void 0) {\n"
+        if commonjs_bundle
+        else "  if (child.pid !== void 0) {\n"
+    )
+    source = _replace_once(
+        source,
+        child_anchor,
+        "  cleanupChild = child;\n" + child_anchor,
+        label="bundled OpenCode child cleanup ownership",
+    )
+    source = _replace_last_in_region(
+        source,
+        "async function startRuntime(input2) {\n",
+        "function normalizeOpenCodeQuestionSet(nativeQuestions",
+        "    return {\n",
+        "    runtimeOwnershipTransferred = true;\n"
+        "    return {\n",
+        label="bundled OpenCode runtime ownership transfer",
+    )
+    cleanup_call = (
+        "      await (0, import_promises3.rm)(runtimeRoot, { recursive: true, force: true }).catch(\n"
+        "        () => void 0\n"
+        "      );\n"
+        if commonjs_bundle
+        else "      await rm2(runtimeRoot, { recursive: true, force: true }).catch(\n"
+        "        () => void 0\n"
+        "      );\n"
+    )
+    source = _replace_last_in_region(
+        source,
+        "async function startRuntime(input2) {\n",
+        "function normalizeOpenCodeQuestionSet(nativeQuestions",
+        "    throw error;\n"
+        "  }\n",
+        "    throw error;\n"
+        "  }\n"
+        "  } finally {\n"
+        "    if (!runtimeOwnershipTransferred) {\n"
+        "      await cleanupBridge?.close().catch(() => {\n"
+        "      });\n"
+        "      cleanupChild?.kill(\"SIGKILL\");\n"
+        + cleanup_call
+        + "    }\n"
+        "  }\n",
+        label="bundled OpenCode complete temporary runtime cleanup",
+    )
 
     source = _replace_once(
         source,
@@ -1305,23 +1587,31 @@ def patch_issues_route_js(source: str) -> str:
 
 
 def patch_ssh_command_args(source: str) -> str:
-    """Preserve positional arguments for the pinned SSH ``sh -c`` runner."""
+    """Use upstream's valid env invocation and preserve all command arguments."""
 
     return _replace_once(
         source,
-        '''      const commandScript = command === "sh" || command === "bash"
+        '''      const envPrefix = envEntries.length > 0
+        ? `env ${envEntries.map(([key, value]) => `${key}=${shellQuote(value)}`).join(" ")} `
+        : "";
+      const exportPrefix = envEntries.length > 0
+        ? envEntries.map(([key, value]) => `export ${key}=${shellQuote(value)};`).join(" ") + " "
+        : "";
+      const commandScript = command === "sh" || command === "bash"
         ? (args[0] === "-c" || args[0] === "-lc") && typeof args[1] === "string"
           ? `${exportPrefix}${args[1]}`
           : `${envPrefix}exec ${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`
         : `${envPrefix}exec ${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`;''',
-        '''      const commandScript = command === "sh" || command === "bash"
-        ? (args[0] === "-c" || args[0] === "-lc") && typeof args[1] === "string"
-          ? args.length > 2
-            ? `${exportPrefix}exec ${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`
-            : `${exportPrefix}${args[1]}`
-          : `${envPrefix}exec ${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`
-        : `${envPrefix}exec ${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`;''',
-        label="SSH sh -c positional arguments",
+        '''      for (const [key] of envEntries) {
+        if (!isValidShellEnvKey(key)) {
+          throw new Error(`Invalid SSH environment variable key: ${key}`);
+        }
+      }
+      const envPrefix = envEntries.length > 0
+        ? `env ${envEntries.map(([key, value]) => shellQuote(`${key}=${value}`)).join(" ")} `
+        : "";
+      const commandScript = `exec ${envPrefix}${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`;''',
+        label="SSH command environment and positional arguments",
     )
 
 
@@ -1337,7 +1627,7 @@ PATCH_SPECS = (
     PatchSpec(
         "packages/adapter-utils/src/ssh.ts",
         "e7bbe4a33135be2fc937be9c88572fc561ba615956e1331e48299a35df4243f4",
-        "975db449ee560a7615f87026a509f423808750e10ee8eaafca0e83de030214b6",
+        "fae3f5a43cce80bb3e0100018c76fe082413b148f2678d8fca77e196fef623b9",
         patch_ssh_command_args,
     ),
     PatchSpec(
@@ -1421,43 +1711,43 @@ PATCH_SPECS = (
     PatchSpec(
         "packages/paperclip-runner/src/drivers/opencode/opencode-server-driver.ts",
         "44fd45efa24b5c0a55f4f2a8bf23e18b5ed03b73709185226953bcd3b709eb95",
-        "9b14933a6774e95bc683dc716d20c135098d5b1e4ddc553c18ebfde61e5aa1ec",
+        "86215f7f41f0e1fcdfe07e805ea78b2d0354482a7fa4277701116c12cbd92f02",
         patch_opencode_driver,
     ),
     PatchSpec(
         "packages/paperclip-runner/dist/drivers/opencode/opencode-server-driver.js",
         "3e17333514ecc354b277f75dc1f43a84c7563a67f4f69bf5335f16d9d1860a38",
-        "0220547cec722ad1197a769935f8180fdcf7939e5df7b373d7b7664e2b9775cb",
+        "56dcebde3e7825db2596a0254d6c546345764459d2a0826d60f12c7f40d20493",
         patch_opencode_driver,
     ),
     PatchSpec(
         "server/dist/vendor/paperclip-runner/drivers/opencode/opencode-server-driver.js",
         "3e17333514ecc354b277f75dc1f43a84c7563a67f4f69bf5335f16d9d1860a38",
-        "0220547cec722ad1197a769935f8180fdcf7939e5df7b373d7b7664e2b9775cb",
+        "56dcebde3e7825db2596a0254d6c546345764459d2a0826d60f12c7f40d20493",
         patch_opencode_driver,
     ),
     PatchSpec(
         "packages/paperclip-runner/dist/cli/opencode-app-server-proxy.cjs",
         "515fa5d26c44c6d0a1df09497297405e726dd068917f525869aac72ea7a1ce0e",
-        "9c20ec6d59e99682b8a2122cd5f699ff5e013d4c03c71c7388f6d78b74b8793d",
+        "7b1051671519c68cb105fd2a7959264f206df0526314c3894046557bfd8f40be",
         patch_opencode_proxy_bundle,
     ),
     PatchSpec(
         "packages/paperclip-runner/dist/cli/opencode-app-server-proxy.js",
         "de49baf75b3bbeae46312cb2e47100506c5e9bf8c2a6a941e46c1358e3e6847e",
-        "1f21a0d2564ed8c5d0838f3acf03eb4d738a014c7fe0d06bb496f92ba4541a01",
+        "37f671859e90c01cea098326de288e6165cd200b7aaffbf3c8b875d14d2c81e4",
         patch_opencode_proxy_bundle,
     ),
     PatchSpec(
         "server/dist/vendor/paperclip-runner/cli/opencode-app-server-proxy.cjs",
         "515fa5d26c44c6d0a1df09497297405e726dd068917f525869aac72ea7a1ce0e",
-        "9c20ec6d59e99682b8a2122cd5f699ff5e013d4c03c71c7388f6d78b74b8793d",
+        "7b1051671519c68cb105fd2a7959264f206df0526314c3894046557bfd8f40be",
         patch_opencode_proxy_bundle,
     ),
     PatchSpec(
         "server/dist/vendor/paperclip-runner/cli/opencode-app-server-proxy.js",
         "de49baf75b3bbeae46312cb2e47100506c5e9bf8c2a6a941e46c1358e3e6847e",
-        "1f21a0d2564ed8c5d0838f3acf03eb4d738a014c7fe0d06bb496f92ba4541a01",
+        "37f671859e90c01cea098326de288e6165cd200b7aaffbf3c8b875d14d2c81e4",
         patch_opencode_proxy_bundle,
     ),
 )

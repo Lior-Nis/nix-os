@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
-import { closeSync, openSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { closeSync, openSync, readFileSync, readdirSync } from "node:fs";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import vm from "node:vm";
@@ -131,8 +131,13 @@ for (const source of [openCodeDriver, vendoredOpenCodeDriver]) {
   assert.ok(source.includes("tools: { question: false }"));
   assert.ok(source.includes('question: "deny"'));
   assert.ok(source.includes("nix_opencode_native_question_denied"));
-  assert.ok(source.includes('mkdtemp(join(tmpdir(), "paperclip-opencode-home-"))'));
-  assert.ok(source.includes('entry.name.startsWith("home-")'));
+  assert.ok(source.includes('mkdtemp(join(tmpdir(), "paperclip-opencode-runtime-"))'));
+  assert.ok(source.includes('entry.name === "config" || entry.name === "cache"'));
+  assert.ok(source.includes('const dataHome = join(input.root, "data")'));
+  assert.ok(source.includes('rm(runtimeRoot, { recursive: true, force: true })'));
+  assert.ok(source.includes("runtimeOwnershipTransferred"));
+  assert.ok(source.includes("await cleanupBridge?.close()"));
+  assert.ok(source.includes('cleanupChild?.kill("SIGKILL")'));
 }
 for (const source of [openCodeProxy, vendoredOpenCodeProxy]) {
   assert.ok(source.includes(
@@ -144,8 +149,13 @@ for (const source of [openCodeProxy, vendoredOpenCodeProxy]) {
   assert.ok(source.includes("tools: { question: false }"));
   assert.ok(source.includes('question: "deny"'));
   assert.ok(source.includes("nix_opencode_native_question_denied"));
-  assert.ok(source.includes('"paperclip-opencode-home-"'));
-  assert.ok(source.includes('entry.name.startsWith("home-")'));
+  assert.ok(source.includes('"paperclip-opencode-runtime-"'));
+  assert.ok(source.includes('entry.name === "config" || entry.name === "cache"'));
+  assert.ok(source.includes('input2.root, "data"'));
+  assert.ok(source.includes('runtimeRoot, { recursive: true, force: true }'));
+  assert.ok(source.includes("runtimeOwnershipTransferred"));
+  assert.ok(source.includes("await cleanupBridge?.close()"));
+  assert.ok(source.includes('cleanupChild?.kill("SIGKILL")'));
 }
 
 // Exercise the production transport sanitizer before spawnRunner. Paperclip
@@ -244,42 +254,65 @@ const proxyRuntime = path.join(proxyFixtureRoot, "runtime");
 const proxyWorkspace = path.join(proxyFixtureRoot, "workspace");
 const proxyExecutable = path.join(proxyFixtureRoot, "opencode-fixture");
 const proxyTrace = path.join(proxyFixtureRoot, "provider-trace.jsonl");
-const homeEvidence = path.join(proxyFixtureRoot, "home-path");
+const runtimeEvidence = path.join(proxyFixtureRoot, "runtime-paths.json");
+const configEvidence = path.join(proxyFixtureRoot, "generated-opencode.json");
 const providerCanary = "nix-provider-canary-92b75e17";
-const sshCommandMaxBufferBytes = 1024 * 1024;
+const nominalCheckpointArchiveBytes = 10 * 1024 * 1024;
+const sshCapturedStdoutMaxBytes = 13_981_016;
 await mkdir(proxyWorkspace);
-const legacyHome = path.join(proxyRuntime, "credential-canary", "home-legacy");
+const checkpointRoot = path.join(proxyRuntime, "credential-canary");
+const legacyHome = path.join(checkpointRoot, "home-legacy");
 const legacyPayload = path.join(legacyHome, "checkpoint-bloat");
-await mkdir(legacyHome, { recursive: true });
+const legacyConfig = path.join(checkpointRoot, "config", "opencode", "models-cache");
+const legacyCache = path.join(checkpointRoot, "cache", "opencode", "provider-cache");
+const stableData = path.join(checkpointRoot, "data", "opencode", "session-state");
+await Promise.all([
+  mkdir(path.dirname(legacyPayload), { recursive: true }),
+  mkdir(path.dirname(legacyConfig), { recursive: true }),
+  mkdir(path.dirname(legacyCache), { recursive: true }),
+  mkdir(path.dirname(stableData), { recursive: true }),
+]);
 
-function deterministicIncompressibleBytes(size) {
+function deterministicIncompressibleBytes(size, salt) {
   const value = Buffer.allocUnsafe(size);
   for (let offset = 0, counter = 0; offset < size; counter += 1) {
-    const block = createHash("sha256").update(`checkpoint-block:${counter}`).digest();
+    const block = createHash("sha256").update(`${salt}:${counter}`).digest();
     offset += block.copy(value, offset, 0, Math.min(block.length, size - offset));
   }
   return value;
 }
 
-function checkpointEncodedBytes(root) {
-  const result = spawnSync("sh", ["-c", "tar -czf - . | base64"], {
+function checkpointBytes(root) {
+  const archive = spawnSync("sh", ["-c", "tar -czf - . | wc -c"], {
+    cwd: root,
+    encoding: "utf8",
+    maxBuffer: 1024 * 1024,
+  });
+  assert.equal(archive.status, 0, archive.stderr);
+  const encoded = spawnSync("sh", ["-c", "tar -czf - . | base64"], {
     cwd: root,
     encoding: "buffer",
-    maxBuffer: 8 * 1024 * 1024,
+    maxBuffer: 32 * 1024 * 1024,
   });
-  assert.equal(result.status, 0, result.stderr?.toString("utf8"));
-  return result.stdout.length;
+  assert.equal(encoded.status, 0, encoded.stderr?.toString("utf8"));
+  return { archive: Number(archive.stdout.trim()), encoded: encoded.stdout.length };
 }
 
-await writeFile(legacyPayload, deterministicIncompressibleBytes(2 * 1024 * 1024));
+await Promise.all([
+  writeFile(legacyPayload, deterministicIncompressibleBytes(2 * 1024 * 1024, "home")),
+  writeFile(legacyConfig, deterministicIncompressibleBytes(8 * 1024 * 1024, "config")),
+  writeFile(legacyCache, deterministicIncompressibleBytes(4 * 1024 * 1024, "cache")),
+  writeFile(stableData, "stable-provider-session-state\n"),
+]);
+const bloatedCheckpoint = checkpointBytes(checkpointRoot);
 assert.ok(
-  checkpointEncodedBytes(path.join(proxyRuntime, "credential-canary"))
-    > sshCommandMaxBufferBytes,
-  "legacy HOME fixture does not exceed the exact 1 MiB encoded SSH checkpoint limit",
+  bloatedCheckpoint.archive > nominalCheckpointArchiveBytes
+    && bloatedCheckpoint.encoded > sshCapturedStdoutMaxBytes,
+  "legacy config/cache/HOME fixture does not exceed the native SSH captured-stdout cap",
 );
 await writeFile(
   proxyExecutable,
-  `#!/bin/sh\nprintf "%s" "$HOME" > "${homeEvidence}"\nprintf "provider diagnostic %s\\n" "$OPENROUTER_API_KEY" >&2\nexit 1\n`,
+  `#!/bin/sh\nprintf '{"home":"%s","config":"%s","data":"%s","cache":"%s"}' "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" > "${runtimeEvidence}"\ncp "$XDG_CONFIG_HOME/opencode/opencode.json" "${configEvidence}"\nprintf "provider diagnostic %s\\n" "$OPENROUTER_API_KEY" >&2\nexit 1\n`,
 );
 await chmod(proxyExecutable, 0o755);
 const providerFd = openSync(proxyExecutable, "r");
@@ -317,13 +350,10 @@ proxy.stdin.write(`${JSON.stringify({
     baseInstructions: "Exercise generated provider configuration only.",
   },
 })}\n`);
-const generatedConfigPath = path.join(
-  proxyRuntime, "credential-canary", "config", "opencode", "opencode.json",
-);
 let generatedConfig;
 for (let attempt = 0; attempt < 100; attempt += 1) {
   try {
-    generatedConfig = JSON.parse(await readFile(generatedConfigPath, "utf8"));
+    generatedConfig = JSON.parse(await readFile(configEvidence, "utf8"));
     break;
   } catch {
     await new Promise((resolve) => setTimeout(resolve, 25));
@@ -332,9 +362,18 @@ for (let attempt = 0; attempt < 100; attempt += 1) {
 for (let attempt = 0; attempt < 100 && !proxyStderr.includes("[REDACTED]"); attempt += 1) {
   await new Promise((resolve) => setTimeout(resolve, 25));
 }
-const checkpointSize = checkpointEncodedBytes(
-  path.join(proxyRuntime, "credential-canary"),
-);
+const runtimePaths = JSON.parse(await readFile(runtimeEvidence, "utf8"));
+const temporaryRuntimeRoot = path.dirname(runtimePaths.home);
+for (let attempt = 0; attempt < 200; attempt += 1) {
+  try {
+    await stat(temporaryRuntimeRoot);
+  } catch {
+    break;
+  }
+  await new Promise((resolve) => setTimeout(resolve, 25));
+}
+await assert.rejects(stat(temporaryRuntimeRoot));
+const checkpointSize = checkpointBytes(checkpointRoot);
 proxy.kill("SIGTERM");
 await new Promise((resolve) => {
   if (proxy.exitCode !== null || proxy.signalCode !== null) resolve();
@@ -349,13 +388,21 @@ assert.equal(generatedConfig.permission?.question, "deny");
 assert.equal(generatedConfig.permission?.["paperclip_*"], "allow");
 assert.equal(generatedConfig.permission?.["mcp__paperclip__*"], "allow");
 assert.equal(generatedConfig.permission?.external_directory, "deny");
-const isolatedHome = await readFile(homeEvidence, "utf8");
-assert.ok(isolatedHome.startsWith(`${os.tmpdir()}${path.sep}`), isolatedHome);
-assert.ok(!isolatedHome.startsWith(proxyRuntime), isolatedHome);
-await assert.rejects(readFile(legacyPayload));
+assert.ok(temporaryRuntimeRoot.startsWith(`${os.tmpdir()}${path.sep}`), temporaryRuntimeRoot);
+assert.ok(!temporaryRuntimeRoot.startsWith(proxyRuntime), temporaryRuntimeRoot);
+assert.equal(runtimePaths.home, path.join(temporaryRuntimeRoot, "home"));
+assert.equal(runtimePaths.config, path.join(temporaryRuntimeRoot, "config"));
+assert.equal(runtimePaths.cache, path.join(temporaryRuntimeRoot, "cache"));
+assert.equal(runtimePaths.data, path.join(checkpointRoot, "data"));
+await Promise.all([
+  assert.rejects(readFile(legacyPayload)),
+  assert.rejects(readFile(legacyConfig)),
+  assert.rejects(readFile(legacyCache)),
+]);
+assert.equal(await readFile(stableData, "utf8"), "stable-provider-session-state\n");
 assert.ok(
-  checkpointSize <= sshCommandMaxBufferBytes,
-  "OpenCode checkpoint exceeds the exact 1 MiB encoded SSH stdout limit",
+  checkpointSize.encoded <= sshCapturedStdoutMaxBytes,
+  "wrapped base64 checkpoint exceeds the native 13,981,016-byte captured-stdout cap",
 );
 if (proxyStdout.includes(providerCanary) || proxyStderr.includes(providerCanary)) {
   throw new Error("executed OpenCode proxy emitted the provider credential");
@@ -367,6 +414,51 @@ const proxyTraceContents = await readFile(proxyTrace, "utf8").catch(() => "");
 if (proxyTraceContents.includes(providerCanary)) {
   throw new Error("executed OpenCode proxy trace retained the provider credential");
 }
+
+// Force an exception after the generated provider config and MCP bridge exist,
+// but before spawn. The ownership guard must remove the entire sensitive temp
+// root even though the normal runtime close function was never returned.
+const { OpenCodeServerDriver } = await import(
+  `${appRoot}/packages/paperclip-runner/dist/drivers/opencode/opencode-server-driver.js`
+);
+let failedPreSpawnRuntimeRoot;
+const failingDriver = new OpenCodeServerDriver({
+  model: "opencode-go/gpt-5.6-luna",
+  runtimeDirectory: path.join(proxyFixtureRoot, "forced-pre-spawn-runtime"),
+  command: proxyExecutable,
+  commandLifecycle: {
+    beforeSpawn() {
+      const candidates = readdirSync(os.tmpdir(), { withFileTypes: true })
+        .filter((entry) => entry.isDirectory()
+          && entry.name.startsWith("paperclip-opencode-runtime-"))
+        .map((entry) => path.join(os.tmpdir(), entry.name))
+        .filter((candidate) => {
+          try {
+            const config = JSON.parse(readFileSync(
+              path.join(candidate, "config", "opencode", "opencode.json"), "utf8",
+            ));
+            return config.provider?.["opencode-go"]?.options?.apiKey === providerCanary;
+          } catch {
+            return false;
+          }
+        });
+      assert.equal(candidates.length, 1);
+      failedPreSpawnRuntimeRoot = candidates[0];
+      throw new Error("nix_forced_pre_spawn_failure");
+    },
+  },
+  environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: providerCanary },
+});
+await assert.rejects(
+  failingDriver.openSession({
+    runId: "forced-pre-spawn-run",
+    normalizedSessionId: "forced-pre-spawn-session",
+    workingDirectory: proxyWorkspace,
+  }),
+  /nix_forced_pre_spawn_failure/,
+);
+assert.ok(failedPreSpawnRuntimeRoot);
+await assert.rejects(stat(failedPreSpawnRuntimeRoot));
 await rm(proxyFixtureRoot, { recursive: true, force: true });
 
 // Exercise the exact patched SSH adapter. The fake ssh binary executes only
@@ -374,7 +466,9 @@ await rm(proxyFixtureRoot, { recursive: true, force: true });
 // sh -c's argv[0] and positional arguments without requiring a network daemon.
 const fakeSshDir = await mkdtemp(path.join(os.tmpdir(), "nix-fake-ssh-"));
 const fakeSsh = path.join(fakeSshDir, "ssh");
+const deliverable = path.join(fakeSshDir, "deliverable.txt");
 await writeFile(fakeSsh, '#!/bin/sh\nfor value do remote=$value; done\nexec sh -c "$remote"\n');
+await writeFile(deliverable, "verified remote deliverable\n");
 await chmod(fakeSsh, 0o755);
 const originalPath = process.env.PATH;
 process.env.PATH = `${fakeSshDir}:${originalPath}`;
@@ -401,6 +495,17 @@ try {
   });
   assert.equal(result.exitCode, 0, result.stderr);
   assert.equal(result.stdout, "launch|alpha|beta");
+  const deliverableResult = await sshRunner.execute({
+    command: "cat",
+    args: [deliverable],
+    env: { NIX_DELIVERABLE_READ: "present with ' quote" },
+  });
+  assert.equal(deliverableResult.exitCode, 0, deliverableResult.stderr);
+  assert.equal(deliverableResult.stdout, "verified remote deliverable\n");
+  await assert.rejects(
+    sshRunner.execute({ command: "true", env: { "INVALID-KEY": "denied" } }),
+    /Invalid SSH environment variable key/,
+  );
 } finally {
   process.env.PATH = originalPath;
   await rm(fakeSshDir, { recursive: true, force: true });

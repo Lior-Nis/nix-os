@@ -486,9 +486,14 @@ capabilities before adding the minimum OpenSSH daemon set, uses
 `no-new-privileges`, and is limited to one CPU, 2 GiB RAM, and 256 PIDs.
 Its managed OpenCode policy is deny-by-default and permits only workspace
 `read`, `edit`, `glob`, `grep`, and `bash`; questions and external-directory
-access remain denied. Ephemeral HOME content stays in tmpfs outside the
-checkpointed session root, and legacy `home-*` checkpoint content is removed
-before provider launch.
+access remain denied. Only provider-session `XDG_DATA_HOME` persists in the
+checkpointed session root. `HOME`, generated configuration, and cache share a
+single temporary runtime root and are removed on every setup failure and
+provider exit; legacy
+session-root `home-*`, `config`, and `cache` entries are removed before launch.
+The exact wrapped `tar -czf - . | base64` output must remain at or below the
+native runner's 13,981,016-byte captured-stdout cap. GNU base64 wrapping means
+the usable compressed archive budget is slightly below 10 MiB.
 Paperclip reaches SSH only on the internal specialist network. The worker's
 separate egress network carries model-provider traffic and the authenticated
 runner return path to Paperclip's tailnet origin.
