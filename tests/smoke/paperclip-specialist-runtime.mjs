@@ -104,43 +104,137 @@ const openCodeProxy = await readFile(
 const vendoredOpenCodeProxy = await readFile(
   `${appRoot}/server/dist/vendor/paperclip-runner/cli/opencode-app-server-proxy.cjs`, "utf8",
 );
-const runnerControlPlane = await readFile(
-  `${appRoot}/packages/paperclip-runner/dist/control-plane/durable-prp-control-plane.js`, "utf8",
+const runnerTransport = await readFile(
+  `${appRoot}/packages/paperclip-runner/dist/live/runnerd-codex-transport.js`, "utf8",
 );
-const vendoredRunnerControlPlane = await readFile(
-  `${appRoot}/server/dist/vendor/paperclip-runner/control-plane/durable-prp-control-plane.js`, "utf8",
+const vendoredRunnerTransport = await readFile(
+  `${appRoot}/server/dist/vendor/paperclip-runner/live/runnerd-codex-transport.js`, "utf8",
 );
 assert.ok(nativeExecutor.includes('"OPENCODE_API_KEY"'));
-for (const source of [runnerControlPlane, vendoredRunnerControlPlane]) {
+for (const source of [runnerTransport, vendoredRunnerTransport]) {
   assert.ok(source.includes(
-    '"OPENROUTER_API_KEY",\n    "OPENCODE_API_KEY",\n    "ANTHROPIC_API_KEY"',
+    "const opencodeApiKey = source?.OPENCODE_API_KEY;",
   ));
+  assert.ok(source.includes(
+    "if (opencodeApiKey !== undefined) candidate.OPENROUTER_API_KEY = opencodeApiKey;",
+  ));
+  assert.ok(source.includes("delete candidate.OPENCODE_API_KEY;"));
+  assert.ok(source.includes("nix_runner_provider_credential_conflict"));
 }
 for (const source of [openCodeDriver, vendoredOpenCodeDriver]) {
-  assert.ok(source.includes("environment?.OPENCODE_API_KEY"));
   assert.ok(source.includes(
-    "options: { apiKey: input.options.environment?.OPENCODE_API_KEY }",
+    "options: { apiKey: input.options.environment?.OPENROUTER_API_KEY }",
   ));
   assert.ok(!source.includes("environment?.OPENAI_API_KEY"));
-  assert.ok(source.includes("OPENROUTER_API_KEY|OPENCODE_API_KEY|authorization"));
+  assert.ok(!source.includes("environment?.OPENCODE_API_KEY"));
+  assert.ok(source.includes("OPENROUTER_API_KEY|authorization"));
   assert.ok(source.includes("tools: { question: false }"));
   assert.ok(source.includes('question: "deny"'));
   assert.ok(source.includes("nix_opencode_native_question_denied"));
 }
 for (const source of [openCodeProxy, vendoredOpenCodeProxy]) {
   assert.ok(source.includes(
-    "options: { apiKey: input2.options.environment?.OPENCODE_API_KEY }",
+    "options: { apiKey: input2.options.environment?.OPENROUTER_API_KEY }",
   ));
   assert.ok(!source.includes("environment?.OPENAI_API_KEY"));
-  assert.ok(source.includes("OPENROUTER_API_KEY|OPENCODE_API_KEY|authorization"));
+  assert.ok(!source.includes("environment?.OPENCODE_API_KEY"));
+  assert.ok(source.includes("OPENROUTER_API_KEY|authorization"));
   assert.ok(source.includes("tools: { question: false }"));
   assert.ok(source.includes('question: "deny"'));
   assert.ok(source.includes("nix_opencode_native_question_denied"));
 }
 
+// Exercise the production transport sanitizer before spawnRunner. Paperclip
+// stores the native OpenCode name, while the exact Rust runnerd accepts only
+// its existing OpenRouter name. Only that child alias may survive both gates.
+const controllerCanary = "nix-controller-alias-canary-493ea0f2";
+const inheritedServerAlias = process.env.OPENROUTER_API_KEY;
+const inheritedServerOpenCode = process.env.OPENCODE_API_KEY;
+let runnerLaunch;
+const { spawnRunner } = await import(
+  `${appRoot}/packages/paperclip-runner/dist/control-plane/durable-prp-control-plane.js`
+);
+const { createCapabilityRunnerdProviderEnvironment } = await import(
+  `${appRoot}/packages/paperclip-runner/dist/live/runnerd-codex-transport.js`
+);
+const providerEnvironmentInput = {
+  provider: "opencode",
+  identity: {
+    runnerInstanceId: "runner-alias-fixture",
+    environmentLeaseId: "environment-alias-fixture",
+    runId,
+    normalizedSessionId: "alias-fixture",
+    turnId: "turn-alias-fixture",
+    itemId: "item-alias-fixture",
+  },
+  codexHome: "/tmp/nix-runner-alias-home",
+  runtimeContextPath: "/tmp/nix-runner-alias-context.json",
+  hasRuntimeContext: false,
+};
+delete process.env.OPENROUTER_API_KEY;
+delete process.env.OPENCODE_API_KEY;
+const providerEnvironment = createCapabilityRunnerdProviderEnvironment({
+  ...providerEnvironmentInput,
+  options: {
+    provider: "opencode",
+    stateDirectory: "/tmp/nix-runner-alias-state",
+    opencodePermissionMode: "deny",
+    environment: {
+      PATH: process.env.PATH,
+      OPENCODE_API_KEY: controllerCanary,
+      NIX_UNRELATED_SECRET: "must-not-cross",
+    },
+  },
+});
+assert.equal(providerEnvironment.OPENROUTER_API_KEY, controllerCanary);
+assert.equal(providerEnvironment.OPENCODE_API_KEY, undefined);
+assert.equal(providerEnvironment.NIX_UNRELATED_SECRET, undefined);
+spawnRunner({
+  connectUrl: "ws://127.0.0.1:1/runner",
+  stateDirectory: "/tmp/nix-runner-alias-state",
+  identity: providerEnvironmentInput.identity,
+  ticket: "test-only-runner-ticket",
+  maxOutboxBytes: 1024 * 1024,
+  p0ReserveBytes: 1024,
+  runnerVersion: "test-only",
+  runnerDigest: `sha256:${"0".repeat(64)}`,
+  environment: providerEnvironment,
+  processLauncher(spec) {
+    runnerLaunch = spec;
+    return {
+      child: { exitCode: null, signalCode: null, kill: () => true },
+      completion: Promise.resolve({ code: 0, signal: null }),
+    };
+  },
+});
+assert.equal(runnerLaunch?.environment?.OPENROUTER_API_KEY, controllerCanary);
+assert.equal(runnerLaunch?.environment?.OPENCODE_API_KEY, undefined);
+assert.equal(runnerLaunch?.environment?.NIX_UNRELATED_SECRET, undefined);
+const conflictingAliasCanary = "nix-conflicting-alias-canary-ea861809";
+assert.throws(
+  () => createCapabilityRunnerdProviderEnvironment({
+    ...providerEnvironmentInput,
+    options: {
+      provider: "opencode",
+      stateDirectory: "/tmp/nix-runner-conflict-state",
+      environment: {
+        OPENCODE_API_KEY: controllerCanary,
+        OPENROUTER_API_KEY: conflictingAliasCanary,
+      },
+    },
+  }),
+  (error) => error?.message === "nix_runner_provider_credential_conflict"
+    && !error.message.includes(controllerCanary)
+    && !error.message.includes(conflictingAliasCanary),
+);
+if (inheritedServerAlias === undefined) delete process.env.OPENROUTER_API_KEY;
+else process.env.OPENROUTER_API_KEY = inheritedServerAlias;
+if (inheritedServerOpenCode === undefined) delete process.env.OPENCODE_API_KEY;
+else process.env.OPENCODE_API_KEY = inheritedServerOpenCode;
+
 // Execute the same self-contained CJS proxy selected by the remote provider-pack.
-// The fake provider emits its inherited model credential to stderr: the proxy
-// must bind it into opencode.json while redacting it from diagnostics and trace.
+// The fake provider emits the runner-supported compatibility alias to stderr:
+// the proxy must bind it into opencode.json while redacting diagnostics/trace.
 const proxyFixtureRoot = await mkdtemp(path.join(os.tmpdir(), "nix-opencode-proxy-"));
 const proxyRuntime = path.join(proxyFixtureRoot, "runtime");
 const proxyWorkspace = path.join(proxyFixtureRoot, "workspace");
@@ -150,7 +244,7 @@ const providerCanary = "nix-provider-canary-92b75e17";
 await mkdir(proxyWorkspace);
 await writeFile(
   proxyExecutable,
-  '#!/bin/sh\nprintf "provider diagnostic %s\\n" "$OPENCODE_API_KEY" >&2\nexit 1\n',
+  '#!/bin/sh\nprintf "provider diagnostic %s\\n" "$OPENROUTER_API_KEY" >&2\nexit 1\n',
 );
 await chmod(proxyExecutable, 0o755);
 const providerFd = openSync(proxyExecutable, "r");
@@ -169,7 +263,7 @@ const proxy = spawn(
       PAPERCLIP_OPENCODE_RUNTIME_DIR: proxyRuntime,
       PAPERCLIP_NORMALIZED_SESSION_ID: "credential-canary",
       PAPERCLIP_PROVIDER_TRACE_PATH: proxyTrace,
-      OPENCODE_API_KEY: providerCanary,
+      OPENROUTER_API_KEY: providerCanary,
     },
     stdio: ["pipe", "pipe", "pipe", providerFd],
   },

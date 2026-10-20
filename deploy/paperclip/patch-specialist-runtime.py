@@ -365,25 +365,28 @@ def patch_native_environment(source: str) -> str:
 
 
 def patch_runner_provider_environment(source: str) -> str:
-    typescript_anchor = (
-        '  "OPENROUTER_API_KEY",\n'
-        '  "ANTHROPIC_API_KEY",\n'
+    # The pinned Rust runnerd accepts OPENROUTER_API_KEY but filters the
+    # OpenCode-native OPENCODE_API_KEY name before launching its provider.
+    # Alias before the OpenCode transport sanitizer, which is the first
+    # production boundary that sees the resolved run environment.
+    anchor = (
+        "  const candidate = { ...process.env, ...source };\n"
+        if "  const candidate = { ...process.env, ...source };\n" in source
+        else "    const candidate = { ...process.env, ...source };\n"
     )
-    javascript_anchor = (
-        '    "OPENROUTER_API_KEY",\n'
-        '    "ANTHROPIC_API_KEY",\n'
-    )
-    old = typescript_anchor if typescript_anchor in source else javascript_anchor
+    indent = anchor[: len(anchor) - len(anchor.lstrip())]
     return _replace_once(
         source,
-        old,
-        old.replace(
-            '"ANTHROPIC_API_KEY",',
-            '"OPENCODE_API_KEY",\n'
-            + ('  ' if old == typescript_anchor else '    ')
-            + '"ANTHROPIC_API_KEY",',
-        ),
-        label="OpenCode runner provider credential allowlist",
+        anchor,
+        anchor
+        + f'{indent}const opencodeApiKey = source?.OPENCODE_API_KEY;\n'
+        f'{indent}const openrouterApiKey = candidate.OPENROUTER_API_KEY;\n'
+        f'{indent}if (opencodeApiKey !== undefined && openrouterApiKey !== undefined && opencodeApiKey !== openrouterApiKey) {{\n'
+        f'{indent}  throw new Error("nix_runner_provider_credential_conflict");\n'
+        f'{indent}}}\n'
+        f'{indent}if (opencodeApiKey !== undefined) candidate.OPENROUTER_API_KEY = opencodeApiKey;\n'
+        f'{indent}delete candidate.OPENCODE_API_KEY;\n',
+        label="OpenCode runner provider credential compatibility alias",
     )
 
 
@@ -413,11 +416,11 @@ def patch_opencode_driver(source: str) -> str:
     )
     provider_replacement = (
         "      [modelProvider!]: {\n"
-        "        options: { apiKey: input.options.environment?.OPENCODE_API_KEY },\n"
+        "        options: { apiKey: input.options.environment?.OPENROUTER_API_KEY },\n"
         "        models: {\n"
         if typescript_source
         else "            [modelProvider]: {\n"
-        "                options: { apiKey: input.options.environment?.OPENCODE_API_KEY },\n"
+        "                options: { apiKey: input.options.environment?.OPENROUTER_API_KEY },\n"
         "                models: {\n"
     )
     source = _replace_once(
@@ -425,53 +428,6 @@ def patch_opencode_driver(source: str) -> str:
         provider_anchor,
         provider_replacement,
         label="OpenCode provider credential binding",
-    )
-    source = _replace_count(
-        source,
-        '    "OPENROUTER_API_KEY",\n',
-        '    "OPENROUTER_API_KEY",\n    "OPENCODE_API_KEY",\n',
-        count=2,
-        label="OpenCode sanitized environment allowlist",
-    )
-    input_pattern = re.compile(
-        r"^(?P<indent>[ \t]*)input\.options\.environment\?\.OPENROUTER_API_KEY,\n",
-        re.MULTILINE,
-    )
-    matches = list(input_pattern.finditer(source))
-    if len(matches) != 3:
-        raise RuntimeError(
-            "Paperclip specialist patch refused: expected 3 OpenCode input sensitive-value anchors, "
-            f"found {len(matches)}"
-        )
-    source = input_pattern.sub(
-        lambda match: (
-            f'{match.group("indent")}input.options.environment?.OPENROUTER_API_KEY,\n'
-            f'{match.group("indent")}input.options.environment?.OPENCODE_API_KEY,\n'
-        ),
-        source,
-    )
-    recovery_pattern = re.compile(
-        r"^(?P<indent>[ \t]*)this\.#options\.environment\?\.OPENROUTER_API_KEY,\n",
-        re.MULTILINE,
-    )
-    recovery_matches = list(recovery_pattern.finditer(source))
-    if len(recovery_matches) != 1:
-        raise RuntimeError(
-            "Paperclip specialist patch refused: expected one OpenCode recovery sensitive-value anchor, "
-            f"found {len(recovery_matches)}"
-        )
-    source = recovery_pattern.sub(
-        lambda match: (
-            f'{match.group("indent")}this.#options.environment?.OPENROUTER_API_KEY,\n'
-            f'{match.group("indent")}this.#options.environment?.OPENCODE_API_KEY,\n'
-        ),
-        source,
-    )
-    source = _replace_once(
-        source,
-        "(OPENROUTER_API_KEY|authorization|password|token|secret)",
-        "(OPENROUTER_API_KEY|OPENCODE_API_KEY|authorization|password|token|secret)",
-        label="OpenCode named credential redaction",
     )
     source = _replace_once(
         source,
@@ -522,56 +478,9 @@ def patch_opencode_proxy_bundle(source: str) -> str:
         source,
         "      [modelProvider]: {\n        models: {\n",
         "      [modelProvider]: {\n"
-        "        options: { apiKey: input2.options.environment?.OPENCODE_API_KEY },\n"
+        "        options: { apiKey: input2.options.environment?.OPENROUTER_API_KEY },\n"
         "        models: {\n",
         label="bundled OpenCode provider credential binding",
-    )
-    source = _replace_count(
-        source,
-        '    "OPENROUTER_API_KEY"\n',
-        '    "OPENROUTER_API_KEY",\n    "OPENCODE_API_KEY"\n',
-        count=2,
-        label="bundled OpenCode sanitized environment allowlist",
-    )
-    input_pattern = re.compile(
-        r"^(?P<indent>[ \t]*)input2\.options\.environment\?\.OPENROUTER_API_KEY\n",
-        re.MULTILINE,
-    )
-    matches = list(input_pattern.finditer(source))
-    if len(matches) != 3:
-        raise RuntimeError(
-            "Paperclip specialist patch refused: expected 3 bundled OpenCode input "
-            f"sensitive-value anchors, found {len(matches)}"
-        )
-    source = input_pattern.sub(
-        lambda match: (
-            f'{match.group("indent")}input2.options.environment?.OPENROUTER_API_KEY,\n'
-            f'{match.group("indent")}input2.options.environment?.OPENCODE_API_KEY\n'
-        ),
-        source,
-    )
-    recovery_pattern = re.compile(
-        r"^(?P<indent>[ \t]*)this\.#options\.environment\?\.OPENROUTER_API_KEY\n",
-        re.MULTILINE,
-    )
-    recovery_matches = list(recovery_pattern.finditer(source))
-    if len(recovery_matches) != 1:
-        raise RuntimeError(
-            "Paperclip specialist patch refused: expected one bundled OpenCode recovery "
-            f"sensitive-value anchor, found {len(recovery_matches)}"
-        )
-    source = recovery_pattern.sub(
-        lambda match: (
-            f'{match.group("indent")}this.#options.environment?.OPENROUTER_API_KEY,\n'
-            f'{match.group("indent")}this.#options.environment?.OPENCODE_API_KEY\n'
-        ),
-        source,
-    )
-    source = _replace_once(
-        source,
-        "(OPENROUTER_API_KEY|authorization|password|token|secret)",
-        "(OPENROUTER_API_KEY|OPENCODE_API_KEY|authorization|password|token|secret)",
-        label="bundled OpenCode named credential redaction",
     )
     source = _replace_once(
         source,
@@ -1389,21 +1298,21 @@ PATCH_SPECS = (
         patch_native_environment,
     ),
     PatchSpec(
-        "packages/paperclip-runner/src/control-plane/durable-prp-control-plane.ts",
-        "ff4c389cdd5e285918e45ea266f6af35225811193076225b286461c03228b933",
-        "7e3dbfa0f0794793420b0a4816e201008a08071375daa990287e777785f7396b",
+        "packages/paperclip-runner/src/live/runnerd-codex-transport.ts",
+        "f96149a30fe98fff575bcad7139b90474fde6483c178939facf861dcc33198ed",
+        "bf2606d9a670926af7c0449bbda25aedfec4a8a11019b1bf07fcb5733f81e480",
         patch_runner_provider_environment,
     ),
     PatchSpec(
-        "packages/paperclip-runner/dist/control-plane/durable-prp-control-plane.js",
-        "e3984798d32665a39fe997f270f6af37a6c5130ef36ab2f74a75e18c4dad2813",
-        "96a00bdf01171f47c828d9a2e3f9dffbf653d2fcd9446d12d29bf82c6a1f4d21",
+        "packages/paperclip-runner/dist/live/runnerd-codex-transport.js",
+        "8de15bc9aae1bff722cb958509f0e06d1f122ce86170bcd8d589164b0724d5a4",
+        "36edc8751afbddac6cce3988b14eb3767abc9f6db63159f61e01426fee4c35b0",
         patch_runner_provider_environment,
     ),
     PatchSpec(
-        "server/dist/vendor/paperclip-runner/control-plane/durable-prp-control-plane.js",
-        "e3984798d32665a39fe997f270f6af37a6c5130ef36ab2f74a75e18c4dad2813",
-        "96a00bdf01171f47c828d9a2e3f9dffbf653d2fcd9446d12d29bf82c6a1f4d21",
+        "server/dist/vendor/paperclip-runner/live/runnerd-codex-transport.js",
+        "8de15bc9aae1bff722cb958509f0e06d1f122ce86170bcd8d589164b0724d5a4",
+        "36edc8751afbddac6cce3988b14eb3767abc9f6db63159f61e01426fee4c35b0",
         patch_runner_provider_environment,
     ),
     PatchSpec(
@@ -1421,43 +1330,43 @@ PATCH_SPECS = (
     PatchSpec(
         "packages/paperclip-runner/src/drivers/opencode/opencode-server-driver.ts",
         "44fd45efa24b5c0a55f4f2a8bf23e18b5ed03b73709185226953bcd3b709eb95",
-        "3a99cc5bc6a8e8d8eade814ad806ea00ff537db898d8eb51bacd7d9952f306a7",
+        "0b0965e1da59894ccafccd535d647129cf663deee68f454a24e17c521cc2a582",
         patch_opencode_driver,
     ),
     PatchSpec(
         "packages/paperclip-runner/dist/drivers/opencode/opencode-server-driver.js",
         "3e17333514ecc354b277f75dc1f43a84c7563a67f4f69bf5335f16d9d1860a38",
-        "e575eb0068c8035b669e15df73ec5a8be42200eb95869b176a1ad671bcd7b1c9",
+        "559fe2391fc2bfccc3d9d73ec249fe462b821d144303f6625684a23883a42221",
         patch_opencode_driver,
     ),
     PatchSpec(
         "server/dist/vendor/paperclip-runner/drivers/opencode/opencode-server-driver.js",
         "3e17333514ecc354b277f75dc1f43a84c7563a67f4f69bf5335f16d9d1860a38",
-        "e575eb0068c8035b669e15df73ec5a8be42200eb95869b176a1ad671bcd7b1c9",
+        "559fe2391fc2bfccc3d9d73ec249fe462b821d144303f6625684a23883a42221",
         patch_opencode_driver,
     ),
     PatchSpec(
         "packages/paperclip-runner/dist/cli/opencode-app-server-proxy.cjs",
         "515fa5d26c44c6d0a1df09497297405e726dd068917f525869aac72ea7a1ce0e",
-        "d98150f8cc3c1a447c13a0f2ef8365a5db58256299557db2ad88c40929afb90a",
+        "6badc6a3ae04d0353e10c170fe3d318d2defc1f082d1be0a960e8ae5f73680af",
         patch_opencode_proxy_bundle,
     ),
     PatchSpec(
         "packages/paperclip-runner/dist/cli/opencode-app-server-proxy.js",
         "de49baf75b3bbeae46312cb2e47100506c5e9bf8c2a6a941e46c1358e3e6847e",
-        "3787ac17544b630e07b376c5f03716e207cdb20a9772b2757b623caab914bb8b",
+        "51a97f429eb1266c40fc6bce1927d7af836aec93f9f3dfcedaa005ee45b67aa9",
         patch_opencode_proxy_bundle,
     ),
     PatchSpec(
         "server/dist/vendor/paperclip-runner/cli/opencode-app-server-proxy.cjs",
         "515fa5d26c44c6d0a1df09497297405e726dd068917f525869aac72ea7a1ce0e",
-        "d98150f8cc3c1a447c13a0f2ef8365a5db58256299557db2ad88c40929afb90a",
+        "6badc6a3ae04d0353e10c170fe3d318d2defc1f082d1be0a960e8ae5f73680af",
         patch_opencode_proxy_bundle,
     ),
     PatchSpec(
         "server/dist/vendor/paperclip-runner/cli/opencode-app-server-proxy.js",
         "de49baf75b3bbeae46312cb2e47100506c5e9bf8c2a6a941e46c1358e3e6847e",
-        "3787ac17544b630e07b376c5f03716e207cdb20a9772b2757b623caab914bb8b",
+        "51a97f429eb1266c40fc6bce1927d7af836aec93f9f3dfcedaa005ee45b67aa9",
         patch_opencode_proxy_bundle,
     ),
 )
