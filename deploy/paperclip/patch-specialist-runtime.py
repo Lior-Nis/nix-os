@@ -2,7 +2,7 @@
 """Install Nix's fail-closed specialist boundary in the pinned Paperclip image.
 
 Paperclip v2026.916.1 ships the native runner surface needed by Slice 3, but
-its default tool catalog is company-wide and its OpenCode driver does not pass
+its default tool catalog is company-wide and its OpenCode driver does not bind
 or redact the selected ``OPENCODE_API_KEY`` credential. Its SSH command runner
 also drops the positional arguments required by the native runner's ``sh -c``
 launch contract. This installer changes only those pinned source and compiled
@@ -382,6 +382,26 @@ def patch_http_log_redaction(source: str) -> str:
 
 def patch_opencode_driver(source: str) -> str:
     typescript_source = "  #acceptQuestion(properties: Record<string, unknown>): void {\n" in source
+    provider_anchor = (
+        "      [modelProvider!]: {\n        models: {\n"
+        if typescript_source
+        else "            [modelProvider]: {\n                models: {\n"
+    )
+    provider_replacement = (
+        "      [modelProvider!]: {\n"
+        "        options: { apiKey: input.options.environment?.OPENCODE_API_KEY },\n"
+        "        models: {\n"
+        if typescript_source
+        else "            [modelProvider]: {\n"
+        "                options: { apiKey: input.options.environment?.OPENCODE_API_KEY },\n"
+        "                models: {\n"
+    )
+    source = _replace_once(
+        source,
+        provider_anchor,
+        provider_replacement,
+        label="OpenCode provider credential binding",
+    )
     source = _replace_count(
         source,
         '    "OPENROUTER_API_KEY",\n',
@@ -1273,13 +1293,13 @@ PATCH_SPECS = (
     PatchSpec(
         "packages/paperclip-runner/src/drivers/opencode/opencode-server-driver.ts",
         "44fd45efa24b5c0a55f4f2a8bf23e18b5ed03b73709185226953bcd3b709eb95",
-        "0cf96d75c74f5ba0abb41c6f4fd7196aa59ed6c94c08bd685016229f0a246cfc",
+        "3a99cc5bc6a8e8d8eade814ad806ea00ff537db898d8eb51bacd7d9952f306a7",
         patch_opencode_driver,
     ),
     PatchSpec(
         "packages/paperclip-runner/dist/drivers/opencode/opencode-server-driver.js",
         "3e17333514ecc354b277f75dc1f43a84c7563a67f4f69bf5335f16d9d1860a38",
-        "d98df910fdb78a8064b05113dd3cb2d3e963f3ea49296842feb773dcc3371835",
+        "e575eb0068c8035b669e15df73ec5a8be42200eb95869b176a1ad671bcd7b1c9",
         patch_opencode_driver,
     ),
 )
