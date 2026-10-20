@@ -64,6 +64,7 @@ required = {
     "paperclipListComments",
     "paperclipListProjects",
     "paperclipGetProject",
+    "paperclipListAgents",
     "paperclipCreateIssue",
     "paperclipCheckoutIssue",
     "paperclipUpdateIssue",

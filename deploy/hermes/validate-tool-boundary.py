@@ -35,6 +35,7 @@ APPROVED_PAPERCLIP_TOOLS = {
     "paperclipListComments",
     "paperclipListProjects",
     "paperclipGetProject",
+    "paperclipListAgents",
     "paperclipCreateIssue",
     "paperclipCheckoutIssue",
     "paperclipUpdateIssue",
@@ -217,7 +218,7 @@ def runtime_check() -> None:
     discovered = set(discover_mcp_tools(allowed_mcp_names=["paperclip"]))
     expected_mcp = {mcp_prefixed_tool_name("paperclip", name) for name in APPROVED_PAPERCLIP_TOOLS}
     if discovered != expected_mcp:
-        fail(f"Paperclip MCP discovery differs from the eleven-tool policy: {sorted(discovered)}")
+        fail(f"Paperclip MCP discovery differs from the approved Chief tool policy: {sorted(discovered)}")
     expected_concrete = EXPECTED_NATIVE_TOOLS | expected_mcp
 
     summary: dict[str, dict[str, list[str]]] = {}
