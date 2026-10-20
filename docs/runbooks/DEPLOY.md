@@ -433,10 +433,14 @@ sudoedit /etc/nix-os/specialist-provider.env
 ```
 
 The provider file contains exactly
-`OPENCODE_API_KEY=<restricted-model-service-key>`. Do not put Paperclip,
-Telegram, GitHub, Todoist, brain, or host credentials there. Configure the
-three generated worker paths from `.env.example`. The encrypted configuration
-backup includes these non-reconstructible SSH keys.
+`OPENCODE_API_KEY=<OpenCode-Go-model-key>`. Lean V0 may reuse the same
+model-only credential already stored as `OPENCODE_GO_API_KEY` in the external
+Hermes environment; the specialist file uses OpenCode CLI's expected variable
+name. Never copy the value through chat, command arguments, or Git. Do not put
+Paperclip, Telegram, GitHub, Todoist, brain, or host credentials there.
+Configure the three generated worker paths from `.env.example`. The encrypted
+configuration backup includes these non-reconstructible SSH keys and the
+provider file.
 
 Set `PAPERCLIP_RUNNER_PUBLIC_URL` to the exact `wss://` transform of
 `PAPERCLIP_PUBLIC_URL`. It is Paperclip's authenticated runner transport, not
@@ -478,7 +482,18 @@ path because the pinned SSH transport cannot upload a directory. It drops all
 capabilities before adding the minimum OpenSSH daemon set, uses
 `no-new-privileges`, and is limited to one CPU, 2 GiB RAM, and 256 PIDs.
 Paperclip reaches SSH only on the internal specialist network. The worker's
-separate egress network exists solely for the model provider.
+separate egress network carries model-provider traffic and the authenticated
+runner return path to Paperclip's tailnet origin.
+
+`ops upgrade`, `ops restart`, and `configure-tailscale` converge one
+comment-owned UFW rule from the worker's exact live specialist-egress IPv4 to
+the host's live Tailscale IPv4 on TCP 443. The worker address must belong to
+the owned private Compose subnet. This is the runner's authenticated WebSocket
+return path; it does not publish a new service or alter any unrelated firewall
+or Tailscale route. `ops health` verifies both the exact rule and a CA-valid
+Paperclip `/api/health` request from the unprivileged worker. On a host where
+UFW is inactive, Nix does not enable it or add a rule; convergence succeeds
+only if the same real worker-side TLS probe passes.
 
 ### 3. Converge Paperclip
 
@@ -487,7 +502,7 @@ sudo -E ./scripts/bootstrap-paperclip-specialists <company-id> --config "$PWD/.e
 ```
 
 Approve the one temporary Paperclip CLI authorization as Lior. The helper
-imports the restricted OpenCode key and worker client key into Paperclip's
+imports the model-only OpenCode key and worker client key into Paperclip's
 encrypted secret store, derives strict known-hosts data from the pinned host
 key, then creates and authenticates three built-in SSH environments:
 `/workspaces/product`, `/workspaces/growth`, and
@@ -502,6 +517,7 @@ Run every boundary gate:
 sudo -E ./scripts/check-config "$PWD/.env"
 sudo -E ./scripts/check-paperclip-chief-topology "$PWD/.env"
 sudo -E ./scripts/check-paperclip-specialist-topology "$PWD/.env"
+sudo -E ./scripts/configure-specialist-runner-route verify "$PWD/.env"
 sudo -E ./scripts/configure-hermes verify "$PWD/.env"
 sudo -E docker compose --env-file "$PWD/.env" ps
 sudo ss -lntup

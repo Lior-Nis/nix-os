@@ -47,6 +47,7 @@ case "$action" in
     "${compose[@]}" pull paperclip postgres hermes
     "${compose[@]}" build --pull specialist-worker
     "${compose[@]}" up -d --wait --remove-orphans
+    "$repo_root/scripts/configure-specialist-runner-route" converge "$config_file"
     "$0" health
     ;;
   bootstrap-ceo)
@@ -62,6 +63,8 @@ case "$action" in
     printf '\n%s\n' 'Tailnet health through Tailscale Serve:'
     public_url=$(grep -E '^PAPERCLIP_PUBLIC_URL=' "$config_file" | tail -n 1 | cut -d= -f2-)
     curl --fail --silent --show-error "${public_url}/api/health"
+    printf '\n%s\n' 'Specialist runner tailnet route:'
+    "$repo_root/scripts/configure-specialist-runner-route" verify-if-running "$config_file"
     printf '\n%s\n' 'Internal Hermes health and authenticated API boundary:'
     "$repo_root/scripts/configure-hermes" verify "$config_file"
     check_specialist_topology_when_configured
@@ -75,6 +78,7 @@ case "$action" in
     "$repo_root/scripts/check-migrations" "$config_file"
     "${compose[@]}" build specialist-worker
     "${compose[@]}" up -d --force-recreate --wait
+    "$repo_root/scripts/configure-specialist-runner-route" converge "$config_file"
     check_specialist_topology_when_configured
     ;;
   *) usage ;;

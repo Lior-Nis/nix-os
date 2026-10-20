@@ -1,0 +1,260 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export LC_ALL=C
+
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+action=${1:-}
+config_file=${2:-${CONFIG_FILE:-$repo_root/.env}}
+
+usage() {
+  printf 'Usage: %s {converge|verify|converge-if-running|verify-if-running} [/path/to/.env]\n' "$0" >&2
+  exit 2
+}
+
+fail() {
+  printf 'Specialist runner route error: %s\n' "$*" >&2
+  exit 1
+}
+
+read_config() {
+  grep -E "^${1}=" "$config_file" | tail -n 1 | cut -d= -f2- || true
+}
+
+run_root() {
+  if (( EUID == 0 )); then
+    "$@"
+  else
+    sudo -- "$@"
+  fi
+}
+
+optional=false
+case "$action" in
+  converge|verify) ;;
+  converge-if-running) action=converge; optional=true ;;
+  verify-if-running) action=verify; optional=true ;;
+  *) usage ;;
+esac
+[[ -f "$config_file" ]] || fail "$config_file does not exist"
+command -v docker >/dev/null 2>&1 || fail 'docker is required'
+
+compose=(docker compose --env-file "$config_file")
+worker_id=$("${compose[@]}" ps --status running -q specialist-worker) \
+  || fail 'cannot inspect the running specialist-worker container'
+if [[ -z "$worker_id" && "$optional" == true ]]; then
+  printf 'Specialist runner route is not required because specialist-worker is not running.\n'
+  exit 0
+fi
+[[ -n "$worker_id" && "$worker_id" != *$'\n'* ]] \
+  || fail 'exactly one running specialist-worker container is required'
+
+for command_name in jq python3 tailscale ufw; do
+  command -v "$command_name" >/dev/null 2>&1 || fail "$command_name is required"
+done
+
+public_url=$(read_config PAPERCLIP_PUBLIC_URL)
+runner_url=$(read_config PAPERCLIP_RUNNER_PUBLIC_URL)
+public_host=$(python3 - "$public_url" "$runner_url" <<'PY'
+import sys
+from urllib.parse import urlsplit
+
+public = urlsplit(sys.argv[1])
+runner = urlsplit(sys.argv[2])
+if (
+    public.scheme != "https"
+    or runner.scheme != "wss"
+    or not public.hostname
+    or public.hostname != runner.hostname
+    or public.port is not None
+    or runner.port is not None
+    or public.username is not None
+    or runner.username is not None
+    or public.password is not None
+    or runner.password is not None
+    or public.path not in ("", "/")
+    or runner.path not in ("", "/")
+    or public.query
+    or runner.query
+    or public.fragment
+    or runner.fragment
+):
+    raise SystemExit(1)
+print(public.hostname)
+PY
+) || fail 'Paperclip public and runner URLs must be matching pathless https/wss origins'
+
+worker_json=$(docker inspect "$worker_id") || fail 'cannot inspect specialist-worker container'
+project=$(jq -er '
+  if length != 1 then error("unexpected container count") else .[0] end
+  | select(.Config.Labels["com.docker.compose.service"] == "specialist-worker")
+  | .Config.Labels["com.docker.compose.project"]
+  | select(type == "string" and test("^[a-z0-9][a-z0-9_-]{0,47}$"))
+' <<<"$worker_json") || fail 'specialist-worker has invalid Compose ownership labels'
+
+network_name="${project}_specialist_egress"
+jq -e --arg network "$network_name" '
+  .[0].NetworkSettings.Networks
+  | has($network)
+' <<<"$worker_json" >/dev/null \
+  || fail "specialist-worker is not attached to $network_name"
+
+network_json=$(docker network inspect "$network_name") \
+  || fail "cannot inspect specialist egress network $network_name"
+network_values=$(jq -er --arg project "$project" --arg worker "$worker_id" '
+  if length != 1 then error("unexpected network count") else .[0] end
+  | select(.Driver == "bridge" and .Internal == false)
+  | select(.Labels["com.docker.compose.project"] == $project)
+  | select(.Labels["com.docker.compose.network"] == "specialist_egress")
+  | select((.Containers | keys | length) == 1 and (.Containers | has($worker)))
+  | [.IPAM.Config[] | select((.Subnet // "") | contains(":" ) | not) | .Subnet] as $subnets
+  | select($subnets | length == 1)
+  | [$subnets[0], .Containers[$worker].IPv4Address]
+  | @tsv
+' <<<"$network_json") || fail 'specialist egress network ownership or membership is unsafe'
+IFS=$'\t' read -r subnet worker_cidr <<<"$network_values"
+validated_network=$(python3 - "$subnet" "$worker_cidr" <<'PY'
+import ipaddress
+import sys
+
+network = ipaddress.ip_network(sys.argv[1], strict=True)
+worker = ipaddress.ip_interface(sys.argv[2])
+private_ranges = [
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+]
+if (
+    network.version != 4
+    or not any(network.subnet_of(item) for item in private_ranges)
+    or worker.version != 4
+    or worker.network != network
+    or worker.ip in (network.network_address, network.broadcast_address)
+):
+    raise SystemExit(1)
+print(f"{network}\t{worker.ip}")
+PY
+) || fail 'specialist egress IPv4 is not a usable address in the canonical private subnet'
+IFS=$'\t' read -r subnet worker_ip <<<"$validated_network"
+
+tail_ip_lines=$(tailscale ip -4) || fail 'cannot read the host Tailscale IPv4 address'
+tail_ip=$(python3 - "$tail_ip_lines" <<'PY'
+import ipaddress
+import sys
+
+lines = [line.strip() for line in sys.argv[1].splitlines() if line.strip()]
+if len(lines) != 1:
+    raise SystemExit(1)
+address = ipaddress.ip_address(lines[0])
+if address.version != 4 or address not in ipaddress.ip_network("100.64.0.0/10"):
+    raise SystemExit(1)
+print(address)
+PY
+) || fail 'Tailscale must report exactly one CGNAT IPv4 address'
+
+rule_comment="nix-os ${project} specialist runner"
+
+read_ufw_status() {
+  local output
+  output=$(run_root ufw status numbered) || fail 'cannot read UFW status'
+  case "${output%%$'\n'*}" in
+    'Status: active'|'Status: inactive') ;;
+    *) fail 'UFW returned an unrecognized status' ;;
+  esac
+  printf '%s\n' "$output"
+}
+
+rule_is_exact() {
+  awk -v comment="$rule_comment" -v destination="$tail_ip" -v source="$worker_ip" '
+    BEGIN { owned = 0; exact = 0 }
+    {
+      original = $0
+      parsed_comment = original
+      sub(/^.*#[[:space:]]*/, "", parsed_comment)
+      if (parsed_comment != comment) next
+      owned += 1
+      rule = original
+      sub(/^[[:space:]]*\[[[:space:]]*[0-9]+\][[:space:]]*/, "", rule)
+      sub(/[[:space:]]*#[[:space:]].*$/, "", rule)
+      gsub(/[[:space:]]+/, " ", rule)
+      sub(/^ /, "", rule)
+      sub(/ $/, "", rule)
+      if (rule == destination " 443/tcp ALLOW IN " source) exact += 1
+    }
+    END { exit !(owned == 1 && exact == 1) }
+  '
+}
+
+probe_worker() {
+  # The single-quoted argument is JavaScript; shell interpolation is unwanted.
+  # shellcheck disable=SC2016
+  "${compose[@]}" exec -T --user 10001:10001 specialist-worker \
+    node -e '
+      const url = process.argv[1];
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10000);
+      fetch(url, { redirect: "error", signal: controller.signal })
+        .then(async (response) => {
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const body = await response.json();
+          if (body.status !== "ok") throw new Error("unhealthy response");
+        })
+        .finally(() => clearTimeout(timer))
+        .catch((error) => {
+          console.error(`specialist worker TLS health probe failed: ${error.message}`);
+          process.exit(1);
+        });
+    ' "https://${public_host}/api/health" >/dev/null \
+    || fail 'specialist-worker cannot reach Paperclip through verified tailnet HTTPS'
+}
+
+status=$(read_ufw_status)
+if [[ "${status%%$'\n'*}" == 'Status: inactive' ]]; then
+  if awk -v comment="$rule_comment" '
+    {
+      parsed_comment = $0
+      sub(/^.*#[[:space:]]*/, "", parsed_comment)
+      if (parsed_comment == comment) found = 1
+    }
+    END { exit !found }
+  ' <<<"$status"; then
+    fail 'inactive UFW unexpectedly reported an active Nix-owned rule'
+  fi
+  probe_worker
+  printf 'UFW is inactive; no firewall rule was required or changed, and worker tailnet HTTPS is healthy.\n'
+  exit 0
+fi
+
+if ! rule_is_exact <<<"$status"; then
+  [[ "$action" == converge ]] \
+    || fail 'owned UFW rule is absent, stale, or duplicated; run converge'
+
+  owned_numbers=()
+  while IFS= read -r number; do
+    [[ -n "$number" ]] && owned_numbers+=("$number")
+  done < <(awk -v comment="$rule_comment" '
+    {
+      parsed_comment = $0
+      sub(/^.*#[[:space:]]*/, "", parsed_comment)
+      if (parsed_comment != comment) next
+      if (match($0, /^[[:space:]]*\[[[:space:]]*[0-9]+\]/)) {
+        number = substr($0, RSTART, RLENGTH)
+        gsub(/[^0-9]/, "", number)
+        print number
+      }
+    }
+  ' <<<"$status" | sort -rn)
+
+  for number in "${owned_numbers[@]}"; do
+    run_root ufw --force delete "$number" >/dev/null \
+      || fail 'could not remove stale owned UFW rule'
+  done
+  run_root ufw allow in proto tcp from "$worker_ip" to "$tail_ip" port 443 \
+    comment "$rule_comment" >/dev/null \
+    || fail 'could not add specialist runner UFW rule'
+  status=$(read_ufw_status)
+  rule_is_exact <<<"$status" \
+    || fail 'UFW did not retain exactly the expected owned rule'
+fi
+
+probe_worker
+printf 'Specialist runner route is ready for the exact worker egress address through tailnet HTTPS.\n'
