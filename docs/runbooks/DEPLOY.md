@@ -484,6 +484,11 @@ Paperclip provider-pack cache is mounted read-only at the upstream discovery
 path because the pinned SSH transport cannot upload a directory. It drops all
 capabilities before adding the minimum OpenSSH daemon set, uses
 `no-new-privileges`, and is limited to one CPU, 2 GiB RAM, and 256 PIDs.
+Its managed OpenCode policy is deny-by-default and permits only workspace
+`read`, `edit`, `glob`, `grep`, and `bash`; questions and external-directory
+access remain denied. Ephemeral HOME content stays in tmpfs outside the
+checkpointed session root, and legacy `home-*` checkpoint content is removed
+before provider launch.
 Paperclip reaches SSH only on the internal specialist network. The worker's
 separate egress network carries model-provider traffic and the authenticated
 runner return path to Paperclip's tailnet origin.

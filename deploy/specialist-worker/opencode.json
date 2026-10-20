@@ -1,6 +1,15 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "autoupdate": false,
-  "permission": "deny",
+  "permission": {
+    "*": "deny",
+    "read": "allow",
+    "edit": "allow",
+    "glob": "allow",
+    "grep": "allow",
+    "bash": "allow",
+    "question": "deny",
+    "external_directory": "deny"
+  },
   "share": "disabled"
 }
