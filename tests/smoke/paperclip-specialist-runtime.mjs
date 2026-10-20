@@ -113,34 +113,113 @@ const vendoredRunnerControlPlane = await readFile(
 assert.ok(nativeExecutor.includes('"OPENCODE_API_KEY"'));
 for (const source of [runnerControlPlane, vendoredRunnerControlPlane]) {
   assert.ok(source.includes(
-    '"OPENROUTER_API_KEY",\n    "OPENCODE_API_KEY",\n    "ANTHROPIC_API_KEY"',
+    "const opencodeApiKey = explicitSource.OPENCODE_API_KEY;",
   ));
+  assert.ok(source.includes(
+    "if (opencodeApiKey !== undefined) environment.OPENROUTER_API_KEY = opencodeApiKey;",
+  ));
+  assert.ok(source.includes("nix_runner_provider_credential_conflict"));
 }
 for (const source of [openCodeDriver, vendoredOpenCodeDriver]) {
-  assert.ok(source.includes("environment?.OPENCODE_API_KEY"));
   assert.ok(source.includes(
-    "options: { apiKey: input.options.environment?.OPENCODE_API_KEY }",
+    "options: { apiKey: input.options.environment?.OPENROUTER_API_KEY }",
   ));
   assert.ok(!source.includes("environment?.OPENAI_API_KEY"));
-  assert.ok(source.includes("OPENROUTER_API_KEY|OPENCODE_API_KEY|authorization"));
+  assert.ok(!source.includes("environment?.OPENCODE_API_KEY"));
+  assert.ok(source.includes("OPENROUTER_API_KEY|authorization"));
   assert.ok(source.includes("tools: { question: false }"));
   assert.ok(source.includes('question: "deny"'));
   assert.ok(source.includes("nix_opencode_native_question_denied"));
 }
 for (const source of [openCodeProxy, vendoredOpenCodeProxy]) {
   assert.ok(source.includes(
-    "options: { apiKey: input2.options.environment?.OPENCODE_API_KEY }",
+    "options: { apiKey: input2.options.environment?.OPENROUTER_API_KEY }",
   ));
   assert.ok(!source.includes("environment?.OPENAI_API_KEY"));
-  assert.ok(source.includes("OPENROUTER_API_KEY|OPENCODE_API_KEY|authorization"));
+  assert.ok(!source.includes("environment?.OPENCODE_API_KEY"));
+  assert.ok(source.includes("OPENROUTER_API_KEY|authorization"));
   assert.ok(source.includes("tools: { question: false }"));
   assert.ok(source.includes('question: "deny"'));
   assert.ok(source.includes("nix_opencode_native_question_denied"));
 }
 
+// Paperclip stores the model credential under its native OpenCode name. The
+// exact pinned Rust runnerd accepts only its existing OpenRouter provider key,
+// so the JS launch boundary supplies a child-only compatibility alias. It must
+// not add the alias to the server/Chief environment or forward unrelated data.
+const controllerCanary = "nix-controller-alias-canary-493ea0f2";
+const inheritedServerAlias = process.env.OPENROUTER_API_KEY;
+let runnerLaunch;
+const { spawnRunner } = await import(
+  `${appRoot}/packages/paperclip-runner/dist/control-plane/durable-prp-control-plane.js`
+);
+spawnRunner({
+  connectUrl: "ws://127.0.0.1:1/runner",
+  stateDirectory: "/tmp/nix-runner-alias-state",
+  identity: {
+    runnerInstanceId: "runner-alias-fixture",
+    environmentLeaseId: "environment-alias-fixture",
+    runId,
+    normalizedSessionId: "alias-fixture",
+    turnId: "turn-alias-fixture",
+    itemId: "item-alias-fixture",
+  },
+  ticket: "test-only-runner-ticket",
+  maxOutboxBytes: 1024 * 1024,
+  p0ReserveBytes: 1024,
+  runnerVersion: "test-only",
+  runnerDigest: `sha256:${"0".repeat(64)}`,
+  environment: {
+    PATH: process.env.PATH,
+    OPENCODE_API_KEY: controllerCanary,
+    NIX_UNRELATED_SECRET: "must-not-cross",
+  },
+  processLauncher(spec) {
+    runnerLaunch = spec;
+    return {
+      child: { exitCode: null, signalCode: null, kill: () => true },
+      completion: Promise.resolve({ code: 0, signal: null }),
+    };
+  },
+});
+assert.equal(runnerLaunch?.environment?.OPENROUTER_API_KEY, controllerCanary);
+assert.equal(runnerLaunch?.environment?.OPENCODE_API_KEY, undefined);
+assert.equal(runnerLaunch?.environment?.NIX_UNRELATED_SECRET, undefined);
+assert.equal(process.env.OPENROUTER_API_KEY, inheritedServerAlias);
+const conflictingAliasCanary = "nix-conflicting-alias-canary-ea861809";
+assert.throws(
+  () => spawnRunner({
+    connectUrl: "ws://127.0.0.1:1/runner",
+    stateDirectory: "/tmp/nix-runner-conflict-state",
+    identity: {
+      runnerInstanceId: "runner-conflict-fixture",
+      environmentLeaseId: "environment-conflict-fixture",
+      runId,
+      normalizedSessionId: "conflict-fixture",
+      turnId: "turn-conflict-fixture",
+      itemId: "item-conflict-fixture",
+    },
+    ticket: "test-only-conflict-ticket",
+    maxOutboxBytes: 1024 * 1024,
+    p0ReserveBytes: 1024,
+    runnerVersion: "test-only",
+    runnerDigest: `sha256:${"0".repeat(64)}`,
+    environment: {
+      OPENCODE_API_KEY: controllerCanary,
+      OPENROUTER_API_KEY: conflictingAliasCanary,
+    },
+    processLauncher() {
+      throw new Error("conflicting provider credentials reached process launcher");
+    },
+  }),
+  (error) => error?.message === "nix_runner_provider_credential_conflict"
+    && !error.message.includes(controllerCanary)
+    && !error.message.includes(conflictingAliasCanary),
+);
+
 // Execute the same self-contained CJS proxy selected by the remote provider-pack.
-// The fake provider emits its inherited model credential to stderr: the proxy
-// must bind it into opencode.json while redacting it from diagnostics and trace.
+// The fake provider emits the runner-supported compatibility alias to stderr:
+// the proxy must bind it into opencode.json while redacting diagnostics/trace.
 const proxyFixtureRoot = await mkdtemp(path.join(os.tmpdir(), "nix-opencode-proxy-"));
 const proxyRuntime = path.join(proxyFixtureRoot, "runtime");
 const proxyWorkspace = path.join(proxyFixtureRoot, "workspace");
@@ -150,7 +229,7 @@ const providerCanary = "nix-provider-canary-92b75e17";
 await mkdir(proxyWorkspace);
 await writeFile(
   proxyExecutable,
-  '#!/bin/sh\nprintf "provider diagnostic %s\\n" "$OPENCODE_API_KEY" >&2\nexit 1\n',
+  '#!/bin/sh\nprintf "provider diagnostic %s\\n" "$OPENROUTER_API_KEY" >&2\nexit 1\n',
 );
 await chmod(proxyExecutable, 0o755);
 const providerFd = openSync(proxyExecutable, "r");
@@ -169,7 +248,7 @@ const proxy = spawn(
       PAPERCLIP_OPENCODE_RUNTIME_DIR: proxyRuntime,
       PAPERCLIP_NORMALIZED_SESSION_ID: "credential-canary",
       PAPERCLIP_PROVIDER_TRACE_PATH: proxyTrace,
-      OPENCODE_API_KEY: providerCanary,
+      OPENROUTER_API_KEY: providerCanary,
     },
     stdio: ["pipe", "pipe", "pipe", providerFd],
   },
