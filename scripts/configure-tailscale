@@ -102,6 +102,7 @@ tailscale serve status --json >"$state_tmp_dir/final.json"
 
 curl --fail --silent --show-error "https://${fqdn}/api/health" >/dev/null \
   || fail "Paperclip is not healthy through Tailscale Serve"
+"$repo_root/scripts/configure-specialist-runner-route" converge-if-running "$config_file"
 
 configuration_succeeded=true
-printf 'Nix-owned Tailscale Serve route is https://%s:443/ -> %s; unrelated routes were preserved.\n' "$fqdn" "$target"
+printf 'Nix-owned Tailscale Serve route is https://%s:443/ -> %s; the specialist route was reconciled when applicable; unrelated routes were preserved.\n' "$fqdn" "$target"

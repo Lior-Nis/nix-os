@@ -21,11 +21,20 @@ container isolation.
   identity, so these roots organize work but are not a security boundary.
   Each agent remains `per_turn` with one concurrent run.
 - Keep the worker credential-poor: only the task-resolved OpenCode provider
-  key enters a run. Chief, Telegram, Paperclip-control, GitHub, Todoist, brain,
-  host Docker socket, and host filesystem credentials are absent.
+  key enters a run. Lean V0 may reuse Hermes' model-only OpenCode Go key; it
+  is not a company-control credential. Chief, Telegram, Paperclip-control,
+  GitHub, Todoist, brain, host Docker socket, and host filesystem credentials
+  are absent.
 - Publish no SSH port. Paperclip reaches port 2222 on an internal Compose
   network with strict host-key checking. Native runner reconnects through the
   authenticated tailnet-only `wss://` Paperclip endpoint.
+- Admit that reconnect path with one reconstructible, project-owned UFW rule
+  from the worker's exact current IPv4 on its non-internal Compose egress
+  network to the host's current Tailscale IPv4 on TCP 443. Validate that worker
+  address against the owned private subnet, derive both sides from live state,
+  verify HTTPS from the worker, and preserve unrelated firewall/Tailscale routes.
+  Do not auto-enable inactive UFW; make no firewall mutation in that state and
+  accept only when the same worker-side HTTPS probe succeeds.
 - Use a read-only root filesystem, non-root SSH sessions, drop all container
   capabilities before adding only those OpenSSH needs, `no-new-privileges`,
   and explicit CPU, memory, and PID bounds. The named workspace volume is not

@@ -554,7 +554,7 @@ create_specialist_fixture() {
     --arg slug "$slug" --rawfile instructions "$instructions_file" '{
       name:$name,role:$role,title:("Task-scoped " + $name + " specialist"),reportsTo:$chief,
       capabilities:$capabilities,adapterType:"paperclip_runner",
-      adapterConfig:{provider:"opencode",codexPermissionMode:"ask",model:"opencode/gpt-5.6-luna",opencodePermissionMode:"deny",lifecycleMode:"per_turn"},
+      adapterConfig:{provider:"opencode",codexPermissionMode:"ask",model:"opencode-go/gpt-5.6-luna",opencodePermissionMode:"deny",lifecycleMode:"per_turn"},
       instructionsBundle:{entryFile:"AGENTS.md",files:{"AGENTS.md":$instructions}},
       runtimeConfig:{heartbeat:{enabled:false,maxConcurrentRuns:1}},defaultEnvironmentId:$environment,
       budgetMonthlyCents:0,permissions:{canCreateAgents:false,canCreateSkills:false},

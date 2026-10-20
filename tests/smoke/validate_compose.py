@@ -170,6 +170,7 @@ for script in (
     "check-migrations",
     "transition-paperclip",
     "check-tailscale-serve-state",
+    "configure-specialist-runner-route",
     "configure-tailscale",
     "initialize-paperclip",
     "restore-config",
@@ -197,6 +198,30 @@ require(
 require("--expect preserved" in tailscale_script, "unrelated Tailscale route preservation is not verified")
 require("/var/lib/nix-os/tailscale-failures" in tailscale_script, "private Tailscale failure evidence is not retained")
 require("check-tailscale-serve-state" in tailscale_script, "final Tailscale state policy is not enforced")
+require(
+    'configure-specialist-runner-route" converge-if-running' in tailscale_script,
+    "Tailscale convergence must also recover the specialist runner route",
+)
+
+runner_route_script = (repo_root / "scripts/configure-specialist-runner-route").read_text()
+for marker in (
+    'com.docker.compose.network"] == "specialist_egress"',
+    'ufw allow in proto tcp from "$worker_ip" to "$tail_ip" port 443',
+    'comment "$rule_comment"',
+    'https://${public_host}/api/health',
+):
+    require(marker in runner_route_script, f"specialist runner route guard is missing: {marker}")
+require("ufw reset" not in runner_route_script, "specialist route must not reset unrelated UFW state")
+
+ops_script = (repo_root / "scripts/ops").read_text()
+require(
+    ops_script.count('configure-specialist-runner-route" converge') == 2,
+    "upgrade and restart must converge the specialist runner route",
+)
+require(
+    ops_script.count('configure-specialist-runner-route" verify-if-running') == 1,
+    "health must verify the specialist runner route without mutating it",
+)
 
 paperclip_environment = services["paperclip"].get("environment", {})
 require(paperclip_environment.get("HOST") == "0.0.0.0", "container listener must support Docker forwarding")

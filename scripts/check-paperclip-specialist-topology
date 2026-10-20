@@ -22,7 +22,7 @@ UUID_RE = re.compile(
 )
 ENVIRONMENT_MARKER = {"kind": "nix-specialist-ssh-worker", "version": 1}
 AGENT_MARKER = {"kind": "nix-task-scoped-specialist", "version": 1}
-MODEL = "opencode/gpt-5.6-luna"
+MODEL = "opencode-go/gpt-5.6-luna"
 ARCHIVE_HELPER_IMAGE = "postgres:17.11-alpine3.24@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24"
 ROLE_SPECS = {
     "product": ("Product", "pm"),

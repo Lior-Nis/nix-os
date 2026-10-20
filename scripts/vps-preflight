@@ -21,7 +21,7 @@ else
   missing "/etc/os-release is unavailable"
 fi
 
-for command_name in docker git bash curl openssl tar sha256sum age rclone tailscale jq; do
+for command_name in docker git bash curl openssl tar sha256sum age rclone tailscale ufw jq; do
   if command -v "$command_name" >/dev/null 2>&1; then ok "$command_name available"; else missing "$command_name"; fi
 done
 

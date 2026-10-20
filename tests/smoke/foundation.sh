@@ -105,6 +105,13 @@ for specialist_key in \
 done
 NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$test_tmp_dir/empty-specialists.env" >/dev/null
 
+sed 's/^COMPOSE_PROJECT_NAME=.*$/COMPOSE_PROJECT_NAME=nix-os-test-project-name-that-is-deliberately-over-forty-eight-characters/' \
+  "$test_tmp_dir/test.env" >"$test_tmp_dir/long-project-name.env"
+if NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$test_tmp_dir/long-project-name.env" >/dev/null 2>&1; then
+  printf 'overlong Compose project name unexpectedly passed\n' >&2
+  exit 1
+fi
+
 grep -Fq 'check_specialist_topology_when_configured' "$repo_root/scripts/ops"
 python3 - "$repo_root/scripts/ops" <<'PY'
 from pathlib import Path
@@ -199,10 +206,7 @@ cp "$test_tmp_dir/specialist-provider.env" "$test_tmp_dir/specialist-provider-sa
 chief_provider_fixture=$(grep '^OPENCODE_GO_API_KEY=' "$test_tmp_dir/hermes.env" | cut -d= -f2-)
 sed "s|^OPENCODE_API_KEY=.*$|OPENCODE_API_KEY=$chief_provider_fixture|" \
   "$test_tmp_dir/specialist-provider-safe.env" >"$test_tmp_dir/specialist-provider.env"
-if NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$test_tmp_dir/test.env" >/dev/null 2>&1; then
-  printf 'reused Chief provider key in specialist OpenCode binding unexpectedly passed\n' >&2
-  exit 1
-fi
+NIX_ALLOW_TEST_CONFIG=1 "$repo_root/scripts/check-config" "$test_tmp_dir/test.env" >/dev/null
 mv "$test_tmp_dir/specialist-provider-safe.env" "$test_tmp_dir/specialist-provider.env"
 
 cp "$test_tmp_dir/test.env" "$test_tmp_dir/invalid-bot.env"

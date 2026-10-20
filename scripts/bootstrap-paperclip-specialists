@@ -34,7 +34,7 @@ verify_instruction_bundles = SPECIALIST_TOPOLOGY_HELPER["verify_instruction_bund
 ENVIRONMENT_NAME = "Nix local specialist worker"
 ENVIRONMENT_MARKER = {"kind": "nix-specialist-ssh-worker", "version": 1}
 AGENT_MARKER = {"kind": "nix-task-scoped-specialist", "version": 1}
-MODEL = "opencode/gpt-5.6-luna"
+MODEL = "opencode-go/gpt-5.6-luna"
 PAPERCLIP_IMAGE = "ghcr.io/paperclipai/paperclip:2026.916.1@sha256:a02ac35ac41df911af477422ea0e781cf41d2b2c600c66f0a5ac9d8c63f52c2c"
 ROLES = (
     ("product", "Product", "pm", "Product specialist for approved-project discovery, definition, and evidence."),

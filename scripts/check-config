@@ -152,7 +152,8 @@ growth_environment_id=$(read_config NIX_GROWTH_ENVIRONMENT_ID)
 operations_environment_id=$(read_config NIX_OPERATIONS_ENVIRONMENT_ID)
 specialist_environment_ids=$(read_config NIX_SPECIALIST_ENVIRONMENT_IDS)
 
-[[ "$project_name" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || fail "COMPOSE_PROJECT_NAME must match [a-z0-9][a-z0-9_-]*"
+[[ "$project_name" =~ ^[a-z0-9][a-z0-9_-]{0,47}$ ]] \
+  || fail "COMPOSE_PROJECT_NAME must be 1-48 characters matching [a-z0-9][a-z0-9_-]*"
 [[ "$runner_public_url" == "wss://${public_url#https://}" ]] \
   || fail "PAPERCLIP_RUNNER_PUBLIC_URL must be the exact wss form of PAPERCLIP_PUBLIC_URL"
 [[ "$signup_disabled" == "true" || "$signup_disabled" == "false" ]] || fail "PAPERCLIP_AUTH_DISABLE_SIGN_UP must be true or false"
@@ -353,20 +354,19 @@ authorized=$(cat "$specialist_worker_authorized_keys")
   || fail "specialist worker authorized key does not match the configured client key"
 [[ $(awk 'NF { count += 1 } END { print count + 0 }' "$specialist_worker_authorized_keys") == 1 ]] \
   || fail "specialist worker authorized-keys file must contain exactly one key"
-control_plane_secrets=(
+privileged_or_unrelated_secrets=(
   "$postgres_password"
   "$paperclip_db_password"
   "$better_auth_secret"
   "$tool_action_secret"
   "$api_server_key"
   "$decision_webhook_secret"
-  "$opencode_go_api_key"
   "$telegram_token"
   "$founder_relay_secret"
 )
 secret_must_not_match_any \
   "specialist OPENCODE_API_KEY" \
-  "$specialist_provider_key" "${control_plane_secrets[@]}"
+  "$specialist_provider_key" "${privileged_or_unrelated_secrets[@]}"
 if [[ ${NIX_ALLOW_TEST_CONFIG:-0} != 1 ]]; then
   [[ "$telegram_token" =~ ^[0-9]{6,}:[A-Za-z0-9_-]{30,}$ ]] || fail "TELEGRAM_BOT_TOKEN does not match the BotFather token shape"
 else
