@@ -112,6 +112,16 @@ assert metadata.get("binaryContractVersion") == 2
 assert "dial_wss" in metadata.get("prpTransportModes", [])
 '
 
+docker exec "$container" node -e '
+const config = require("/etc/opencode/opencode.json");
+const permission = config.permission;
+if (!permission || permission["*"] !== "deny") process.exit(1);
+for (const tool of ["read", "edit", "glob", "grep", "bash"])
+  if (permission[tool] !== "allow") process.exit(1);
+if (permission.question !== "deny" || permission.external_directory !== "deny")
+  process.exit(1);
+'
+
 [[ -z $(docker inspect --format '{{json .HostConfig.PortBindings}}' "$container" | grep -o 'HostPort' || true) ]] \
   || { printf 'specialist worker unexpectedly publishes a host port\n' >&2; exit 1; }
 

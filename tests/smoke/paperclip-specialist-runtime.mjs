@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { closeSync, openSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -131,6 +131,8 @@ for (const source of [openCodeDriver, vendoredOpenCodeDriver]) {
   assert.ok(source.includes("tools: { question: false }"));
   assert.ok(source.includes('question: "deny"'));
   assert.ok(source.includes("nix_opencode_native_question_denied"));
+  assert.ok(source.includes('mkdtemp(join(tmpdir(), "paperclip-opencode-home-"))'));
+  assert.ok(source.includes('entry.name.startsWith("home-")'));
 }
 for (const source of [openCodeProxy, vendoredOpenCodeProxy]) {
   assert.ok(source.includes(
@@ -142,6 +144,8 @@ for (const source of [openCodeProxy, vendoredOpenCodeProxy]) {
   assert.ok(source.includes("tools: { question: false }"));
   assert.ok(source.includes('question: "deny"'));
   assert.ok(source.includes("nix_opencode_native_question_denied"));
+  assert.ok(source.includes('"paperclip-opencode-home-"'));
+  assert.ok(source.includes('entry.name.startsWith("home-")'));
 }
 
 // Exercise the production transport sanitizer before spawnRunner. Paperclip
@@ -240,11 +244,42 @@ const proxyRuntime = path.join(proxyFixtureRoot, "runtime");
 const proxyWorkspace = path.join(proxyFixtureRoot, "workspace");
 const proxyExecutable = path.join(proxyFixtureRoot, "opencode-fixture");
 const proxyTrace = path.join(proxyFixtureRoot, "provider-trace.jsonl");
+const homeEvidence = path.join(proxyFixtureRoot, "home-path");
 const providerCanary = "nix-provider-canary-92b75e17";
+const sshCommandMaxBufferBytes = 1024 * 1024;
 await mkdir(proxyWorkspace);
+const legacyHome = path.join(proxyRuntime, "credential-canary", "home-legacy");
+const legacyPayload = path.join(legacyHome, "checkpoint-bloat");
+await mkdir(legacyHome, { recursive: true });
+
+function deterministicIncompressibleBytes(size) {
+  const value = Buffer.allocUnsafe(size);
+  for (let offset = 0, counter = 0; offset < size; counter += 1) {
+    const block = createHash("sha256").update(`checkpoint-block:${counter}`).digest();
+    offset += block.copy(value, offset, 0, Math.min(block.length, size - offset));
+  }
+  return value;
+}
+
+function checkpointEncodedBytes(root) {
+  const result = spawnSync("sh", ["-c", "tar -czf - . | base64"], {
+    cwd: root,
+    encoding: "buffer",
+    maxBuffer: 8 * 1024 * 1024,
+  });
+  assert.equal(result.status, 0, result.stderr?.toString("utf8"));
+  return result.stdout.length;
+}
+
+await writeFile(legacyPayload, deterministicIncompressibleBytes(2 * 1024 * 1024));
+assert.ok(
+  checkpointEncodedBytes(path.join(proxyRuntime, "credential-canary"))
+    > sshCommandMaxBufferBytes,
+  "legacy HOME fixture does not exceed the exact 1 MiB encoded SSH checkpoint limit",
+);
 await writeFile(
   proxyExecutable,
-  '#!/bin/sh\nprintf "provider diagnostic %s\\n" "$OPENROUTER_API_KEY" >&2\nexit 1\n',
+  `#!/bin/sh\nprintf "%s" "$HOME" > "${homeEvidence}"\nprintf "provider diagnostic %s\\n" "$OPENROUTER_API_KEY" >&2\nexit 1\n`,
 );
 await chmod(proxyExecutable, 0o755);
 const providerFd = openSync(proxyExecutable, "r");
@@ -261,6 +296,7 @@ const proxy = spawn(
     env: {
       PATH: process.env.PATH,
       PAPERCLIP_OPENCODE_RUNTIME_DIR: proxyRuntime,
+      PAPERCLIP_OPENCODE_PERMISSION_MODE: "deny",
       PAPERCLIP_NORMALIZED_SESSION_ID: "credential-canary",
       PAPERCLIP_PROVIDER_TRACE_PATH: proxyTrace,
       OPENROUTER_API_KEY: providerCanary,
@@ -296,6 +332,9 @@ for (let attempt = 0; attempt < 100; attempt += 1) {
 for (let attempt = 0; attempt < 100 && !proxyStderr.includes("[REDACTED]"); attempt += 1) {
   await new Promise((resolve) => setTimeout(resolve, 25));
 }
+const checkpointSize = checkpointEncodedBytes(
+  path.join(proxyRuntime, "credential-canary"),
+);
 proxy.kill("SIGTERM");
 await new Promise((resolve) => {
   if (proxy.exitCode !== null || proxy.signalCode !== null) resolve();
@@ -305,6 +344,19 @@ closeSync(providerFd);
 if (generatedConfig?.provider?.["opencode-go"]?.options?.apiKey !== providerCanary) {
   throw new Error("executed OpenCode proxy did not bind the projected provider credential");
 }
+assert.equal(generatedConfig.permission?.["*"], "deny");
+assert.equal(generatedConfig.permission?.question, "deny");
+assert.equal(generatedConfig.permission?.["paperclip_*"], "allow");
+assert.equal(generatedConfig.permission?.["mcp__paperclip__*"], "allow");
+assert.equal(generatedConfig.permission?.external_directory, "deny");
+const isolatedHome = await readFile(homeEvidence, "utf8");
+assert.ok(isolatedHome.startsWith(`${os.tmpdir()}${path.sep}`), isolatedHome);
+assert.ok(!isolatedHome.startsWith(proxyRuntime), isolatedHome);
+await assert.rejects(readFile(legacyPayload));
+assert.ok(
+  checkpointSize <= sshCommandMaxBufferBytes,
+  "OpenCode checkpoint exceeds the exact 1 MiB encoded SSH stdout limit",
+);
 if (proxyStdout.includes(providerCanary) || proxyStderr.includes(providerCanary)) {
   throw new Error("executed OpenCode proxy emitted the provider credential");
 }

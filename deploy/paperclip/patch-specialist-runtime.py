@@ -4,9 +4,10 @@
 Paperclip v2026.916.1 ships the native runner surface needed by Slice 3, but
 its default tool catalog is company-wide and its runner allowlist does not
 propagate the selected ``OPENCODE_API_KEY`` credential. Its OpenCode driver
-also does not bind or redact that credential, and its SSH command runner drops
-the positional arguments required by the native runner's ``sh -c`` launch
-contract. This installer changes only those pinned source and compiled files.
+also does not bind or redact that credential, stores ephemeral HOME data in the
+checkpointed session root, and its SSH command runner drops the positional
+arguments required by the native runner's ``sh -c`` launch contract. This
+installer changes only those pinned source and compiled files.
 Every input and output is hash locked; an unknown image or partial patch
 refuses startup.
 
@@ -409,6 +410,52 @@ def patch_http_log_redaction(source: str) -> str:
 
 def patch_opencode_driver(source: str) -> str:
     typescript_source = "  #acceptQuestion(properties: Record<string, unknown>): void {\n" in source
+    if typescript_source:
+        source = _replace_once(
+            source,
+            "  mkdtemp,\n  readFile,\n",
+            "  mkdtemp,\n  readdir,\n  readFile,\n",
+            label="OpenCode TypeScript readdir import",
+        )
+        source = _replace_once(
+            source,
+            'import { createServer } from "node:net";\n',
+            'import { createServer } from "node:net";\nimport { tmpdir } from "node:os";\n',
+            label="OpenCode TypeScript tmpdir import",
+        )
+        source = _replace_once(
+            source,
+            '  const isolatedHome = await mkdtemp(join(input.root, "home-"));\n',
+            '  const legacyHomes = (await readdir(input.root, { withFileTypes: true }))\n'
+            '    .filter((entry) => entry.name.startsWith("home-"));\n'
+            '  await Promise.all(legacyHomes.map((entry) =>\n'
+            '    rm(join(input.root, entry.name), { recursive: true, force: true })));\n'
+            '  const isolatedHome = await mkdtemp(join(tmpdir(), "paperclip-opencode-home-"));\n',
+            label="OpenCode TypeScript checkpoint-safe HOME",
+        )
+    else:
+        source = _replace_once(
+            source,
+            "import { chmod, mkdir, mkdtemp, readFile, rm, writeFile, } from \"node:fs/promises\";\n",
+            "import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile, } from \"node:fs/promises\";\n",
+            label="OpenCode JavaScript readdir import",
+        )
+        source = _replace_once(
+            source,
+            'import { createServer } from "node:net";\n',
+            'import { createServer } from "node:net";\nimport { tmpdir } from "node:os";\n',
+            label="OpenCode JavaScript tmpdir import",
+        )
+        source = _replace_once(
+            source,
+            '    const isolatedHome = await mkdtemp(join(input.root, "home-"));\n',
+            '    const legacyHomes = (await readdir(input.root, { withFileTypes: true }))\n'
+            '        .filter((entry) => entry.name.startsWith("home-"));\n'
+            '    await Promise.all(legacyHomes.map((entry) =>\n'
+            '        rm(join(input.root, entry.name), { recursive: true, force: true })));\n'
+            '    const isolatedHome = await mkdtemp(join(tmpdir(), "paperclip-opencode-home-"));\n',
+            label="OpenCode JavaScript checkpoint-safe HOME",
+        )
     provider_anchor = (
         "      [modelProvider!]: {\n        models: {\n"
         if typescript_source
@@ -473,6 +520,50 @@ def patch_opencode_driver(source: str) -> str:
 
 def patch_opencode_proxy_bundle(source: str) -> str:
     """Patch the self-contained proxy artifact executed by remote workers."""
+
+    commonjs_bundle = 'var import_promises3 = require("node:fs/promises");\n' in source
+    if commonjs_bundle:
+        source = _replace_once(
+            source,
+            'var import_promises3 = require("node:fs/promises");\n',
+            'var import_promises3 = require("node:fs/promises");\n'
+            'var import_node_os = require("node:os");\n',
+            label="bundled CommonJS tmpdir import",
+        )
+        source = _replace_once(
+            source,
+            '  const isolatedHome = await (0, import_promises3.mkdtemp)((0, import_node_path3.join)(input2.root, "home-"));\n',
+            '  const legacyHomes = (await (0, import_promises3.readdir)(input2.root, { withFileTypes: true }))\n'
+            '    .filter((entry) => entry.name.startsWith("home-"));\n'
+            '  await Promise.all(legacyHomes.map((entry) =>\n'
+            '    (0, import_promises3.rm)((0, import_node_path3.join)(input2.root, entry.name), { recursive: true, force: true })));\n'
+            '  const isolatedHome = await (0, import_promises3.mkdtemp)((0, import_node_path3.join)((0, import_node_os.tmpdir)(), "paperclip-opencode-home-"));\n',
+            label="bundled CommonJS checkpoint-safe HOME",
+        )
+    else:
+        source = _replace_once(
+            source,
+            "  mkdtemp,\n  readFile,\n",
+            "  mkdtemp,\n  readdir as readdir2,\n  readFile,\n",
+            label="bundled ESM readdir import",
+        )
+        source = _replace_once(
+            source,
+            'import { createServer as createServer2 } from "node:net";\n',
+            'import { createServer as createServer2 } from "node:net";\n'
+            'import { tmpdir } from "node:os";\n',
+            label="bundled ESM tmpdir import",
+        )
+        source = _replace_once(
+            source,
+            '  const isolatedHome = await mkdtemp(join2(input2.root, "home-"));\n',
+            '  const legacyHomes = (await readdir2(input2.root, { withFileTypes: true }))\n'
+            '    .filter((entry) => entry.name.startsWith("home-"));\n'
+            '  await Promise.all(legacyHomes.map((entry) =>\n'
+            '    rm2(join2(input2.root, entry.name), { recursive: true, force: true })));\n'
+            '  const isolatedHome = await mkdtemp(join2(tmpdir(), "paperclip-opencode-home-"));\n',
+            label="bundled ESM checkpoint-safe HOME",
+        )
 
     source = _replace_once(
         source,
@@ -1330,43 +1421,43 @@ PATCH_SPECS = (
     PatchSpec(
         "packages/paperclip-runner/src/drivers/opencode/opencode-server-driver.ts",
         "44fd45efa24b5c0a55f4f2a8bf23e18b5ed03b73709185226953bcd3b709eb95",
-        "0b0965e1da59894ccafccd535d647129cf663deee68f454a24e17c521cc2a582",
+        "9b14933a6774e95bc683dc716d20c135098d5b1e4ddc553c18ebfde61e5aa1ec",
         patch_opencode_driver,
     ),
     PatchSpec(
         "packages/paperclip-runner/dist/drivers/opencode/opencode-server-driver.js",
         "3e17333514ecc354b277f75dc1f43a84c7563a67f4f69bf5335f16d9d1860a38",
-        "559fe2391fc2bfccc3d9d73ec249fe462b821d144303f6625684a23883a42221",
+        "0220547cec722ad1197a769935f8180fdcf7939e5df7b373d7b7664e2b9775cb",
         patch_opencode_driver,
     ),
     PatchSpec(
         "server/dist/vendor/paperclip-runner/drivers/opencode/opencode-server-driver.js",
         "3e17333514ecc354b277f75dc1f43a84c7563a67f4f69bf5335f16d9d1860a38",
-        "559fe2391fc2bfccc3d9d73ec249fe462b821d144303f6625684a23883a42221",
+        "0220547cec722ad1197a769935f8180fdcf7939e5df7b373d7b7664e2b9775cb",
         patch_opencode_driver,
     ),
     PatchSpec(
         "packages/paperclip-runner/dist/cli/opencode-app-server-proxy.cjs",
         "515fa5d26c44c6d0a1df09497297405e726dd068917f525869aac72ea7a1ce0e",
-        "6badc6a3ae04d0353e10c170fe3d318d2defc1f082d1be0a960e8ae5f73680af",
+        "9c20ec6d59e99682b8a2122cd5f699ff5e013d4c03c71c7388f6d78b74b8793d",
         patch_opencode_proxy_bundle,
     ),
     PatchSpec(
         "packages/paperclip-runner/dist/cli/opencode-app-server-proxy.js",
         "de49baf75b3bbeae46312cb2e47100506c5e9bf8c2a6a941e46c1358e3e6847e",
-        "51a97f429eb1266c40fc6bce1927d7af836aec93f9f3dfcedaa005ee45b67aa9",
+        "1f21a0d2564ed8c5d0838f3acf03eb4d738a014c7fe0d06bb496f92ba4541a01",
         patch_opencode_proxy_bundle,
     ),
     PatchSpec(
         "server/dist/vendor/paperclip-runner/cli/opencode-app-server-proxy.cjs",
         "515fa5d26c44c6d0a1df09497297405e726dd068917f525869aac72ea7a1ce0e",
-        "6badc6a3ae04d0353e10c170fe3d318d2defc1f082d1be0a960e8ae5f73680af",
+        "9c20ec6d59e99682b8a2122cd5f699ff5e013d4c03c71c7388f6d78b74b8793d",
         patch_opencode_proxy_bundle,
     ),
     PatchSpec(
         "server/dist/vendor/paperclip-runner/cli/opencode-app-server-proxy.js",
         "de49baf75b3bbeae46312cb2e47100506c5e9bf8c2a6a941e46c1358e3e6847e",
-        "51a97f429eb1266c40fc6bce1927d7af836aec93f9f3dfcedaa005ee45b67aa9",
+        "1f21a0d2564ed8c5d0838f3acf03eb4d738a014c7fe0d06bb496f92ba4541a01",
         patch_opencode_proxy_bundle,
     ),
 )
