@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { closeSync, openSync } from "node:fs";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import vm from "node:vm";
@@ -93,6 +95,15 @@ const nativeExecutor = await readFile(
 const openCodeDriver = await readFile(
   `${appRoot}/packages/paperclip-runner/dist/drivers/opencode/opencode-server-driver.js`, "utf8",
 );
+const vendoredOpenCodeDriver = await readFile(
+  `${appRoot}/server/dist/vendor/paperclip-runner/drivers/opencode/opencode-server-driver.js`, "utf8",
+);
+const openCodeProxy = await readFile(
+  `${appRoot}/packages/paperclip-runner/dist/cli/opencode-app-server-proxy.cjs`, "utf8",
+);
+const vendoredOpenCodeProxy = await readFile(
+  `${appRoot}/server/dist/vendor/paperclip-runner/cli/opencode-app-server-proxy.cjs`, "utf8",
+);
 const runnerControlPlane = await readFile(
   `${appRoot}/packages/paperclip-runner/dist/control-plane/durable-prp-control-plane.js`, "utf8",
 );
@@ -105,15 +116,112 @@ for (const source of [runnerControlPlane, vendoredRunnerControlPlane]) {
     '"OPENROUTER_API_KEY",\n    "OPENCODE_API_KEY",\n    "ANTHROPIC_API_KEY"',
   ));
 }
-assert.ok(openCodeDriver.includes("environment?.OPENCODE_API_KEY"));
-assert.ok(openCodeDriver.includes(
-  "options: { apiKey: input.options.environment?.OPENCODE_API_KEY }",
-));
-assert.ok(!openCodeDriver.includes("environment?.OPENAI_API_KEY"));
-assert.ok(openCodeDriver.includes("OPENROUTER_API_KEY|OPENCODE_API_KEY|authorization"));
-assert.ok(openCodeDriver.includes("tools: { question: false }"));
-assert.ok(openCodeDriver.includes('question: "deny"'));
-assert.ok(openCodeDriver.includes("nix_opencode_native_question_denied"));
+for (const source of [openCodeDriver, vendoredOpenCodeDriver]) {
+  assert.ok(source.includes("environment?.OPENCODE_API_KEY"));
+  assert.ok(source.includes(
+    "options: { apiKey: input.options.environment?.OPENCODE_API_KEY }",
+  ));
+  assert.ok(!source.includes("environment?.OPENAI_API_KEY"));
+  assert.ok(source.includes("OPENROUTER_API_KEY|OPENCODE_API_KEY|authorization"));
+  assert.ok(source.includes("tools: { question: false }"));
+  assert.ok(source.includes('question: "deny"'));
+  assert.ok(source.includes("nix_opencode_native_question_denied"));
+}
+for (const source of [openCodeProxy, vendoredOpenCodeProxy]) {
+  assert.ok(source.includes(
+    "options: { apiKey: input2.options.environment?.OPENCODE_API_KEY }",
+  ));
+  assert.ok(!source.includes("environment?.OPENAI_API_KEY"));
+  assert.ok(source.includes("OPENROUTER_API_KEY|OPENCODE_API_KEY|authorization"));
+  assert.ok(source.includes("tools: { question: false }"));
+  assert.ok(source.includes('question: "deny"'));
+  assert.ok(source.includes("nix_opencode_native_question_denied"));
+}
+
+// Execute the same self-contained CJS proxy selected by the remote provider-pack.
+// The fake provider emits its inherited model credential to stderr: the proxy
+// must bind it into opencode.json while redacting it from diagnostics and trace.
+const proxyFixtureRoot = await mkdtemp(path.join(os.tmpdir(), "nix-opencode-proxy-"));
+const proxyRuntime = path.join(proxyFixtureRoot, "runtime");
+const proxyWorkspace = path.join(proxyFixtureRoot, "workspace");
+const proxyExecutable = path.join(proxyFixtureRoot, "opencode-fixture");
+const proxyTrace = path.join(proxyFixtureRoot, "provider-trace.jsonl");
+const providerCanary = "nix-provider-canary-92b75e17";
+await mkdir(proxyWorkspace);
+await writeFile(
+  proxyExecutable,
+  '#!/bin/sh\nprintf "provider diagnostic %s\\n" "$OPENCODE_API_KEY" >&2\nexit 1\n',
+);
+await chmod(proxyExecutable, 0o755);
+const providerFd = openSync(proxyExecutable, "r");
+let proxyStderr = "";
+let proxyStdout = "";
+const proxy = spawn(
+  process.execPath,
+  [
+    `${appRoot}/packages/paperclip-runner/dist/cli/opencode-app-server-proxy.cjs`,
+    "--paperclip-trusted-opencode-executable",
+    "/proc/self/fd/3",
+  ],
+  {
+    env: {
+      PATH: process.env.PATH,
+      PAPERCLIP_OPENCODE_RUNTIME_DIR: proxyRuntime,
+      PAPERCLIP_NORMALIZED_SESSION_ID: "credential-canary",
+      PAPERCLIP_PROVIDER_TRACE_PATH: proxyTrace,
+      OPENCODE_API_KEY: providerCanary,
+    },
+    stdio: ["pipe", "pipe", "pipe", providerFd],
+  },
+);
+proxy.stdout.setEncoding("utf8");
+proxy.stderr.setEncoding("utf8");
+proxy.stdout.on("data", (chunk) => { proxyStdout += chunk; });
+proxy.stderr.on("data", (chunk) => { proxyStderr += chunk; });
+proxy.stdin.write(`${JSON.stringify({
+  id: "credential-canary",
+  method: "thread/start",
+  params: {
+    cwd: proxyWorkspace,
+    model: "opencode-go/gpt-5.6-luna",
+    baseInstructions: "Exercise generated provider configuration only.",
+  },
+})}\n`);
+const generatedConfigPath = path.join(
+  proxyRuntime, "credential-canary", "config", "opencode", "opencode.json",
+);
+let generatedConfig;
+for (let attempt = 0; attempt < 100; attempt += 1) {
+  try {
+    generatedConfig = JSON.parse(await readFile(generatedConfigPath, "utf8"));
+    break;
+  } catch {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+for (let attempt = 0; attempt < 100 && !proxyStderr.includes("[REDACTED]"); attempt += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 25));
+}
+proxy.kill("SIGTERM");
+await new Promise((resolve) => {
+  if (proxy.exitCode !== null || proxy.signalCode !== null) resolve();
+  else proxy.once("exit", resolve);
+});
+closeSync(providerFd);
+if (generatedConfig?.provider?.["opencode-go"]?.options?.apiKey !== providerCanary) {
+  throw new Error("executed OpenCode proxy did not bind the projected provider credential");
+}
+if (proxyStdout.includes(providerCanary) || proxyStderr.includes(providerCanary)) {
+  throw new Error("executed OpenCode proxy emitted the provider credential");
+}
+if (!proxyStderr.includes("[REDACTED]")) {
+  throw new Error("executed OpenCode proxy did not redact the provider diagnostic");
+}
+const proxyTraceContents = await readFile(proxyTrace, "utf8").catch(() => "");
+if (proxyTraceContents.includes(providerCanary)) {
+  throw new Error("executed OpenCode proxy trace retained the provider credential");
+}
+await rm(proxyFixtureRoot, { recursive: true, force: true });
 
 // Exercise the exact patched SSH adapter. The fake ssh binary executes only
 // its final remote-command argument locally, which proves the adapter retains

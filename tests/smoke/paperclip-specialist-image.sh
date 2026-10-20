@@ -19,6 +19,11 @@ docker run --rm --entrypoint sh \
     node --check /app/packages/paperclip-runner/dist/control-plane/durable-prp-control-plane.js
     node --check /app/server/dist/vendor/paperclip-runner/control-plane/durable-prp-control-plane.js
     node --check /app/packages/paperclip-runner/dist/drivers/opencode/opencode-server-driver.js
+    node --check /app/server/dist/vendor/paperclip-runner/drivers/opencode/opencode-server-driver.js
+    node --check /app/packages/paperclip-runner/dist/cli/opencode-app-server-proxy.cjs
+    node --check /app/packages/paperclip-runner/dist/cli/opencode-app-server-proxy.js
+    node --check /app/server/dist/vendor/paperclip-runner/cli/opencode-app-server-proxy.cjs
+    node --check /app/server/dist/vendor/paperclip-runner/cli/opencode-app-server-proxy.js
     node /app/cli/node_modules/tsx/dist/cli.mjs /opt/nix/paperclip-specialist-runtime.mjs
     cd /app
     pnpm --filter @paperclipai/server exec tsc --noEmit --pretty false
