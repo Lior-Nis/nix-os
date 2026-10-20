@@ -41,6 +41,7 @@ import time
 
 TOOLS = [
     {"name":"paperclipMe","inputSchema":{"type":"object","properties":{}}},
+    {"name":"paperclipListAgents","inputSchema":{"type":"object","properties":{}}},
     {"name":"paperclipCreateIssue","inputSchema":{"type":"object","properties":{"title":{"type":"string"}},"required":["title"]}},
     {"name":"paperclipCheckoutIssue","inputSchema":{"type":"object","properties":{"issueId":{"type":"string"}},"required":["issueId"]}},
     {"name":"paperclipUpdateIssue","inputSchema":{"type":"object","properties":{"issueId":{"type":"string"}},"required":["issueId"]}},
@@ -376,6 +377,7 @@ def main() -> None:
             assert initialized["result"]["serverInfo"]["name"] == "fake"
             listing = request(process, 2, "tools/list", {})
             tools = {item["name"]: item for item in listing["result"]["tools"]}
+            assert "paperclipListAgents" in tools
             assert "nixResolveFounderDecision" in tools
             assert tools["nixResolveFounderDecision"]["inputSchema"]["required"] == [
                 "issueId", "interactionId", "idempotencyKey", "answers"

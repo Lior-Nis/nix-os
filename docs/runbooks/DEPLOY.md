@@ -539,8 +539,11 @@ sudo ss -lntup
 The topology gate proves the three role-specific SSH environments, exact secret
 bindings and fingerprints, managed instruction bytes, bounded approved-project
 boundary, no specialist API keys, no extra runner, no sandbox plugin dependency,
-and no nonterminal specialist run. Tailscale Serve and Funnel state must remain
-unchanged.
+and no nonterminal specialist run. Hermes verification must resolve the same
+restricted Chief boundary on all three invocation lanes: twelve official
+Paperclip operations, including only the read-only agent directory addition,
+plus the fixed founder-decision tool, with no execution or agent-mutation tool.
+Tailscale Serve and Funnel state must remain unchanged.
 
 ### 4. Live acceptance and recovery
 

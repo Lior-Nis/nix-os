@@ -77,6 +77,7 @@ mcp_servers:
         - paperclipListComments
         - paperclipListProjects
         - paperclipGetProject
+        - paperclipListAgents
         - paperclipCreateIssue
         - paperclipCheckoutIssue
         - paperclipUpdateIssue

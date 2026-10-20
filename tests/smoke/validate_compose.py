@@ -278,7 +278,14 @@ for forbidden_toolset in ("skills", "terminal", "code_execution", "browser", "we
     require(f"    - {forbidden_toolset}" in hermes_config, f"global defense-in-depth suppression is missing: {forbidden_toolset}")
 for forbidden_tool in ("paperclipCreateApproval", "paperclipApprovalDecision", "paperclipApiRequest", "paperclipControlIssueWorkspaceServices"):
     require(forbidden_tool not in hermes_config, f"forbidden Paperclip tool is enabled: {forbidden_tool}")
-require((repo_root / "deploy/hermes/SOUL.md").is_file(), "Chief of Staff SOUL is missing")
+require("        - paperclipListAgents" in hermes_config, "Chief cannot resolve configured task-scoped specialists")
+chief_soul = (repo_root / "deploy/hermes/SOUL.md").read_text()
+for routing_contract in (
+    "Use `paperclipListAgents` to resolve their current Paperclip identities",
+    "route marketing and sales to Growth",
+    "Do not perform Product, Growth, or Operations work yourself",
+):
+    require(routing_contract in chief_soul, f"Chief routing contract is missing: {routing_contract}")
 
 for operator_script in (
     "bootstrap-paperclip-chief",

@@ -189,6 +189,7 @@ assert "PAPERCLIP_RUN_ID" not in server["env"]
 assert set(server["tools"]["include"]) == {
   "paperclipMe", "paperclipListIssues", "paperclipGetIssue",
   "paperclipListComments", "paperclipListProjects", "paperclipGetProject",
+  "paperclipListAgents",
   "paperclipCreateIssue", "paperclipCheckoutIssue", "paperclipUpdateIssue",
   "paperclipAddComment", "paperclipAskUserQuestions", "nixResolveFounderDecision",
 }
@@ -213,7 +214,7 @@ mcp_listing=$(docker run --rm --entrypoint hermes \
   --env WEBHOOK_SECRET="$decision_webhook_secret" \
   "$image" mcp list)
 grep -q 'paperclip' <<<"$mcp_listing"
-grep -q '12 selected' <<<"$mcp_listing"
+grep -q '13 selected' <<<"$mcp_listing"
 grep -q 'enabled' <<<"$mcp_listing"
 
 docker run --rm --entrypoint python3 \
