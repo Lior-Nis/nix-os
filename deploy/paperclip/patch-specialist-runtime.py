@@ -307,15 +307,18 @@ async function nixDeliverSpecialistQuestion(
     if (!stored
       || stored.kind !== "ask_user_questions"
       || stored.status !== "pending"
-      || stored.sourceRunId !== interaction.sourceRunId
       || stored.createdByAgentId !== binding.agentId
       || stored.requestedResolverPolicy !== "human_only"
       || stored.effectiveResolverPolicy !== "human_only"
       || stored.addresseeUserId !== NIX_FOUNDER_USER_ID) {
       throw new Error("nix_specialist_question_interaction_invalid");
     }
-    const [sourceRun] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
-      eq(heartbeatRuns.id, stored.sourceRunId),
+    const storedSourceRunId = stored.sourceRunId;
+    if (typeof storedSourceRunId !== "string" || storedSourceRunId !== interaction.sourceRunId) {
+      throw new Error("nix_specialist_question_interaction_invalid");
+    }
+    const [sourceRun] = await tx.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.id, storedSourceRunId),
       eq(heartbeatRuns.companyId, binding.companyId),
       eq(heartbeatRuns.agentId, binding.agentId),
       eq(heartbeatRuns.nativeIssueId, binding.issueId),
@@ -603,13 +606,15 @@ async function nixDeliverSpecialistQuestion(db, binding, value) {
         if (!stored
             || stored.kind !== "ask_user_questions"
             || stored.status !== "pending"
-            || stored.sourceRunId !== interaction.sourceRunId
             || stored.createdByAgentId !== binding.agentId
             || stored.requestedResolverPolicy !== "human_only"
             || stored.effectiveResolverPolicy !== "human_only"
             || stored.addresseeUserId !== NIX_FOUNDER_USER_ID)
             throw new Error("nix_specialist_question_interaction_invalid");
-        const [sourceRun] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(eq(heartbeatRuns.id, stored.sourceRunId), eq(heartbeatRuns.companyId, binding.companyId), eq(heartbeatRuns.agentId, binding.agentId), eq(heartbeatRuns.nativeIssueId, binding.issueId), eq(heartbeatRuns.runtimeMode, "native"))).limit(1);
+        const storedSourceRunId = stored.sourceRunId;
+        if (typeof storedSourceRunId !== "string" || storedSourceRunId !== interaction.sourceRunId)
+            throw new Error("nix_specialist_question_interaction_invalid");
+        const [sourceRun] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, storedSourceRunId), eq(heartbeatRuns.companyId, binding.companyId), eq(heartbeatRuns.agentId, binding.agentId), eq(heartbeatRuns.nativeIssueId, binding.issueId), eq(heartbeatRuns.runtimeMode, "native"))).limit(1);
         if (!sourceRun)
             throw new Error("nix_specialist_question_source_run_invalid");
         const [existing] = await tx.select().from(activityLog).where(and(eq(activityLog.companyId, binding.companyId), eq(activityLog.action, NIX_SPECIALIST_QUESTION_DELIVERY_ACTION), eq(activityLog.entityType, "issue_thread_interaction"), eq(activityLog.entityId, interactionId))).orderBy(desc(activityLog.createdAt)).limit(1);
@@ -824,19 +829,20 @@ def patch_tool_authority_ts(source: str) -> str:
         "        )).for(\"update\").limit(1);\n"
         "        let sourceRunId = this.binding.runId;\n"
         "        if (recoverableInteraction) {\n"
+        "          const recoverableSourceRunId = recoverableInteraction.sourceRunId;\n"
         "          if (recoverableInteraction.createdByAgentId !== this.binding.agentId\n"
-        "            || typeof recoverableInteraction.sourceRunId !== \"string\") {\n"
+        "            || typeof recoverableSourceRunId !== \"string\") {\n"
         "            throw new Error(\"nix_specialist_question_recovery_denied\");\n"
         "          }\n"
-        "          const [sourceRun] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(\n"
-        "            eq(heartbeatRuns.id, recoverableInteraction.sourceRunId),\n"
+        "          const [sourceRun] = await tx.select().from(heartbeatRuns).where(and(\n"
+        "            eq(heartbeatRuns.id, recoverableSourceRunId),\n"
         "            eq(heartbeatRuns.companyId, this.binding.companyId),\n"
         "            eq(heartbeatRuns.agentId, this.binding.agentId),\n"
         "            eq(heartbeatRuns.nativeIssueId, this.binding.issueId),\n"
         "            eq(heartbeatRuns.runtimeMode, \"native\"),\n"
         "          )).limit(1);\n"
         "          if (!sourceRun) throw new Error(\"nix_specialist_question_recovery_denied\");\n"
-        "          sourceRunId = recoverableInteraction.sourceRunId;\n"
+        "          sourceRunId = recoverableSourceRunId;\n"
         "        }\n"
         "        const interaction = await issueThreadInteractionService(tx).create(context.issue, {\n"
         "          kind,\n"
@@ -1014,11 +1020,12 @@ def patch_tool_authority_js(source: str) -> str:
         "            )).for(\"update\").limit(1);\n"
         "            let sourceRunId = this.binding.runId;\n"
         "            if (recoverableInteraction) {\n"
+        "                const recoverableSourceRunId = recoverableInteraction.sourceRunId;\n"
         "                if (recoverableInteraction.createdByAgentId !== this.binding.agentId\n"
-        "                    || typeof recoverableInteraction.sourceRunId !== \"string\")\n"
+        "                    || typeof recoverableSourceRunId !== \"string\")\n"
         "                    throw new Error(\"nix_specialist_question_recovery_denied\");\n"
-        "                const [sourceRun] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(\n"
-        "                    eq(heartbeatRuns.id, recoverableInteraction.sourceRunId),\n"
+        "                const [sourceRun] = await tx.select().from(heartbeatRuns).where(and(\n"
+        "                    eq(heartbeatRuns.id, recoverableSourceRunId),\n"
         "                    eq(heartbeatRuns.companyId, this.binding.companyId),\n"
         "                    eq(heartbeatRuns.agentId, this.binding.agentId),\n"
         "                    eq(heartbeatRuns.nativeIssueId, this.binding.issueId),\n"
@@ -1026,7 +1033,7 @@ def patch_tool_authority_js(source: str) -> str:
         "                )).limit(1);\n"
         "                if (!sourceRun)\n"
         "                    throw new Error(\"nix_specialist_question_recovery_denied\");\n"
-        "                sourceRunId = recoverableInteraction.sourceRunId;\n"
+        "                sourceRunId = recoverableSourceRunId;\n"
         "            }\n"
         "            const interaction = await issueThreadInteractionService(tx).create(context.issue, {\n"
         "                kind,\n"
@@ -2400,13 +2407,13 @@ PATCH_SPECS = (
     PatchSpec(
         "server/src/services/native-runtime/paperclip-runner-tool-authority.ts",
         "cefbd145437dbeec08ff6844847c0b8cd273d356c06c0dc8c411d9337f7c9a65",
-        "47a11cb2ba960a120e5af61ac2556eb7244132ae035b10c7676fd8ec5b6dda1f",
+        "aa8e513c51561b75c28f1439a0800776ffaadb977c6d781f7998591e39d3c6e7",
         patch_tool_authority_ts,
     ),
     PatchSpec(
         "server/dist/services/native-runtime/paperclip-runner-tool-authority.js",
         "5088550417a9412bb7ad8a819ca4e59f1867027a1900dc832d27c655736b340e",
-        "0fd6591b5b7dafc5354bc0f194eeaad16b6af5c53427457a3919526d4d110cdf",
+        "4a535db297b41b23704da8717b407edeeedc156630a6c77bb6a119047a2f3bc4",
         patch_tool_authority_js,
     ),
     PatchSpec(
