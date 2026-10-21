@@ -50,11 +50,34 @@ case "$mode" in
     ;;
 esac
 
+# Paperclip can notify the existing Telegram delivery adapter without sharing
+# either the Chief question-outbox secret or the founder-answer attestation
+# key. The only persisted input is the existing founder-relay key; this
+# direction-specific webhook key exists in the two service processes only.
+NIX_SPECIALIST_QUESTION_DELIVERY_SECRET=$(python3 - <<'PY'
+import hashlib
+import hmac
+import os
+import re
+
+source = os.environ.get("NIX_FOUNDER_RELAY_SECRET", "")
+if re.fullmatch(r"[0-9a-f]{64}", source) is None:
+    raise SystemExit("Hermes startup refused: founder relay secret is invalid")
+print(hmac.new(
+    bytes.fromhex(source),
+    b"nix/specialist-question-delivery/v1",
+    hashlib.sha256,
+).hexdigest())
+PY
+)
+export NIX_SPECIALIST_QUESTION_DELIVERY_SECRET
+
 # The pinned Hermes release does not carry Paperclip's heartbeat identity from
 # /v1/runs into long-lived MCP calls. Apply the exact-hash-locked, request-local
 # compatibility patch before upstream gateway modules are imported. Unknown
 # source bytes fail closed.
 python3 /opt/nix/patch-run-attribution.py
+python3 /opt/nix/patch-specialist-question-route.py
 python3 /opt/nix/validate-tool-boundary.py webhook-config >/dev/null
 
 exec /opt/hermes/docker/entrypoint-dispatch.sh "$@"

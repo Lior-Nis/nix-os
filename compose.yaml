@@ -137,6 +137,7 @@ services:
       - ./deploy/hermes/verify-paperclip-mcp.py:/opt/nix/verify-paperclip-mcp.py:ro
       - ./deploy/hermes/validate-tool-boundary.py:/opt/nix/validate-tool-boundary.py:ro
       - ./deploy/hermes/patch-run-attribution.py:/opt/nix/patch-run-attribution.py:ro
+      - ./deploy/hermes/patch-specialist-question-route.py:/opt/nix/patch-specialist-question-route.py:ro
       - ./deploy/hermes/run-scoped-paperclip-mcp.py:/opt/nix/run-scoped-paperclip-mcp.py:ro
       - ./deploy/hermes/paperclip_question_delivery.py:/opt/nix/paperclip_question_delivery.py:ro
       - ${HERMES_TELEGRAM_MODE_FILE:?Set HERMES_TELEGRAM_MODE_FILE to the root-owned external mode marker}:/run/nix/hermes-telegram-mode.env:ro

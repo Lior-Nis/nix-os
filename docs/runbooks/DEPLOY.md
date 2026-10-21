@@ -363,7 +363,7 @@ sudo -E docker compose --env-file "$PWD/.env" exec -T --user 10000:10000 hermes 
   python3 /opt/nix/validate-tool-boundary.py webhook-config
 ```
 
-The verifier must find exactly eleven Paperclip tools, with checkout and structured questions as the only additions to the accepted Slice 1 nine-tool surface. It must also prove the webhook binds only to container loopback on port 8644, has one fixed HMAC route, uses `deliver_only` to the existing Telegram adapter, permits no dynamic subscription, and keeps `paperclipApiRequest` out of the model-visible catalog. Neither 8642 nor 8644 may be host-published.
+The verifier must find the reviewed bounded Paperclip tool surface. It must also prove that port 8644 is unpublished, its listener is reachable only on Hermes' container networks, and exactly two static HMAC routes use `deliver_only` with no dynamic subscription: the unchanged Chief route and the specialist route protected by its in-memory direction-specific derived secret. `paperclipApiRequest` stays out of the model-visible catalog. Neither 8642 nor 8644 may be host-published.
 
 The two new state files live inside the already-backed-up Hermes volume. Inspect metadata without dumping either database:
 

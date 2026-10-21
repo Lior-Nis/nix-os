@@ -130,6 +130,239 @@ if (!/^[A-Za-z0-9_-]{1,128}$/.test(NIX_FOUNDER_USER_ID)) {
   throw new Error("nix_specialist_founder_user_id_invalid");
 }
 
+const NIX_SPECIALIST_QUESTION_DELIVERY_ACTION = "issue.specialist_question_delivery";
+const NIX_SPECIALIST_QUESTION_DELIVERY_CONTEXT = "nix/specialist-question-delivery/v1";
+const NIX_SPECIALIST_QUESTION_DELIVERY_HOST = "hermes";
+const NIX_SPECIALIST_QUESTION_DELIVERY_PORT = 8644;
+const NIX_SPECIALIST_QUESTION_DELIVERY_PATH = "/webhooks/paperclip-specialist-decision";
+const NIX_SPECIALIST_QUESTION_EVENT = "paperclip.decision_required";
+const NIX_SPECIALIST_QUESTION_MAX_MESSAGE = 3800;
+const NIX_SPECIALIST_QUESTION_MAX_RESPONSE = 16384;
+
+type NixSpecialistDeliveryDisposition =
+  "pending" | "failed_not_sent" | "delivered" | "failed" | "unknown";
+
+function nixSpecialistOneLine(value: unknown, maximum: number): string {
+  return typeof value === "string" ? value.trim().replace(/\\s+/g, " ").slice(0, maximum) : "";
+}
+
+function nixRenderSpecialistQuestion(interaction: Record<string, unknown>): string {
+  const payload = record(interaction.payload);
+  const questions = Array.isArray(payload.questions) ? payload.questions : [];
+  if (questions.length < 1 || questions.length > 64) {
+    throw new Error("nix_specialist_question_payload_invalid");
+  }
+  const lines = [
+    "A Nix specialist needs your decision.",
+    `Issue: ${String(interaction.issueId)}`,
+    `Decision: ${String(interaction.id)}`,
+  ];
+  const title = nixSpecialistOneLine(interaction.title, 240);
+  if (title) lines.push("", title);
+  for (let index = 0; index < questions.length; index += 1) {
+    const question = record(questions[index]);
+    const prompt = nixSpecialistOneLine(question.prompt, 1000);
+    const options = Array.isArray(question.options) ? question.options : [];
+    if (!prompt || options.length < 1 || options.length > 129
+      || !["single", "multi"].includes(String(question.selectionMode))
+      || typeof question.required !== "boolean") {
+      throw new Error("nix_specialist_question_payload_invalid");
+    }
+    lines.push("", `${index + 1}. ${prompt}`);
+    for (const candidate of options) {
+      const option = record(candidate);
+      const label = nixSpecialistOneLine(option.label, 300);
+      if (!label) throw new Error("nix_specialist_question_payload_invalid");
+      lines.push(`- ${label}`);
+    }
+  }
+  lines.push("", "Reply to Chief in this Telegram chat with your choice.");
+  const message = lines.join("\\n");
+  return message.length <= NIX_SPECIALIST_QUESTION_MAX_MESSAGE
+    ? message
+    : `${message.slice(0, NIX_SPECIALIST_QUESTION_MAX_MESSAGE - 1).trimEnd()}…`;
+}
+
+function nixSpecialistQuestionSecret(): string {
+  const source = process.env.NIX_FOUNDER_RELAY_SECRET?.trim() ?? "";
+  if (!/^[0-9a-f]{64}$/.test(source)) {
+    throw new Error("nix_specialist_question_delivery_secret_invalid");
+  }
+  return createHmac("sha256", Buffer.from(source, "hex"))
+    .update(NIX_SPECIALIST_QUESTION_DELIVERY_CONTEXT, "utf8").digest("hex");
+}
+
+function nixPostSpecialistQuestion(
+  body: Buffer,
+  interactionId: string,
+): Promise<{ disposition: NixSpecialistDeliveryDisposition; httpStatus: number | null }> {
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const signature = createHmac("sha256", nixSpecialistQuestionSecret())
+    .update(`${timestamp}.`, "utf8").update(body).digest("hex");
+  const requestId = `paperclip-specialist-question:${interactionId}`;
+  return new Promise((resolve) => {
+    let connected = false;
+    let settled = false;
+    const finish = (disposition: NixSpecialistDeliveryDisposition, httpStatus: number | null) => {
+      if (settled) return;
+      settled = true;
+      resolve({ disposition, httpStatus });
+    };
+    const request = httpRequest({
+      hostname: NIX_SPECIALIST_QUESTION_DELIVERY_HOST,
+      port: NIX_SPECIALIST_QUESTION_DELIVERY_PORT,
+      path: NIX_SPECIALIST_QUESTION_DELIVERY_PATH,
+      method: "POST",
+      agent: false,
+      timeout: 3000,
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": String(body.length),
+        "X-Webhook-Timestamp": timestamp,
+        "X-Webhook-Signature-V2": signature,
+        "X-Request-ID": requestId,
+      },
+    }, (response) => {
+      const chunks: Buffer[] = [];
+      let size = 0;
+      response.on("data", (chunk: Buffer) => {
+        size += chunk.length;
+        if (size <= NIX_SPECIALIST_QUESTION_MAX_RESPONSE) chunks.push(chunk);
+        else response.destroy(new Error("nix_specialist_question_response_too_large"));
+      });
+      response.on("error", () => finish("unknown", response.statusCode ?? null));
+      response.on("end", () => {
+        const status = response.statusCode ?? 0;
+        if (size > NIX_SPECIALIST_QUESTION_MAX_RESPONSE) return finish("unknown", status || null);
+        let parsed: Record<string, unknown> = {};
+        try { parsed = record(JSON.parse(Buffer.concat(chunks).toString("utf8"))); } catch {}
+        if (status === 200 && parsed.delivery_id === requestId && parsed.status === "delivered") {
+          return finish("delivered", status);
+        }
+        if (status === 200) return finish("unknown", status);
+        if (status >= 500 || status === 0) return finish("unknown", status || null);
+        return finish("failed", status);
+      });
+    });
+    request.on("socket", (socket) => {
+      if (socket.connecting) socket.once("connect", () => { connected = true; });
+      else connected = true;
+    });
+    request.on("timeout", () => {
+      request.destroy(new Error("nix_specialist_question_delivery_timeout"));
+    });
+    request.on("error", () => finish(connected ? "unknown" : "failed_not_sent", null));
+    request.end(body);
+  });
+}
+
+async function nixDeliverSpecialistQuestion(
+  db: Db,
+  binding: Binding,
+  value: unknown,
+): Promise<unknown> {
+  const result = record(value);
+  const interaction = record(result.interaction);
+  const interactionId = interaction.id;
+  if (!NIX_SPECIALIST_AGENT_IDS.has(binding.agentId)
+    || typeof interactionId !== "string" || !NIX_CANONICAL_UUID.test(interactionId)
+    || interaction.issueId !== binding.issueId
+    || interaction.kind !== "ask_user_questions"
+    || interaction.status !== "pending"
+    || interaction.sourceRunId !== binding.runId
+    || interaction.requestedResolverPolicy !== "human_only"
+    || interaction.effectiveResolverPolicy !== "human_only"
+    || interaction.addresseeUserId !== NIX_FOUNDER_USER_ID) {
+    throw new Error("nix_specialist_question_interaction_invalid");
+  }
+  const message = nixRenderSpecialistQuestion(interaction);
+  const requestId = `paperclip-specialist-question:${interactionId}`;
+  const reservation = await db.transaction(async (tx) => {
+    const [stored] = await tx.select().from(issueThreadInteractions).where(and(
+      eq(issueThreadInteractions.id, interactionId),
+      eq(issueThreadInteractions.companyId, binding.companyId),
+      eq(issueThreadInteractions.issueId, binding.issueId),
+    )).for("update").limit(1);
+    if (!stored
+      || stored.kind !== "ask_user_questions"
+      || stored.status !== "pending"
+      || stored.sourceRunId !== binding.runId
+      || stored.requestedResolverPolicy !== "human_only"
+      || stored.effectiveResolverPolicy !== "human_only"
+      || stored.addresseeUserId !== NIX_FOUNDER_USER_ID) {
+      throw new Error("nix_specialist_question_interaction_invalid");
+    }
+    const [existing] = await tx.select().from(activityLog).where(and(
+      eq(activityLog.companyId, binding.companyId),
+      eq(activityLog.action, NIX_SPECIALIST_QUESTION_DELIVERY_ACTION),
+      eq(activityLog.entityType, "issue_thread_interaction"),
+      eq(activityLog.entityId, interactionId),
+    )).orderBy(desc(activityLog.createdAt)).limit(1);
+    if (existing) {
+      const details = record(existing.details);
+      const disposition = details.disposition;
+      if (disposition === "pending") {
+        await tx.update(activityLog).set({ details: {
+          ...details, disposition: "unknown",
+        } }).where(eq(activityLog.id, existing.id));
+        return { attempt: false as const, disposition: "unknown" as const };
+      }
+      if (disposition !== "failed_not_sent") {
+        const safeDisposition: NixSpecialistDeliveryDisposition =
+          ["delivered", "failed", "unknown"].includes(String(disposition))
+            ? disposition as NixSpecialistDeliveryDisposition
+            : "unknown";
+        return { attempt: false as const, disposition: safeDisposition };
+      }
+      const attemptCount = typeof details.attemptCount === "number" ? details.attemptCount + 1 : 2;
+      await tx.update(activityLog).set({ details: {
+        interactionId, requestId, disposition: "pending", attemptCount,
+        source: "paperclip_runner_protocol",
+      } }).where(eq(activityLog.id, existing.id));
+      return { attempt: true as const, activityId: existing.id, attemptCount };
+    }
+    const reserved = await persistActivity(tx as unknown as Db, {
+      companyId: binding.companyId,
+      actorType: "agent",
+      actorId: binding.agentId,
+      agentId: binding.agentId,
+      runId: binding.runId,
+      issueId: binding.issueId,
+      action: NIX_SPECIALIST_QUESTION_DELIVERY_ACTION,
+      entityType: "issue_thread_interaction",
+      entityId: interactionId,
+      details: {
+        interactionId, requestId, disposition: "pending", attemptCount: 1,
+        source: "paperclip_runner_protocol",
+      },
+    });
+    return { attempt: true as const, activityId: reserved.activity.id, attemptCount: 1 };
+  });
+  if (!reservation.attempt) {
+    return { ...result, specialistQuestionDelivery: { disposition: reservation.disposition } };
+  }
+  const body = Buffer.from(JSON.stringify({
+    event_type: NIX_SPECIALIST_QUESTION_EVENT,
+    interaction_id: interactionId,
+    issue_id: binding.issueId,
+    message,
+  }), "utf8");
+  const outcome = await nixPostSpecialistQuestion(body, interactionId);
+  try {
+    await db.update(activityLog).set({ details: {
+      interactionId,
+      requestId,
+      disposition: outcome.disposition,
+      attemptCount: reservation.attemptCount,
+      httpStatus: outcome.httpStatus,
+      source: "paperclip_runner_protocol",
+    } }).where(eq(activityLog.id, reservation.activityId));
+  } catch {
+    return { ...result, specialistQuestionDelivery: { disposition: "unknown" } };
+  }
+  return { ...result, specialistQuestionDelivery: { disposition: outcome.disposition } };
+}
+
 '''
 
 SPECIALIST_JS = '''
@@ -155,10 +388,237 @@ const NIX_FOUNDER_USER_ID = process.env.NIX_PAPERCLIP_FOUNDER_USER_ID?.trim() ??
 if (!/^[A-Za-z0-9_-]{1,128}$/.test(NIX_FOUNDER_USER_ID)) {
     throw new Error("nix_specialist_founder_user_id_invalid");
 }
+const NIX_SPECIALIST_QUESTION_DELIVERY_ACTION = "issue.specialist_question_delivery";
+const NIX_SPECIALIST_QUESTION_DELIVERY_CONTEXT = "nix/specialist-question-delivery/v1";
+const NIX_SPECIALIST_QUESTION_DELIVERY_HOST = "hermes";
+const NIX_SPECIALIST_QUESTION_DELIVERY_PORT = 8644;
+const NIX_SPECIALIST_QUESTION_DELIVERY_PATH = "/webhooks/paperclip-specialist-decision";
+const NIX_SPECIALIST_QUESTION_EVENT = "paperclip.decision_required";
+const NIX_SPECIALIST_QUESTION_MAX_MESSAGE = 3800;
+const NIX_SPECIALIST_QUESTION_MAX_RESPONSE = 16384;
+function nixSpecialistOneLine(value, maximum) {
+    return typeof value === "string" ? value.trim().replace(/\\s+/g, " ").slice(0, maximum) : "";
+}
+function nixRenderSpecialistQuestion(interaction) {
+    const payload = record(interaction.payload);
+    const questions = Array.isArray(payload.questions) ? payload.questions : [];
+    if (questions.length < 1 || questions.length > 64)
+        throw new Error("nix_specialist_question_payload_invalid");
+    const lines = [
+        "A Nix specialist needs your decision.",
+        `Issue: ${String(interaction.issueId)}`,
+        `Decision: ${String(interaction.id)}`,
+    ];
+    const title = nixSpecialistOneLine(interaction.title, 240);
+    if (title)
+        lines.push("", title);
+    for (let index = 0; index < questions.length; index += 1) {
+        const question = record(questions[index]);
+        const prompt = nixSpecialistOneLine(question.prompt, 1000);
+        const options = Array.isArray(question.options) ? question.options : [];
+        if (!prompt || options.length < 1 || options.length > 129
+            || !["single", "multi"].includes(String(question.selectionMode))
+            || typeof question.required !== "boolean")
+            throw new Error("nix_specialist_question_payload_invalid");
+        lines.push("", `${index + 1}. ${prompt}`);
+        for (const candidate of options) {
+            const option = record(candidate);
+            const label = nixSpecialistOneLine(option.label, 300);
+            if (!label)
+                throw new Error("nix_specialist_question_payload_invalid");
+            lines.push(`- ${label}`);
+        }
+    }
+    lines.push("", "Reply to Chief in this Telegram chat with your choice.");
+    const message = lines.join("\\n");
+    return message.length <= NIX_SPECIALIST_QUESTION_MAX_MESSAGE
+        ? message
+        : `${message.slice(0, NIX_SPECIALIST_QUESTION_MAX_MESSAGE - 1).trimEnd()}…`;
+}
+function nixSpecialistQuestionSecret() {
+    const source = process.env.NIX_FOUNDER_RELAY_SECRET?.trim() ?? "";
+    if (!/^[0-9a-f]{64}$/.test(source))
+        throw new Error("nix_specialist_question_delivery_secret_invalid");
+    return createHmac("sha256", Buffer.from(source, "hex"))
+        .update(NIX_SPECIALIST_QUESTION_DELIVERY_CONTEXT, "utf8").digest("hex");
+}
+function nixPostSpecialistQuestion(body, interactionId) {
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const signature = createHmac("sha256", nixSpecialistQuestionSecret())
+        .update(`${timestamp}.`, "utf8").update(body).digest("hex");
+    const requestId = `paperclip-specialist-question:${interactionId}`;
+    return new Promise((resolve) => {
+        let connected = false;
+        let settled = false;
+        const finish = (disposition, httpStatus) => {
+            if (settled)
+                return;
+            settled = true;
+            resolve({ disposition, httpStatus });
+        };
+        const request = httpRequest({
+            hostname: NIX_SPECIALIST_QUESTION_DELIVERY_HOST,
+            port: NIX_SPECIALIST_QUESTION_DELIVERY_PORT,
+            path: NIX_SPECIALIST_QUESTION_DELIVERY_PATH,
+            method: "POST",
+            agent: false,
+            timeout: 3000,
+            headers: {
+                "Content-Type": "application/json",
+                "Content-Length": String(body.length),
+                "X-Webhook-Timestamp": timestamp,
+                "X-Webhook-Signature-V2": signature,
+                "X-Request-ID": requestId,
+            },
+        }, (response) => {
+            const chunks = [];
+            let size = 0;
+            response.on("data", (chunk) => {
+                size += chunk.length;
+                if (size <= NIX_SPECIALIST_QUESTION_MAX_RESPONSE)
+                    chunks.push(chunk);
+                else
+                    response.destroy(new Error("nix_specialist_question_response_too_large"));
+            });
+            response.on("error", () => finish("unknown", response.statusCode ?? null));
+            response.on("end", () => {
+                const status = response.statusCode ?? 0;
+                if (size > NIX_SPECIALIST_QUESTION_MAX_RESPONSE)
+                    return finish("unknown", status || null);
+                let parsed = {};
+                try {
+                    parsed = record(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+                }
+                catch { }
+                if (status === 200 && parsed.delivery_id === requestId && parsed.status === "delivered")
+                    return finish("delivered", status);
+                if (status === 200)
+                    return finish("unknown", status);
+                if (status >= 500 || status === 0)
+                    return finish("unknown", status || null);
+                return finish("failed", status);
+            });
+        });
+        request.on("socket", (socket) => {
+            if (socket.connecting)
+                socket.once("connect", () => { connected = true; });
+            else
+                connected = true;
+        });
+        request.on("timeout", () => {
+            request.destroy(new Error("nix_specialist_question_delivery_timeout"));
+        });
+        request.on("error", () => finish(connected ? "unknown" : "failed_not_sent", null));
+        request.end(body);
+    });
+}
+async function nixDeliverSpecialistQuestion(db, binding, value) {
+    const result = record(value);
+    const interaction = record(result.interaction);
+    const interactionId = interaction.id;
+    if (!NIX_SPECIALIST_AGENT_IDS.has(binding.agentId)
+        || typeof interactionId !== "string" || !NIX_CANONICAL_UUID.test(interactionId)
+        || interaction.issueId !== binding.issueId
+        || interaction.kind !== "ask_user_questions"
+        || interaction.status !== "pending"
+        || interaction.sourceRunId !== binding.runId
+        || interaction.requestedResolverPolicy !== "human_only"
+        || interaction.effectiveResolverPolicy !== "human_only"
+        || interaction.addresseeUserId !== NIX_FOUNDER_USER_ID)
+        throw new Error("nix_specialist_question_interaction_invalid");
+    const message = nixRenderSpecialistQuestion(interaction);
+    const requestId = `paperclip-specialist-question:${interactionId}`;
+    const reservation = await db.transaction(async (tx) => {
+        const [stored] = await tx.select().from(issueThreadInteractions).where(and(eq(issueThreadInteractions.id, interactionId), eq(issueThreadInteractions.companyId, binding.companyId), eq(issueThreadInteractions.issueId, binding.issueId))).for("update").limit(1);
+        if (!stored
+            || stored.kind !== "ask_user_questions"
+            || stored.status !== "pending"
+            || stored.sourceRunId !== binding.runId
+            || stored.requestedResolverPolicy !== "human_only"
+            || stored.effectiveResolverPolicy !== "human_only"
+            || stored.addresseeUserId !== NIX_FOUNDER_USER_ID)
+            throw new Error("nix_specialist_question_interaction_invalid");
+        const [existing] = await tx.select().from(activityLog).where(and(eq(activityLog.companyId, binding.companyId), eq(activityLog.action, NIX_SPECIALIST_QUESTION_DELIVERY_ACTION), eq(activityLog.entityType, "issue_thread_interaction"), eq(activityLog.entityId, interactionId))).orderBy(desc(activityLog.createdAt)).limit(1);
+        if (existing) {
+            const details = record(existing.details);
+            const disposition = details.disposition;
+            if (disposition === "pending") {
+                await tx.update(activityLog).set({ details: {
+                        ...details, disposition: "unknown",
+                    } }).where(eq(activityLog.id, existing.id));
+                return { attempt: false, disposition: "unknown" };
+            }
+            if (disposition !== "failed_not_sent") {
+                const safeDisposition = ["delivered", "failed", "unknown"].includes(String(disposition))
+                    ? disposition
+                    : "unknown";
+                return { attempt: false, disposition: safeDisposition };
+            }
+            const attemptCount = typeof details.attemptCount === "number" ? details.attemptCount + 1 : 2;
+            await tx.update(activityLog).set({ details: {
+                    interactionId, requestId, disposition: "pending", attemptCount,
+                    source: "paperclip_runner_protocol",
+                } }).where(eq(activityLog.id, existing.id));
+            return { attempt: true, activityId: existing.id, attemptCount };
+        }
+        const reserved = await persistActivity(tx, {
+            companyId: binding.companyId,
+            actorType: "agent",
+            actorId: binding.agentId,
+            agentId: binding.agentId,
+            runId: binding.runId,
+            issueId: binding.issueId,
+            action: NIX_SPECIALIST_QUESTION_DELIVERY_ACTION,
+            entityType: "issue_thread_interaction",
+            entityId: interactionId,
+            details: {
+                interactionId, requestId, disposition: "pending", attemptCount: 1,
+                source: "paperclip_runner_protocol",
+            },
+        });
+        return { attempt: true, activityId: reserved.activity.id, attemptCount: 1 };
+    });
+    if (!reservation.attempt)
+        return { ...result, specialistQuestionDelivery: { disposition: reservation.disposition } };
+    const body = Buffer.from(JSON.stringify({
+        event_type: NIX_SPECIALIST_QUESTION_EVENT,
+        interaction_id: interactionId,
+        issue_id: binding.issueId,
+        message,
+    }), "utf8");
+    const outcome = await nixPostSpecialistQuestion(body, interactionId);
+    try {
+        await db.update(activityLog).set({ details: {
+                interactionId,
+                requestId,
+                disposition: outcome.disposition,
+                attemptCount: reservation.attemptCount,
+                httpStatus: outcome.httpStatus,
+                source: "paperclip_runner_protocol",
+            } }).where(eq(activityLog.id, reservation.activityId));
+    }
+    catch {
+        return { ...result, specialistQuestionDelivery: { disposition: "unknown" } };
+    }
+    return { ...result, specialistQuestionDelivery: { disposition: outcome.disposition } };
+}
 '''
 
 
 def patch_tool_authority_ts(source: str) -> str:
+    source = _replace_once(
+        source,
+        'import { createHash } from "node:crypto";\n',
+        'import { createHash, createHmac } from "node:crypto";\n'
+        'import { request as httpRequest } from "node:http";\n',
+        label="TypeScript specialist question delivery imports",
+    )
+    source = _replace_once(
+        source,
+        "  agents,\n  agentWakeupRequests,\n",
+        "  agents,\n  activityLog,\n  agentWakeupRequests,\n",
+        label="TypeScript specialist delivery activity import",
+    )
     source = _replace_once(
         source,
         "]);\n\n"
@@ -268,10 +728,36 @@ def patch_tool_authority_ts(source: str) -> str:
         "          payload: {\n",
         label="TypeScript human-only founder routing",
     )
+    source = _replace_once_in_region(
+        source,
+        "  async #requestHumanInput(",
+        "\n}\n\nfunction requiredString",
+        "    if (publication) publishActivity(publication);\n    return result;\n",
+        "    try {\n"
+        "      if (publication) publishActivity(publication);\n"
+        "      return await nixDeliverSpecialistQuestion(this.db, this.binding, result);\n"
+        "    } catch {\n"
+        "      return { ...record(result), specialistQuestionDelivery: { disposition: \"unknown\" } };\n"
+        "    }\n",
+        label="TypeScript specialist question delivery",
+    )
     return source
 
 
 def patch_tool_authority_js(source: str) -> str:
+    source = _replace_once(
+        source,
+        'import { createHash } from "node:crypto";\n',
+        'import { createHash, createHmac } from "node:crypto";\n'
+        'import { request as httpRequest } from "node:http";\n',
+        label="JavaScript specialist question delivery imports",
+    )
+    source = _replace_once(
+        source,
+        'import { agents, agentWakeupRequests, chatEndpoints, documentRevisions, heartbeatRuns, issueApprovals, issueComments, issueDocuments, issues, issueThreadInteractions, } from "@paperclipai/db";\n',
+        'import { agents, activityLog, agentWakeupRequests, chatEndpoints, documentRevisions, heartbeatRuns, issueApprovals, issueComments, issueDocuments, issues, issueThreadInteractions, } from "@paperclipai/db";\n',
+        label="JavaScript specialist delivery activity import",
+    )
     source = _replace_once(
         source,
         "]);\nfunction record(value) {\n",
@@ -376,6 +862,20 @@ def patch_tool_authority_js(source: str) -> str:
         "                addresseeUserId: NIX_FOUNDER_USER_ID,\n"
         "                payload: {\n",
         label="JavaScript human-only founder routing",
+    )
+    source = _replace_once_in_region(
+        source,
+        "    async #requestHumanInput(",
+        "\n}\nfunction requiredString",
+        "        if (publication)\n            publishActivity(publication);\n        return result;\n",
+        "        try {\n"
+        "            if (publication)\n                publishActivity(publication);\n"
+        "            return await nixDeliverSpecialistQuestion(this.db, this.binding, result);\n"
+        "        }\n"
+        "        catch {\n"
+        "            return { ...record(result), specialistQuestionDelivery: { disposition: \"unknown\" } };\n"
+        "        }\n",
+        label="JavaScript specialist question delivery",
     )
     return source
 
@@ -1699,13 +2199,13 @@ PATCH_SPECS = (
     PatchSpec(
         "server/src/services/native-runtime/paperclip-runner-tool-authority.ts",
         "cefbd145437dbeec08ff6844847c0b8cd273d356c06c0dc8c411d9337f7c9a65",
-        "4dcb6276a0239d24fd5dc57adad3a2eda22acab81e179bcb433bfd5e3e06f177",
+        "8f2f69a86cbc5a9470619ec45b5a2f0caa9d7b00f51b7b1a711b5bea84917c90",
         patch_tool_authority_ts,
     ),
     PatchSpec(
         "server/dist/services/native-runtime/paperclip-runner-tool-authority.js",
         "5088550417a9412bb7ad8a819ca4e59f1867027a1900dc832d27c655736b340e",
-        "3f201813577c4da6672ee0c7313f7042c3a614860b57992658f90e97eb464df4",
+        "ca31fbe1f1c4baddb04560ee190df0381546f960ea7584c35172b772b8756015",
         patch_tool_authority_js,
     ),
     PatchSpec(

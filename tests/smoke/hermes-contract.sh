@@ -83,7 +83,7 @@ docker run --rm --volume "$mode_dir:/out" --entrypoint sh "$image" -ec '
 docker run --rm --entrypoint python3 \
   --volume "$repo_root/deploy/hermes/config.yaml:/nix/config.yaml:ro" \
   "$image" -c '
-import os, pathlib, yaml
+import hashlib, hmac, os, pathlib, yaml
 from types import SimpleNamespace
 from gateway.authz_mixin import GatewayAuthorizationMixin
 from gateway.config import Platform
@@ -108,6 +108,12 @@ assert "group_policy" not in cfg["platforms"]["telegram"]
 os.environ["TELEGRAM_ALLOWED_USERS"] = "123456789"
 os.environ["TELEGRAM_HOME_CHANNEL"] = "123456789"
 os.environ["HERMES_DECISION_WEBHOOK_SECRET"] = "f" * 64
+os.environ["NIX_FOUNDER_RELAY_SECRET"] = "a" * 64
+os.environ["NIX_SPECIALIST_QUESTION_DELIVERY_SECRET"] = hmac.new(
+    bytes.fromhex(os.environ["NIX_FOUNDER_RELAY_SECRET"]),
+    b"nix/specialist-question-delivery/v1",
+    hashlib.sha256,
+).hexdigest()
 os.environ["PAPERCLIP_LIOR_USER_ID"] = "lior-contract-user"
 os.environ["TELEGRAM_ALLOW_ALL_USERS"] = "false"
 os.environ["GATEWAY_ALLOW_ALL_USERS"] = "false"
@@ -119,11 +125,18 @@ assert expanded["platforms"]["telegram"]["gateway_restart_notification"] is Fals
 assert expanded["platforms"]["webhook"] == {
   "enabled": True,
   "extra": {
-    "host": "127.0.0.1", "port": 8644, "rate_limit": 10, "max_body_bytes": 16384,
-    "routes": {"paperclip-decision": {
-      "events": ["paperclip.decision_required"],
-      "prompt": "{message}", "deliver": "telegram", "deliver_only": True,
-    }},
+    "host": "0.0.0.0", "port": 8644, "rate_limit": 10, "max_body_bytes": 16384,
+    "routes": {
+      "paperclip-decision": {
+        "events": ["paperclip.decision_required"],
+        "prompt": "{message}", "deliver": "telegram", "deliver_only": True,
+      },
+      "paperclip-specialist-decision": {
+        "events": ["paperclip.decision_required"],
+        "secret": os.environ["NIX_SPECIALIST_QUESTION_DELIVERY_SECRET"],
+        "prompt": "{message}", "deliver": "telegram", "deliver_only": True,
+      },
+    },
   },
 }
 
@@ -203,7 +216,7 @@ mcp_listing=$(docker run --rm --entrypoint hermes \
   --env PAPERCLIP_COMPANY_ID=contract-company \
   --env PAPERCLIP_AGENT_ID=contract-agent \
   --env PAPERCLIP_LIOR_USER_ID=lior-contract-user \
-  --env NIX_FOUNDER_RELAY_SECRET=test-founder-relay-secret-at-least-thirty-two-characters \
+  --env NIX_FOUNDER_RELAY_SECRET=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
   --env NIX_PAPERCLIP_SPECIALIST_AGENT_IDS=11111111-1111-4111-8111-111111111111 \
   --env TELEGRAM_ALLOWED_USERS=123456789 \
   --env TELEGRAM_HOME_CHANNEL=123456789 \
@@ -260,6 +273,7 @@ docker run -d --name "$container" --entrypoint /bin/sh --group-add "$brain_gid" 
   --volume "$repo_root/deploy/hermes/entrypoint.sh:/opt/nix/entrypoint.sh:ro" \
   --volume "$repo_root/deploy/hermes/startup-boundary.py:/opt/nix/startup-boundary.py:ro" \
   --volume "$repo_root/deploy/hermes/patch-run-attribution.py:/opt/nix/patch-run-attribution.py:ro" \
+  --volume "$repo_root/deploy/hermes/patch-specialist-question-route.py:/opt/nix/patch-specialist-question-route.py:ro" \
   --volume "$mode_file:/run/nix/hermes-telegram-mode.env:ro" \
   --volume "$repo_root/deploy/hermes/config.yaml:/opt/data/config.yaml:ro" \
   --volume "$repo_root/deploy/hermes/SOUL.md:/opt/data/SOUL.md:ro" \
@@ -281,6 +295,7 @@ docker run -d --name "$container" --entrypoint /bin/sh --group-add "$brain_gid" 
   --env PAPERCLIP_API_KEY=pcp_contract_fixture --env PAPERCLIP_COMPANY_ID=contract-company \
   --env PAPERCLIP_AGENT_ID=contract-agent \
   --env PAPERCLIP_LIOR_USER_ID=lior-contract-user \
+  --env NIX_FOUNDER_RELAY_SECRET=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
   "$image" /opt/nix/entrypoint.sh gateway run >/dev/null
 
 for _ in $(seq 1 120); do
@@ -337,6 +352,52 @@ assert status == 502 and payload == {
 }
 status, payload = post(signature)
 assert status == 200 and payload == {"status": "duplicate", "delivery_id": delivery_id}
+
+specialist_delivery_id = "paperclip-specialist-question:33333333-3333-4333-8333-333333333333"
+specialist_body = json.dumps(
+    {
+        "event_type": "paperclip.decision_required",
+        "interaction_id": "33333333-3333-4333-8333-333333333333",
+        "issue_id": "11111111-1111-4111-8111-111111111111",
+        "message": "Pinned specialist deliver-only contract probe",
+    },
+    separators=(",", ":"),
+    sort_keys=True,
+).encode()
+specialist_timestamp = str(int(time.time()))
+
+def post_specialist(secret):
+    specialist_signature = hmac.new(
+        secret.encode(), specialist_timestamp.encode() + b"." + specialist_body,
+        hashlib.sha256,
+    ).hexdigest()
+    connection = http.client.HTTPConnection("127.0.0.1", 8644, timeout=5)
+    connection.request(
+        "POST", "/webhooks/paperclip-specialist-decision", body=specialist_body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Webhook-Timestamp": specialist_timestamp,
+            "X-Webhook-Signature-V2": specialist_signature,
+            "X-Request-ID": specialist_delivery_id,
+        },
+    )
+    response = connection.getresponse()
+    payload = json.loads(response.read())
+    connection.close()
+    return response.status, payload
+
+specialist_secret = hmac.new(
+    bytes.fromhex(os.environ["NIX_FOUNDER_RELAY_SECRET"]),
+    b"nix/specialist-question-delivery/v1",
+    hashlib.sha256,
+).hexdigest()
+assert post_specialist(os.environ["HERMES_DECISION_WEBHOOK_SECRET"])[0] == 401
+status, payload = post_specialist(specialist_secret)
+assert status == 502 and payload == {
+    "status": "error", "error": "Delivery failed", "delivery_id": specialist_delivery_id
+}
+status, payload = post_specialist(specialist_secret)
+assert status == 200 and payload == {"status": "duplicate", "delivery_id": specialist_delivery_id}
 PY
 docker exec --user 10000:10000 "$container" sh -ec '
   test "$(id -u):$(id -g)" = 10000:10000

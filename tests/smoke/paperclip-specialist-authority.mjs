@@ -6,6 +6,7 @@ import {
   closeRegisteredClients,
   createDb,
   heartbeatRuns,
+  issueThreadInteractions,
   issues,
 } from "/app/packages/db/src/index.ts";
 import { PaperclipRunnerToolAuthority } from "/app/server/src/services/native-runtime/paperclip-runner-tool-authority.ts";
@@ -162,6 +163,92 @@ try {
     throw new Error("delegated wake authority mismatch");
   }
 
+  const founderQuestion = {
+    idempotencyKey: "product-founder-question",
+    interactionKind: "questions",
+    title: "Choose the lean launch direction",
+    prompt: "Choose the launch direction before Product continues.",
+    continuationPolicy: "wake_assignee",
+    payload: {
+      questions: [{
+        id: "direction",
+        prompt: "Which direction should Product take?",
+        selectionMode: "single",
+        required: true,
+        options: [
+          { id: "alpha", label: "Alpha" },
+          { id: "beta", label: "Beta" },
+        ],
+      }],
+    },
+  };
+  const firstQuestion = await authority.execute({
+    tool: "request_human_input",
+    callId: "product-founder-question-first",
+    arguments: founderQuestion,
+  });
+  const replayedQuestion = await authority.execute({
+    tool: "request_human_input",
+    callId: "product-founder-question-replay",
+    arguments: founderQuestion,
+  });
+  const interactionId = firstQuestion?.interaction?.id;
+  if (
+    typeof interactionId !== "string" ||
+    replayedQuestion?.interaction?.id !== interactionId ||
+    firstQuestion?.specialistQuestionDelivery?.disposition !== "failed_not_sent" ||
+    replayedQuestion?.specialistQuestionDelivery?.disposition !== "failed_not_sent"
+  ) {
+    throw new Error("specialist founder-question replay did not remain recoverable");
+  }
+  const interactions = await db
+    .select()
+    .from(issueThreadInteractions)
+    .where(eq(issueThreadInteractions.id, interactionId));
+  const deliveries = (await db
+    .select()
+    .from(activityLog)
+    .where(eq(activityLog.entityId, interactionId)))
+    .filter((entry) => entry.action === "issue.specialist_question_delivery");
+  if (
+    interactions.length !== 1 ||
+    interactions[0].kind !== "ask_user_questions" ||
+    interactions[0].status !== "pending" ||
+    interactions[0].sourceRunId !== productRunId ||
+    interactions[0].requestedResolverPolicy !== "human_only" ||
+    interactions[0].effectiveResolverPolicy !== "human_only" ||
+    interactions[0].addresseeUserId !== process.env.NIX_PAPERCLIP_FOUNDER_USER_ID ||
+    deliveries.length !== 1 ||
+    deliveries[0].details?.disposition !== "failed_not_sent" ||
+    deliveries[0].details?.attemptCount !== 2 ||
+    deliveries[0].details?.requestId !== `paperclip-specialist-question:${interactionId}`
+  ) {
+    throw new Error("specialist founder-question authority or delivery receipt mismatch");
+  }
+  await db.update(activityLog).set({
+    details: {
+      ...deliveries[0].details,
+      disposition: "pending",
+    },
+  }).where(eq(activityLog.id, deliveries[0].id));
+  const crashReplay = await authority.execute({
+    tool: "request_human_input",
+    callId: "product-founder-question-crash-replay",
+    arguments: founderQuestion,
+  });
+  const [crashDisposition] = await db
+    .select()
+    .from(activityLog)
+    .where(eq(activityLog.id, deliveries[0].id));
+  if (
+    crashReplay?.interaction?.id !== interactionId ||
+    crashReplay?.specialistQuestionDelivery?.disposition !== "unknown" ||
+    crashDisposition?.details?.disposition !== "unknown" ||
+    crashDisposition?.details?.attemptCount !== 2
+  ) {
+    throw new Error("post-reservation crash was replayed instead of becoming unknown");
+  }
+
   await db
     .update(heartbeatRuns)
     .set({ status: "succeeded", finishedAt: new Date() })
@@ -177,6 +264,7 @@ try {
     productRunId,
     chiefIssueId,
     chiefRunId,
+    interactionId,
     committedBeforeWake,
   }));
 } finally {

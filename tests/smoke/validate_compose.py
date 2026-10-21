@@ -61,6 +61,7 @@ for helper in (
     "verify-paperclip-mcp.py",
     "validate-tool-boundary.py",
     "patch-run-attribution.py",
+    "patch-specialist-question-route.py",
     "run-scoped-paperclip-mcp.py",
     "paperclip_question_delivery.py",
 ):
@@ -248,6 +249,10 @@ require(
     "python3 /opt/nix/patch-run-attribution.py" in entrypoint,
     "Hermes must install the version-locked run-attribution patch before upstream startup",
 )
+require(
+    "python3 /opt/nix/patch-specialist-question-route.py" in entrypoint,
+    "Hermes must install the version-locked specialist webhook patch before upstream startup",
+)
 require("@sha256:99641e57" in services["hermes"].get("image", ""), "Hermes image digest is not the reviewed pin")
 
 hermes_config = (repo_root / "deploy/hermes/config.yaml").read_text()
@@ -257,6 +262,25 @@ require("multiplex_profiles: false" in hermes_config, "Slice 1 must not enable p
 require("group_policy:" not in hermes_config, "unsupported Telegram group_policy must not be present")
 require("allow_bots: none" in hermes_config, "Telegram bot senders must not receive a bypass")
 require('allowed_chats: ["${TELEGRAM_ALLOWED_USERS}"]' in hermes_config, "Slice 1 must hard-gate Telegram to Lior's direct chat")
+require("      host: 0.0.0.0" in hermes_config, "Hermes webhook must listen only inside its unpublished container network")
+require(
+    hermes_config.count("paperclip-decision:") == 1
+    and hermes_config.count("paperclip-specialist-decision:") == 1,
+    "Hermes must have exactly the Chief and specialist decision routes",
+)
+require(
+    'secret: "${NIX_SPECIALIST_QUESTION_DELIVERY_SECRET}"' in hermes_config,
+    "specialist delivery must use its direction-specific derived secret",
+)
+require(
+    hermes_config.count("deliver_only: true") == 2,
+    "both fixed webhook routes must remain deliver-only",
+)
+require(
+    "NIX_SPECIALIST_QUESTION_DELIVERY_SECRET" in entrypoint
+    and "nix/specialist-question-delivery/v1" in entrypoint,
+    "Hermes startup must derive the specialist delivery secret in memory",
+)
 require(
     'command: python3' in hermes_config
     and 'args: ["/opt/nix/run-scoped-paperclip-mcp.py"]' in hermes_config,

@@ -127,7 +127,8 @@ services:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3100/api/health | grep -q '\"status\":\"ok\"'"]
       interval: 3s
       timeout: 5s
-      retries: 50
+      # A fresh CI runner builds the pinned upstream provider pack on first boot.
+      retries: 120
       start_period: 30s
 volumes:
   postgres_data:
@@ -388,7 +389,7 @@ project_id=$(jq -er '.projectId' "$state_file")
   /opt/nix/paperclip-specialist-authority.mjs \
   "$company_id" "$project_id" "$chief_id" "$specialist_id" "$growth_id" >"$authority_state"
 chmod 0600 "$authority_state"
-jq -e '.childId and .parentIssueId and .productRunId and .chiefIssueId and .chiefRunId
+jq -e '.childId and .parentIssueId and .productRunId and .chiefIssueId and .chiefRunId and .interactionId
   and .committedBeforeWake == true' \
   "$authority_state" >/dev/null
 

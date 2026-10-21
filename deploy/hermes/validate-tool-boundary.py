@@ -66,6 +66,7 @@ PREFLIGHT_CREDENTIAL_ENV = {
     "API_SERVER_KEY", "HERMES_DECISION_WEBHOOK_SECRET", "TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS",
     "TELEGRAM_HOME_CHANNEL",
     "PAPERCLIP_LIOR_USER_ID", "WEBHOOK_SECRET", "NIX_FOUNDER_RELAY_SECRET",
+    "NIX_SPECIALIST_QUESTION_DELIVERY_SECRET",
     "PAPERCLIP_API_KEY", "PAPERCLIP_AGENT_ID", "PAPERCLIP_COMPANY_ID", "PAPERCLIP_API_URL",
     "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "GOOGLE_API_KEY",
     "OPENCODE_GO_API_KEY", "OPENCODE_GO_BASE_URL", "OPENCODE_ZEN_API_KEY",
@@ -158,19 +159,40 @@ def webhook_config_check(
         secret, os.getenv("WEBHOOK_SECRET", "")
     ):
         fail("the upstream webhook receiver secret differs from the decision sender secret")
-    expected_route = {
+    founder_secret = os.getenv("NIX_FOUNDER_RELAY_SECRET", "")
+    if re.fullmatch(r"[0-9a-f]{64}", founder_secret) is None:
+        fail("the founder relay secret needed for specialist delivery is invalid")
+    expected_specialist_secret = hmac.new(
+        bytes.fromhex(founder_secret),
+        b"nix/specialist-question-delivery/v1",
+        hashlib.sha256,
+    ).hexdigest()
+    specialist_secret = os.getenv("NIX_SPECIALIST_QUESTION_DELIVERY_SECRET", "")
+    if specialist_secret and not hmac.compare_digest(specialist_secret, expected_specialist_secret):
+        fail("the specialist question delivery secret is not the reviewed derivation")
+    expected_chief_route = {
         "events": ["paperclip.decision_required"],
         "prompt": "{message}",
         "deliver": "telegram",
         "deliver_only": True,
     }
+    expected_specialist_route = {
+        "events": ["paperclip.decision_required"],
+        "secret": "${NIX_SPECIALIST_QUESTION_DELIVERY_SECRET}",
+        "prompt": "{message}",
+        "deliver": "telegram",
+        "deliver_only": True,
+    }
     expected_extra = {
-        "host": "127.0.0.1",
+        "host": "0.0.0.0",
         "port": 8644,
         "rate_limit": 10,
         "max_body_bytes": 16384,
         "secret": secret,
-        "routes": {"paperclip-decision": expected_route},
+        "routes": {
+            "paperclip-decision": expected_chief_route,
+            "paperclip-specialist-decision": expected_specialist_route,
+        },
     }
     if webhook.extra != expected_extra:
         fail("the Hermes webhook boundary differs from the fixed delivery policy")
@@ -738,6 +760,21 @@ def process_check(
             fail("run-scoped MCP child is not owned by a discovered wrapper")
     if persistent_upstreams < 1:
         fail("no unattributed persistent Paperclip MCP upstream was found")
+    gateway_pid = found["gateway"][0][0]
+    gateway_environment = _process_environment(proc_root / str(gateway_pid))
+    founder_secret = os.getenv("NIX_FOUNDER_RELAY_SECRET", "")
+    if re.fullmatch(r"[0-9a-f]{64}", founder_secret) is None:
+        fail("validated founder relay secret is missing or invalid")
+    expected_delivery_secret = hmac.new(
+        bytes.fromhex(founder_secret),
+        b"nix/specialist-question-delivery/v1",
+        hashlib.sha256,
+    ).hexdigest().encode()
+    live_delivery_secret = _one_process_value(
+        gateway_environment, "NIX_SPECIALIST_QUESTION_DELIVERY_SECRET"
+    )
+    if not hmac.compare_digest(live_delivery_secret, expected_delivery_secret):
+        fail("live gateway specialist delivery secret differs from the reviewed derivation")
     expected_brain_gid = os.getenv("NIX_EXPECT_BRAIN_GID", "")
     if expected_brain_gid:
         if re.fullmatch(r"[1-9][0-9]*", expected_brain_gid) is None:
@@ -748,6 +785,7 @@ def process_check(
     if profile_env.exists():
         forbidden_profile_keys = {
             "HERMES_DECISION_WEBHOOK_SECRET",
+            "NIX_SPECIALIST_QUESTION_DELIVERY_SECRET",
             "OPENCODE_GO_BASE_URL",
             "PAPERCLIP_LIOR_USER_ID",
             "TELEGRAM_BOT_TOKEN",
@@ -787,8 +825,7 @@ def process_check(
         if expected_telegram_allow_all != b"false" or expected_gateway_allow_all != b"false":
             fail("validated external Telegram allow-all controls are not false")
 
-        gateway_pid = found["gateway"][0][0]
-        environment = _process_environment(proc_root / str(gateway_pid))
+        environment = gateway_environment
         expected_lior_user = os.getenv("NIX_EXPECT_PAPERCLIP_LIOR_USER_ID", "").encode()
         if not expected_lior_user:
             fail("validated founder Paperclip user ID is missing")

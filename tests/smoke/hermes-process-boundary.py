@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import hmac
 import importlib.util
 import io
 import json
@@ -51,7 +52,13 @@ CONFIG = {
     "TELEGRAM_HOME_CHANNEL": "123456789",
     "TELEGRAM_ALLOW_ALL_USERS": "false",
     "GATEWAY_ALLOW_ALL_USERS": "false",
+    "NIX_FOUNDER_RELAY_SECRET": "a" * 64,
 }
+CONFIG["NIX_SPECIALIST_QUESTION_DELIVERY_SECRET"] = hmac.new(
+    bytes.fromhex(CONFIG["NIX_FOUNDER_RELAY_SECRET"]),
+    b"nix/specialist-question-delivery/v1",
+    hashlib.sha256,
+).hexdigest()
 EXPECTATIONS = {
     "NIX_EXPECT_PAPERCLIP_LIOR_USER_ID": CONFIG["PAPERCLIP_LIOR_USER_ID"],
     "NIX_EXPECT_BRAIN_GID": "20000",

@@ -42,13 +42,21 @@ platforms:
   webhook:
     enabled: true
     extra:
-      host: 127.0.0.1
+      # Port 8644 is not published. Paperclip reaches the separately keyed
+      # specialist route only across the private agent network.
+      host: 0.0.0.0
       port: 8644
       rate_limit: 10
       max_body_bytes: 16384
       routes:
         paperclip-decision:
           events: [paperclip.decision_required]
+          prompt: "{message}"
+          deliver: telegram
+          deliver_only: true
+        paperclip-specialist-decision:
+          events: [paperclip.decision_required]
+          secret: "${NIX_SPECIALIST_QUESTION_DELIVERY_SECRET}"
           prompt: "{message}"
           deliver: telegram
           deliver_only: true
