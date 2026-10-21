@@ -405,6 +405,47 @@ try {
     countRequests("delivered") !== 1
   ) throw new Error("delivered/restart ledger classification failed");
 
+  const longPrompt = `Preserve this complete decision context: ${"x".repeat(1160)}`;
+  const longPromptQuestion = caseQuestion("long-prompt");
+  const initialLongPromptResult = await recoveryAuthority.execute({
+    tool: "request_human_input",
+    callId: "delivery-long-prompt-initial",
+    arguments: longPromptQuestion,
+  });
+  const longPromptInteractionId = initialLongPromptResult?.interaction?.id;
+  const [storedLongPrompt] = await db.select().from(issueThreadInteractions)
+    .where(eq(issueThreadInteractions.id, longPromptInteractionId));
+  const [recoveryRun] = await db.select().from(heartbeatRuns)
+    .where(eq(heartbeatRuns.id, recoveryRunId));
+  const resultJson = structuredClone(recoveryRun.resultJson);
+  const longPromptReceipt = resultJson.semanticToolReceipts[longPromptQuestion.idempotencyKey];
+  const longPayload = { ...storedLongPrompt.payload, prompt: longPrompt };
+  longPromptReceipt.result.interaction = {
+    ...longPromptReceipt.result.interaction,
+    summary: longPrompt,
+    payload: longPayload,
+  };
+  await db.update(issueThreadInteractions).set({
+    summary: longPrompt,
+    payload: longPayload,
+  }).where(eq(issueThreadInteractions.id, longPromptInteractionId));
+  await db.update(heartbeatRuns).set({ resultJson })
+    .where(eq(heartbeatRuns.id, recoveryRunId));
+  await db.delete(activityLog).where(eq(activityLog.entityId, longPromptInteractionId));
+  const longPromptResult = await recoveryAuthority.execute({
+    tool: "request_human_input",
+    callId: "delivery-long-prompt-recovery",
+    arguments: longPromptQuestion,
+  });
+  const longPromptMessage = deliveryRequests
+    .filter((entry) => entry.marker === "long-prompt").at(-1)?.body?.message;
+  if (
+    longPromptResult?.specialistQuestionDelivery?.disposition !== "delivered" ||
+    typeof longPromptMessage !== "string" ||
+    !longPromptMessage.includes(`Request: ${longPrompt}`) ||
+    countRequests("long-prompt") !== 2
+  ) throw new Error("valid long specialist prompt was rejected or truncated");
+
   for (const name of ["502", "malformed", "duplicate", "reset", "timeout"]) {
     const first = await executeCase(name);
     const replay = await executeCase(name, "replay");

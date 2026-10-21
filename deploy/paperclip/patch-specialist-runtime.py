@@ -161,8 +161,8 @@ function nixRenderSpecialistQuestion(interaction: Record<string, unknown>): stri
     `Decision: ${String(interaction.id)}`,
   ];
   const title = nixSpecialistOneLine(interaction.title, 300);
-  const summary = nixSpecialistOneLine(interaction.summary, 1000);
-  const payloadPrompt = nixSpecialistOneLine(payload.prompt, 1000);
+  const summary = nixSpecialistOneLine(interaction.summary, 10000);
+  const payloadPrompt = nixSpecialistOneLine(payload.prompt, 10000);
   if (!summary) throw new Error("nix_specialist_question_payload_invalid");
   if (title) lines.push("", title);
   lines.push("", `Request: ${summary}`);
@@ -460,8 +460,8 @@ function nixRenderSpecialistQuestion(interaction) {
         `Decision: ${String(interaction.id)}`,
     ];
     const title = nixSpecialistOneLine(interaction.title, 300);
-    const summary = nixSpecialistOneLine(interaction.summary, 1000);
-    const payloadPrompt = nixSpecialistOneLine(payload.prompt, 1000);
+    const summary = nixSpecialistOneLine(interaction.summary, 10000);
+    const payloadPrompt = nixSpecialistOneLine(payload.prompt, 10000);
     if (!summary)
         throw new Error("nix_specialist_question_payload_invalid");
     if (title)
@@ -2400,13 +2400,13 @@ PATCH_SPECS = (
     PatchSpec(
         "server/src/services/native-runtime/paperclip-runner-tool-authority.ts",
         "cefbd145437dbeec08ff6844847c0b8cd273d356c06c0dc8c411d9337f7c9a65",
-        "e36aeca7ef1ecc351869c1e82c27012895c10acab8216a72e0557ee6e42d1986",
+        "47a11cb2ba960a120e5af61ac2556eb7244132ae035b10c7676fd8ec5b6dda1f",
         patch_tool_authority_ts,
     ),
     PatchSpec(
         "server/dist/services/native-runtime/paperclip-runner-tool-authority.js",
         "5088550417a9412bb7ad8a819ca4e59f1867027a1900dc832d27c655736b340e",
-        "355042d8d7e4ea4103fb59801898aa575d3060b3416a36db52025cee6b009478",
+        "0fd6591b5b7dafc5354bc0f194eeaad16b6af5c53427457a3919526d4d110cdf",
         patch_tool_authority_js,
     ),
     PatchSpec(
