@@ -10,7 +10,7 @@ import {
   issueThreadInteractions,
   issues,
 } from "/app/packages/db/src/index.ts";
-import { PaperclipRunnerToolAuthority } from "/app/server/src/services/native-runtime/paperclip-runner-tool-authority.ts";
+import { PaperclipRunnerToolAuthority } from "/app/server/dist/services/native-runtime/paperclip-runner-tool-authority.js";
 
 const [companyId, projectId, chiefAgentId, productAgentId, growthAgentId] = process.argv.slice(2);
 if (![companyId, projectId, chiefAgentId, productAgentId, growthAgentId].every(Boolean)) {
@@ -354,6 +354,7 @@ try {
     recoveredQuestion?.specialistQuestionDelivery?.disposition !== "delivered" ||
     recoveredRows.length !== 1 ||
     typeof recoveryMessage !== "string" ||
+    !recoveryMessage.includes("Request: Choose the launch direction before Product continues.") ||
     !recoveryMessage.includes("Prefer the smallest reversible launch") ||
     !recoveryMessage.includes("Ship the narrow validation first.") ||
     !recoveryMessage.includes("Beta (add your own text)") ||

@@ -160,8 +160,13 @@ function nixRenderSpecialistQuestion(interaction: Record<string, unknown>): stri
     `Issue: ${String(interaction.issueId)}`,
     `Decision: ${String(interaction.id)}`,
   ];
-  const title = nixSpecialistOneLine(interaction.title, 240);
+  const title = nixSpecialistOneLine(interaction.title, 300);
+  const summary = nixSpecialistOneLine(interaction.summary, 1000);
+  const payloadPrompt = nixSpecialistOneLine(payload.prompt, 1000);
+  if (!summary) throw new Error("nix_specialist_question_payload_invalid");
   if (title) lines.push("", title);
+  lines.push("", `Request: ${summary}`);
+  if (payloadPrompt && payloadPrompt !== summary) lines.push(`Context: ${payloadPrompt}`);
   for (let index = 0; index < questions.length; index += 1) {
     const question = record(questions[index]);
     const prompt = nixSpecialistOneLine(question.prompt, 4000);
@@ -454,9 +459,16 @@ function nixRenderSpecialistQuestion(interaction) {
         `Issue: ${String(interaction.issueId)}`,
         `Decision: ${String(interaction.id)}`,
     ];
-    const title = nixSpecialistOneLine(interaction.title, 240);
+    const title = nixSpecialistOneLine(interaction.title, 300);
+    const summary = nixSpecialistOneLine(interaction.summary, 1000);
+    const payloadPrompt = nixSpecialistOneLine(payload.prompt, 1000);
+    if (!summary)
+        throw new Error("nix_specialist_question_payload_invalid");
     if (title)
         lines.push("", title);
+    lines.push("", `Request: ${summary}`);
+    if (payloadPrompt && payloadPrompt !== summary)
+        lines.push(`Context: ${payloadPrompt}`);
     for (let index = 0; index < questions.length; index += 1) {
         const question = record(questions[index]);
         const prompt = nixSpecialistOneLine(question.prompt, 4000);
@@ -2388,13 +2400,13 @@ PATCH_SPECS = (
     PatchSpec(
         "server/src/services/native-runtime/paperclip-runner-tool-authority.ts",
         "cefbd145437dbeec08ff6844847c0b8cd273d356c06c0dc8c411d9337f7c9a65",
-        "b5b6b2e2f498015f117016a7aea5336a28be3fccaa024cca0f9cc4e86c063847",
+        "e36aeca7ef1ecc351869c1e82c27012895c10acab8216a72e0557ee6e42d1986",
         patch_tool_authority_ts,
     ),
     PatchSpec(
         "server/dist/services/native-runtime/paperclip-runner-tool-authority.js",
         "5088550417a9412bb7ad8a819ca4e59f1867027a1900dc832d27c655736b340e",
-        "e8e29bd48781c0c793c8d53d6b45a7389c3690f86d37e26d4e8a6267c0f71525",
+        "355042d8d7e4ea4103fb59801898aa575d3060b3416a36db52025cee6b009478",
         patch_tool_authority_js,
     ),
     PatchSpec(
