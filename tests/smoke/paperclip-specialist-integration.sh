@@ -90,7 +90,7 @@ services:
       retries: 30
   paperclip:
     image: ${image}
-    entrypoint: ["/opt/nix/paperclip-entrypoint.sh"]
+    entrypoint: ["/opt/nix/paperclip-specialist-authority-entrypoint.sh"]
     env_file:
       - ${paperclip_env}
       - ${relay_env}
@@ -112,10 +112,12 @@ services:
       PAPERCLIP_MIGRATION_AUTO_APPLY: "true"
       PAPERCLIP_RUNNER_REMOTE_BINARY_PATH: /app/packages/paperclip-runner/dist/bin/paperclip-runnerd
       PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH: /runner-cache/nix-specialist-provider-pack
+      NIX_TEST_AUTHORITY_ONLY: "${NIX_TEST_AUTHORITY_ONLY:-false}"
     volumes:
       - paperclip_data:/paperclip
       - runner_cache:/runner-cache
       - ${repo_root}/deploy/paperclip/entrypoint.sh:/opt/nix/paperclip-entrypoint.sh:ro
+      - ${repo_root}/tests/smoke/paperclip-specialist-authority-entrypoint.sh:/opt/nix/paperclip-specialist-authority-entrypoint.sh:ro
       - ${repo_root}/deploy/paperclip/patch-specialist-runtime.py:/opt/nix/patch-specialist-runtime.py:ro
       - ${repo_root}/tests/smoke/paperclip-specialist-authority.mjs:/opt/nix/paperclip-specialist-authority.mjs:ro
     ports:
@@ -123,6 +125,9 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    networks:
+      default:
+        aliases: [hermes]
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3100/api/health | grep -q '\"status\":\"ok\"'"]
       interval: 3s
@@ -392,6 +397,11 @@ chmod 0600 "$authority_state"
 jq -e '.childId and .parentIssueId and .productRunId and .chiefIssueId and .chiefRunId and .interactionId
   and .committedBeforeWake == true' \
   "$authority_state" >/dev/null
+
+if [[ ${NIX_TEST_AUTHORITY_ONLY:-false} == true ]]; then
+  printf 'paperclip specialist authority delivery matrix: ok\n'
+  exit 0
+fi
 
 # Phase two proves the real wake path and the real patched founder relay route.
 python3 - "$base_url" "$state_file" "$authority_state" "$admin_password" "$relay_secret" "$signature_sentinel" "$project" "$compose_file" <<'PY'

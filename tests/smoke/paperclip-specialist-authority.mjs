@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { createServer } from "node:http";
 
 import { eq } from "/app/server/node_modules/drizzle-orm/index.js";
 import {
@@ -22,10 +23,12 @@ if (!databaseUrl) throw new Error("DATABASE_URL is required");
 const db = createDb(databaseUrl);
 const parentIssueId = randomUUID();
 const productRunId = randomUUID();
+const recoveryRunId = randomUUID();
 const chiefIssueId = randomUUID();
 const chiefRunId = randomUUID();
 let committedBeforeWake = false;
 let delegatedWake = null;
+let mockHermes = null;
 
 try {
   await db.insert(issues).values({
@@ -174,10 +177,11 @@ try {
         id: "direction",
         prompt: "Which direction should Product take?",
         selectionMode: "single",
-        required: true,
+        helpText: "Prefer the smallest reversible launch that validates demand.",
+        allowOther: true,
         options: [
-          { id: "alpha", label: "Alpha" },
-          { id: "beta", label: "Beta" },
+          { id: "alpha", label: "Alpha", description: "Ship the narrow validation first." },
+          { id: "beta", label: "Beta", description: "Describe a different direction.", freeText: true },
         ],
       }],
     },
@@ -249,6 +253,11 @@ try {
     throw new Error("post-reservation crash was replayed instead of becoming unknown");
   }
 
+  // Remove the delivery ledger row to model an interaction committed before
+  // specialist Telegram delivery existed. A later run must recover that exact
+  // interaction rather than create another one.
+  await db.delete(activityLog).where(eq(activityLog.id, deliveries[0].id));
+
   await db
     .update(heartbeatRuns)
     .set({ status: "succeeded", finishedAt: new Date() })
@@ -258,15 +267,193 @@ try {
     .set({ executionRunId: null })
     .where(eq(issues.id, parentIssueId));
 
+  await db.insert(heartbeatRuns).values({
+    id: recoveryRunId,
+    companyId,
+    agentId: productAgentId,
+    status: "running",
+    runtimeMode: "native",
+    nativeIssueId: parentIssueId,
+    invocationSource: "assignment",
+    triggerDetail: "system",
+    contextSnapshot: { issueId: parentIssueId },
+  });
+  await db
+    .update(issues)
+    .set({ executionRunId: recoveryRunId })
+    .where(eq(issues.id, parentIssueId));
+
+  const deliveryRequests = [];
+  mockHermes = createServer((request, response) => {
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.on("end", () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      const requestId = request.headers["x-request-id"];
+      const marker = typeof body.message === "string"
+        ? body.message.match(/\[case:([a-z0-9-]+)\]/)?.[1] ?? "recovery"
+        : "invalid";
+      deliveryRequests.push({ marker, body, requestId });
+      if (marker === "reset") {
+        request.socket.destroy();
+        return;
+      }
+      if (marker === "timeout") {
+        const timer = setTimeout(() => response.destroy(), 3500);
+        response.on("close", () => clearTimeout(timer));
+        return;
+      }
+      if (marker === "502") {
+        response.writeHead(502, { "content-type": "application/json" });
+        response.end(JSON.stringify({ status: "failed" }));
+        return;
+      }
+      if (marker === "malformed") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end("{");
+        return;
+      }
+      if (marker === "duplicate") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ status: "duplicate", delivery_id: requestId }));
+        return;
+      }
+      const deliver = () => {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ status: "delivered", delivery_id: requestId }));
+      };
+      if (marker === "concurrent") setTimeout(deliver, 200);
+      else deliver();
+    });
+  });
+  await new Promise((resolve, reject) => {
+    mockHermes.once("error", reject);
+    mockHermes.listen(8644, "0.0.0.0", resolve);
+  });
+
+  const recoveryAuthority = new PaperclipRunnerToolAuthority(db, {
+    companyId,
+    issueId: parentIssueId,
+    runId: recoveryRunId,
+    agentId: productAgentId,
+    workMode: "standard",
+  });
+  const recoveredQuestion = await recoveryAuthority.execute({
+    tool: "request_human_input",
+    callId: "product-founder-question-cross-run-recovery",
+    arguments: founderQuestion,
+  });
+  const recoveredRows = await db
+    .select()
+    .from(issueThreadInteractions)
+    .where(eq(issueThreadInteractions.idempotencyKey, founderQuestion.idempotencyKey));
+  const recoveryMessage = deliveryRequests.find((entry) => entry.marker === "recovery")?.body?.message;
+  if (
+    recoveredQuestion?.interaction?.id !== interactionId ||
+    recoveredQuestion?.interaction?.sourceRunId !== productRunId ||
+    recoveredQuestion?.specialistQuestionDelivery?.disposition !== "delivered" ||
+    recoveredRows.length !== 1 ||
+    typeof recoveryMessage !== "string" ||
+    !recoveryMessage.includes("Prefer the smallest reversible launch") ||
+    !recoveryMessage.includes("Ship the narrow validation first.") ||
+    !recoveryMessage.includes("Beta (add your own text)") ||
+    !recoveryMessage.includes("Describe a different direction.") ||
+    !recoveryMessage.includes("Other (write your own answer)") ||
+    recoveryMessage.includes("(required)")
+  ) {
+    throw new Error("cross-run pre-patch interaction recovery or faithful rendering failed");
+  }
+
+  const caseQuestion = (name) => ({
+    idempotencyKey: `delivery-${name}`,
+    interactionKind: "questions",
+    title: `[case:${name}] Delivery classification`,
+    prompt: `Classify ${name} delivery.`,
+    continuationPolicy: "wake_assignee",
+    payload: {
+      questions: [{
+        id: `question-${name}`,
+        prompt: `Choose for ${name}.`,
+        selectionMode: "single",
+        options: [{ id: "yes", label: "Yes" }],
+      }],
+    },
+  });
+  const executeCase = (name, suffix = "first") => recoveryAuthority.execute({
+    tool: "request_human_input",
+    callId: `delivery-${name}-${suffix}`,
+    arguments: caseQuestion(name),
+  });
+  const countRequests = (name) => deliveryRequests.filter((entry) => entry.marker === name).length;
+
+  const delivered = await executeCase("delivered");
+  const deliveredReplay = await executeCase("delivered", "replay");
+  const restartedAuthority = new PaperclipRunnerToolAuthority(db, {
+    companyId, issueId: parentIssueId, runId: recoveryRunId,
+    agentId: productAgentId, workMode: "standard",
+  });
+  const restartReplay = await restartedAuthority.execute({
+    tool: "request_human_input",
+    callId: "delivery-delivered-restart",
+    arguments: caseQuestion("delivered"),
+  });
+  if (
+    delivered?.specialistQuestionDelivery?.disposition !== "delivered" ||
+    deliveredReplay?.specialistQuestionDelivery?.disposition !== "delivered" ||
+    restartReplay?.specialistQuestionDelivery?.disposition !== "delivered" ||
+    countRequests("delivered") !== 1
+  ) throw new Error("delivered/restart ledger classification failed");
+
+  for (const name of ["502", "malformed", "duplicate", "reset", "timeout"]) {
+    const first = await executeCase(name);
+    const replay = await executeCase(name, "replay");
+    if (
+      first?.specialistQuestionDelivery?.disposition !== "unknown" ||
+      replay?.specialistQuestionDelivery?.disposition !== "unknown" ||
+      countRequests(name) !== 1
+    ) throw new Error(`${name} delivery was retried or misclassified`);
+  }
+
+  const concurrentResults = await Promise.all([
+    executeCase("concurrent", "one"),
+    executeCase("concurrent", "two"),
+  ]);
+  const concurrentDispositions = concurrentResults
+    .map((entry) => entry?.specialistQuestionDelivery?.disposition).sort();
+  if (
+    countRequests("concurrent") !== 1 ||
+    concurrentDispositions.join(",") !== "delivered,unknown"
+  ) throw new Error("concurrent delivery reservation did not prevent a duplicate send");
+
+  const oversize = caseQuestion("oversize");
+  oversize.payload.questions[0].prompt = "x".repeat(3800);
+  const oversizeResult = await recoveryAuthority.execute({
+    tool: "request_human_input",
+    callId: "delivery-oversize",
+    arguments: oversize,
+  });
+  const oversizeId = oversizeResult?.interaction?.id;
+  const oversizeLedger = (await db.select().from(activityLog)
+    .where(eq(activityLog.entityId, oversizeId)))
+    .find((entry) => entry.action === "issue.specialist_question_delivery");
+  if (
+    oversizeResult?.specialistQuestionDelivery?.disposition !== "failed" ||
+    oversizeLedger?.details?.disposition !== "failed" ||
+    oversizeLedger?.details?.failure !== "message_invalid_or_oversize" ||
+    countRequests("oversize") !== 0
+  ) throw new Error("oversize specialist question was truncated or sent");
+
   process.stdout.write(JSON.stringify({
     childId,
     parentIssueId,
     productRunId,
+    recoveryRunId,
     chiefIssueId,
     chiefRunId,
     interactionId,
     committedBeforeWake,
   }));
 } finally {
+  if (mockHermes) await new Promise((resolve) => mockHermes.close(resolve));
   await closeRegisteredClients(databaseUrl);
 }

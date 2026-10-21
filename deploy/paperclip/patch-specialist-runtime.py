@@ -143,7 +143,10 @@ type NixSpecialistDeliveryDisposition =
   "pending" | "failed_not_sent" | "delivered" | "failed" | "unknown";
 
 function nixSpecialistOneLine(value: unknown, maximum: number): string {
-  return typeof value === "string" ? value.trim().replace(/\\s+/g, " ").slice(0, maximum) : "";
+  if (typeof value !== "string") return "";
+  const normalized = value.trim().replace(/\\s+/g, " ");
+  if (normalized.length > maximum) throw new Error("nix_specialist_question_payload_invalid");
+  return normalized;
 }
 
 function nixRenderSpecialistQuestion(interaction: Record<string, unknown>): string {
@@ -161,26 +164,39 @@ function nixRenderSpecialistQuestion(interaction: Record<string, unknown>): stri
   if (title) lines.push("", title);
   for (let index = 0; index < questions.length; index += 1) {
     const question = record(questions[index]);
-    const prompt = nixSpecialistOneLine(question.prompt, 1000);
+    const prompt = nixSpecialistOneLine(question.prompt, 4000);
+    const helpText = nixSpecialistOneLine(question.helpText, 4000);
     const options = Array.isArray(question.options) ? question.options : [];
     if (!prompt || options.length < 1 || options.length > 129
       || !["single", "multi"].includes(String(question.selectionMode))
-      || typeof question.required !== "boolean") {
+      || (question.required !== undefined && typeof question.required !== "boolean")
+      || (question.allowOther !== undefined && typeof question.allowOther !== "boolean")) {
       throw new Error("nix_specialist_question_payload_invalid");
     }
-    lines.push("", `${index + 1}. ${prompt}`);
+    const qualifiers = [
+      question.selectionMode === "multi" ? "choose one or more" : "choose one",
+      question.required === true ? "required" : null,
+    ].filter(Boolean).join(", ");
+    lines.push("", `${index + 1}. ${prompt} (${qualifiers})`);
+    if (helpText) lines.push(`   ${helpText}`);
     for (const candidate of options) {
       const option = record(candidate);
-      const label = nixSpecialistOneLine(option.label, 300);
-      if (!label) throw new Error("nix_specialist_question_payload_invalid");
-      lines.push(`- ${label}`);
+      const label = nixSpecialistOneLine(option.label, 1000);
+      const description = nixSpecialistOneLine(option.description, 4000);
+      if (!label || (option.freeText !== undefined && typeof option.freeText !== "boolean")) {
+        throw new Error("nix_specialist_question_payload_invalid");
+      }
+      lines.push(`- ${label}${option.freeText === true ? " (add your own text)" : ""}`);
+      if (description) lines.push(`  ${description}`);
     }
+    if (question.allowOther === true) lines.push("- Other (write your own answer)");
   }
   lines.push("", "Reply to Chief in this Telegram chat with your choice.");
   const message = lines.join("\\n");
-  return message.length <= NIX_SPECIALIST_QUESTION_MAX_MESSAGE
-    ? message
-    : `${message.slice(0, NIX_SPECIALIST_QUESTION_MAX_MESSAGE - 1).trimEnd()}…`;
+  if (message.length > NIX_SPECIALIST_QUESTION_MAX_MESSAGE) {
+    throw new Error("nix_specialist_question_message_too_large");
+  }
+  return message;
 }
 
 function nixSpecialistQuestionSecret(): string {
@@ -269,13 +285,13 @@ async function nixDeliverSpecialistQuestion(
     || interaction.issueId !== binding.issueId
     || interaction.kind !== "ask_user_questions"
     || interaction.status !== "pending"
-    || interaction.sourceRunId !== binding.runId
+    || typeof interaction.sourceRunId !== "string" || !NIX_CANONICAL_UUID.test(interaction.sourceRunId)
+    || interaction.createdByAgentId !== binding.agentId
     || interaction.requestedResolverPolicy !== "human_only"
     || interaction.effectiveResolverPolicy !== "human_only"
     || interaction.addresseeUserId !== NIX_FOUNDER_USER_ID) {
     throw new Error("nix_specialist_question_interaction_invalid");
   }
-  const message = nixRenderSpecialistQuestion(interaction);
   const requestId = `paperclip-specialist-question:${interactionId}`;
   const reservation = await db.transaction(async (tx) => {
     const [stored] = await tx.select().from(issueThreadInteractions).where(and(
@@ -286,12 +302,21 @@ async function nixDeliverSpecialistQuestion(
     if (!stored
       || stored.kind !== "ask_user_questions"
       || stored.status !== "pending"
-      || stored.sourceRunId !== binding.runId
+      || stored.sourceRunId !== interaction.sourceRunId
+      || stored.createdByAgentId !== binding.agentId
       || stored.requestedResolverPolicy !== "human_only"
       || stored.effectiveResolverPolicy !== "human_only"
       || stored.addresseeUserId !== NIX_FOUNDER_USER_ID) {
       throw new Error("nix_specialist_question_interaction_invalid");
     }
+    const [sourceRun] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.id, stored.sourceRunId),
+      eq(heartbeatRuns.companyId, binding.companyId),
+      eq(heartbeatRuns.agentId, binding.agentId),
+      eq(heartbeatRuns.nativeIssueId, binding.issueId),
+      eq(heartbeatRuns.runtimeMode, "native"),
+    )).limit(1);
+    if (!sourceRun) throw new Error("nix_specialist_question_source_run_invalid");
     const [existing] = await tx.select().from(activityLog).where(and(
       eq(activityLog.companyId, binding.companyId),
       eq(activityLog.action, NIX_SPECIALIST_QUESTION_DELIVERY_ACTION),
@@ -340,6 +365,21 @@ async function nixDeliverSpecialistQuestion(
   });
   if (!reservation.attempt) {
     return { ...result, specialistQuestionDelivery: { disposition: reservation.disposition } };
+  }
+  let message: string;
+  try {
+    message = nixRenderSpecialistQuestion(interaction);
+  } catch {
+    try {
+      await db.update(activityLog).set({ details: {
+        interactionId, requestId, disposition: "failed",
+        attemptCount: reservation.attemptCount, httpStatus: null,
+        source: "paperclip_runner_protocol", failure: "message_invalid_or_oversize",
+      } }).where(eq(activityLog.id, reservation.activityId));
+      return { ...result, specialistQuestionDelivery: { disposition: "failed" } };
+    } catch {
+      return { ...result, specialistQuestionDelivery: { disposition: "unknown" } };
+    }
   }
   const body = Buffer.from(JSON.stringify({
     event_type: NIX_SPECIALIST_QUESTION_EVENT,
@@ -397,7 +437,12 @@ const NIX_SPECIALIST_QUESTION_EVENT = "paperclip.decision_required";
 const NIX_SPECIALIST_QUESTION_MAX_MESSAGE = 3800;
 const NIX_SPECIALIST_QUESTION_MAX_RESPONSE = 16384;
 function nixSpecialistOneLine(value, maximum) {
-    return typeof value === "string" ? value.trim().replace(/\\s+/g, " ").slice(0, maximum) : "";
+    if (typeof value !== "string")
+        return "";
+    const normalized = value.trim().replace(/\\s+/g, " ");
+    if (normalized.length > maximum)
+        throw new Error("nix_specialist_question_payload_invalid");
+    return normalized;
 }
 function nixRenderSpecialistQuestion(interaction) {
     const payload = record(interaction.payload);
@@ -414,26 +459,39 @@ function nixRenderSpecialistQuestion(interaction) {
         lines.push("", title);
     for (let index = 0; index < questions.length; index += 1) {
         const question = record(questions[index]);
-        const prompt = nixSpecialistOneLine(question.prompt, 1000);
+        const prompt = nixSpecialistOneLine(question.prompt, 4000);
+        const helpText = nixSpecialistOneLine(question.helpText, 4000);
         const options = Array.isArray(question.options) ? question.options : [];
         if (!prompt || options.length < 1 || options.length > 129
             || !["single", "multi"].includes(String(question.selectionMode))
-            || typeof question.required !== "boolean")
+            || (question.required !== undefined && typeof question.required !== "boolean")
+            || (question.allowOther !== undefined && typeof question.allowOther !== "boolean"))
             throw new Error("nix_specialist_question_payload_invalid");
-        lines.push("", `${index + 1}. ${prompt}`);
+        const qualifiers = [
+            question.selectionMode === "multi" ? "choose one or more" : "choose one",
+            question.required === true ? "required" : null,
+        ].filter(Boolean).join(", ");
+        lines.push("", `${index + 1}. ${prompt} (${qualifiers})`);
+        if (helpText)
+            lines.push(`   ${helpText}`);
         for (const candidate of options) {
             const option = record(candidate);
-            const label = nixSpecialistOneLine(option.label, 300);
-            if (!label)
+            const label = nixSpecialistOneLine(option.label, 1000);
+            const description = nixSpecialistOneLine(option.description, 4000);
+            if (!label || (option.freeText !== undefined && typeof option.freeText !== "boolean"))
                 throw new Error("nix_specialist_question_payload_invalid");
-            lines.push(`- ${label}`);
+            lines.push(`- ${label}${option.freeText === true ? " (add your own text)" : ""}`);
+            if (description)
+                lines.push(`  ${description}`);
         }
+        if (question.allowOther === true)
+            lines.push("- Other (write your own answer)");
     }
     lines.push("", "Reply to Chief in this Telegram chat with your choice.");
     const message = lines.join("\\n");
-    return message.length <= NIX_SPECIALIST_QUESTION_MAX_MESSAGE
-        ? message
-        : `${message.slice(0, NIX_SPECIALIST_QUESTION_MAX_MESSAGE - 1).trimEnd()}…`;
+    if (message.length > NIX_SPECIALIST_QUESTION_MAX_MESSAGE)
+        throw new Error("nix_specialist_question_message_too_large");
+    return message;
 }
 function nixSpecialistQuestionSecret() {
     const source = process.env.NIX_FOUNDER_RELAY_SECRET?.trim() ?? "";
@@ -521,23 +579,27 @@ async function nixDeliverSpecialistQuestion(db, binding, value) {
         || interaction.issueId !== binding.issueId
         || interaction.kind !== "ask_user_questions"
         || interaction.status !== "pending"
-        || interaction.sourceRunId !== binding.runId
+        || typeof interaction.sourceRunId !== "string" || !NIX_CANONICAL_UUID.test(interaction.sourceRunId)
+        || interaction.createdByAgentId !== binding.agentId
         || interaction.requestedResolverPolicy !== "human_only"
         || interaction.effectiveResolverPolicy !== "human_only"
         || interaction.addresseeUserId !== NIX_FOUNDER_USER_ID)
         throw new Error("nix_specialist_question_interaction_invalid");
-    const message = nixRenderSpecialistQuestion(interaction);
     const requestId = `paperclip-specialist-question:${interactionId}`;
     const reservation = await db.transaction(async (tx) => {
         const [stored] = await tx.select().from(issueThreadInteractions).where(and(eq(issueThreadInteractions.id, interactionId), eq(issueThreadInteractions.companyId, binding.companyId), eq(issueThreadInteractions.issueId, binding.issueId))).for("update").limit(1);
         if (!stored
             || stored.kind !== "ask_user_questions"
             || stored.status !== "pending"
-            || stored.sourceRunId !== binding.runId
+            || stored.sourceRunId !== interaction.sourceRunId
+            || stored.createdByAgentId !== binding.agentId
             || stored.requestedResolverPolicy !== "human_only"
             || stored.effectiveResolverPolicy !== "human_only"
             || stored.addresseeUserId !== NIX_FOUNDER_USER_ID)
             throw new Error("nix_specialist_question_interaction_invalid");
+        const [sourceRun] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(eq(heartbeatRuns.id, stored.sourceRunId), eq(heartbeatRuns.companyId, binding.companyId), eq(heartbeatRuns.agentId, binding.agentId), eq(heartbeatRuns.nativeIssueId, binding.issueId), eq(heartbeatRuns.runtimeMode, "native"))).limit(1);
+        if (!sourceRun)
+            throw new Error("nix_specialist_question_source_run_invalid");
         const [existing] = await tx.select().from(activityLog).where(and(eq(activityLog.companyId, binding.companyId), eq(activityLog.action, NIX_SPECIALIST_QUESTION_DELIVERY_ACTION), eq(activityLog.entityType, "issue_thread_interaction"), eq(activityLog.entityId, interactionId))).orderBy(desc(activityLog.createdAt)).limit(1);
         if (existing) {
             const details = record(existing.details);
@@ -580,6 +642,23 @@ async function nixDeliverSpecialistQuestion(db, binding, value) {
     });
     if (!reservation.attempt)
         return { ...result, specialistQuestionDelivery: { disposition: reservation.disposition } };
+    let message;
+    try {
+        message = nixRenderSpecialistQuestion(interaction);
+    }
+    catch {
+        try {
+            await db.update(activityLog).set({ details: {
+                    interactionId, requestId, disposition: "failed",
+                    attemptCount: reservation.attemptCount, httpStatus: null,
+                    source: "paperclip_runner_protocol", failure: "message_invalid_or_oversize",
+                } }).where(eq(activityLog.id, reservation.activityId));
+            return { ...result, specialistQuestionDelivery: { disposition: "failed" } };
+        }
+        catch {
+            return { ...result, specialistQuestionDelivery: { disposition: "unknown" } };
+        }
+    }
     const body = Buffer.from(JSON.stringify({
         event_type: NIX_SPECIALIST_QUESTION_EVENT,
         interaction_id: interactionId,
@@ -720,6 +799,61 @@ def patch_tool_authority_ts(source: str) -> str:
     )
     source = _replace_once(
         source,
+        "          : suppliedPayload;\n"
+        "        const interaction = await issueThreadInteractionService(tx).create(context.issue, {\n"
+        "          kind,\n"
+        "          idempotencyKey,\n"
+        "          sourceRunId: this.binding.runId,\n",
+        "          : suppliedPayload;\n"
+        "        const [recoverableInteraction] = await tx.select().from(issueThreadInteractions).where(and(\n"
+        "          eq(issueThreadInteractions.companyId, this.binding.companyId),\n"
+        "          eq(issueThreadInteractions.issueId, this.binding.issueId),\n"
+        "          eq(issueThreadInteractions.idempotencyKey, idempotencyKey),\n"
+        "        )).for(\"update\").limit(1);\n"
+        "        let sourceRunId = this.binding.runId;\n"
+        "        if (recoverableInteraction) {\n"
+        "          if (recoverableInteraction.createdByAgentId !== this.binding.agentId\n"
+        "            || typeof recoverableInteraction.sourceRunId !== \"string\") {\n"
+        "            throw new Error(\"nix_specialist_question_recovery_denied\");\n"
+        "          }\n"
+        "          const [sourceRun] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(\n"
+        "            eq(heartbeatRuns.id, recoverableInteraction.sourceRunId),\n"
+        "            eq(heartbeatRuns.companyId, this.binding.companyId),\n"
+        "            eq(heartbeatRuns.agentId, this.binding.agentId),\n"
+        "            eq(heartbeatRuns.nativeIssueId, this.binding.issueId),\n"
+        "            eq(heartbeatRuns.runtimeMode, \"native\"),\n"
+        "          )).limit(1);\n"
+        "          if (!sourceRun) throw new Error(\"nix_specialist_question_recovery_denied\");\n"
+        "          sourceRunId = recoverableInteraction.sourceRunId;\n"
+        "        }\n"
+        "        const interaction = await issueThreadInteractionService(tx).create(context.issue, {\n"
+        "          kind,\n"
+        "          idempotencyKey,\n"
+        "          sourceRunId,\n",
+        label="TypeScript specialist question cross-run recovery",
+    )
+    source = _replace_once_in_region(
+        source,
+        "  async #requestHumanInput(",
+        "\n}\n\nfunction requiredString",
+        "        const activity = await persistActivity(tx, {\n"
+        "          companyId: this.binding.companyId,\n",
+        "        const activity = recoverableInteraction ? null : await persistActivity(tx, {\n"
+        "          companyId: this.binding.companyId,\n",
+        label="TypeScript recovered interaction activity suppression",
+    )
+    source = _replace_once_in_region(
+        source,
+        "  async #requestHumanInput(",
+        "\n}\n\nfunction requiredString",
+        "        publication = activity.publication;\n"
+        "        return { interaction, disposition: \"applied\" };\n",
+        "        publication = activity?.publication ?? null;\n"
+        "        return { interaction, disposition: \"applied\" };\n",
+        label="TypeScript optional recovered interaction publication",
+    )
+    source = _replace_once(
+        source,
         "          continuationPolicy: requiredString(input.continuationPolicy),\n"
         "          payload: {\n",
         "          continuationPolicy: \"wake_assignee\" as const,\n"
@@ -852,6 +986,61 @@ def patch_tool_authority_js(source: str) -> str:
         '                    })) };\n'
         '            }\n',
         label="JavaScript specialist directory projection",
+    )
+    source = _replace_once(
+        source,
+        "                    : suppliedPayload;\n"
+        "            const interaction = await issueThreadInteractionService(tx).create(context.issue, {\n"
+        "                kind,\n"
+        "                idempotencyKey,\n"
+        "                sourceRunId: this.binding.runId,\n",
+        "                    : suppliedPayload;\n"
+        "            const [recoverableInteraction] = await tx.select().from(issueThreadInteractions).where(and(\n"
+        "                eq(issueThreadInteractions.companyId, this.binding.companyId),\n"
+        "                eq(issueThreadInteractions.issueId, this.binding.issueId),\n"
+        "                eq(issueThreadInteractions.idempotencyKey, idempotencyKey),\n"
+        "            )).for(\"update\").limit(1);\n"
+        "            let sourceRunId = this.binding.runId;\n"
+        "            if (recoverableInteraction) {\n"
+        "                if (recoverableInteraction.createdByAgentId !== this.binding.agentId\n"
+        "                    || typeof recoverableInteraction.sourceRunId !== \"string\")\n"
+        "                    throw new Error(\"nix_specialist_question_recovery_denied\");\n"
+        "                const [sourceRun] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(\n"
+        "                    eq(heartbeatRuns.id, recoverableInteraction.sourceRunId),\n"
+        "                    eq(heartbeatRuns.companyId, this.binding.companyId),\n"
+        "                    eq(heartbeatRuns.agentId, this.binding.agentId),\n"
+        "                    eq(heartbeatRuns.nativeIssueId, this.binding.issueId),\n"
+        "                    eq(heartbeatRuns.runtimeMode, \"native\"),\n"
+        "                )).limit(1);\n"
+        "                if (!sourceRun)\n"
+        "                    throw new Error(\"nix_specialist_question_recovery_denied\");\n"
+        "                sourceRunId = recoverableInteraction.sourceRunId;\n"
+        "            }\n"
+        "            const interaction = await issueThreadInteractionService(tx).create(context.issue, {\n"
+        "                kind,\n"
+        "                idempotencyKey,\n"
+        "                sourceRunId,\n",
+        label="JavaScript specialist question cross-run recovery",
+    )
+    source = _replace_once_in_region(
+        source,
+        "    async #requestHumanInput(",
+        "\n}\nfunction requiredString",
+        "            const activity = await persistActivity(tx, {\n"
+        "                companyId: this.binding.companyId,\n",
+        "            const activity = recoverableInteraction ? null : await persistActivity(tx, {\n"
+        "                companyId: this.binding.companyId,\n",
+        label="JavaScript recovered interaction activity suppression",
+    )
+    source = _replace_once_in_region(
+        source,
+        "    async #requestHumanInput(",
+        "\n}\nfunction requiredString",
+        "            publication = activity.publication;\n"
+        "            return { interaction, disposition: \"applied\" };\n",
+        "            publication = activity?.publication ?? null;\n"
+        "            return { interaction, disposition: \"applied\" };\n",
+        label="JavaScript optional recovered interaction publication",
     )
     source = _replace_once(
         source,
@@ -2199,13 +2388,13 @@ PATCH_SPECS = (
     PatchSpec(
         "server/src/services/native-runtime/paperclip-runner-tool-authority.ts",
         "cefbd145437dbeec08ff6844847c0b8cd273d356c06c0dc8c411d9337f7c9a65",
-        "8f2f69a86cbc5a9470619ec45b5a2f0caa9d7b00f51b7b1a711b5bea84917c90",
+        "b5b6b2e2f498015f117016a7aea5336a28be3fccaa024cca0f9cc4e86c063847",
         patch_tool_authority_ts,
     ),
     PatchSpec(
         "server/dist/services/native-runtime/paperclip-runner-tool-authority.js",
         "5088550417a9412bb7ad8a819ca4e59f1867027a1900dc832d27c655736b340e",
-        "ca31fbe1f1c4baddb04560ee190df0381546f960ea7584c35172b772b8756015",
+        "e8e29bd48781c0c793c8d53d6b45a7389c3690f86d37e26d4e8a6267c0f71525",
         patch_tool_authority_js,
     ),
     PatchSpec(
