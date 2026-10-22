@@ -9,7 +9,7 @@ Todoist remains the canonical task board and GitHub remains code/durable knowled
 
 - SSH into the VPS; do not paste secrets into GitHub, Discord, or this repository.
 - Check available CPU/RAM, existing Docker containers, host disk, and existing deployment backups.
-- The old Compose project is untouched. It must **not** be removed until this pilot passes acceptance tests and required state is preserved.
+- The old Compose project is untouched. One migration caveat: this pilot does not implement automatic LNX-to-LNO task handoff; internal Bot Mode rooms require additional, explicit initialization. Until then, humans coordinate through Discord and Todoist. It must **not** be removed until this pilot passes acceptance tests and required state is preserved.
 - Each Discord bot needs its **own token**; never reuse the old Telegram token or share a token across profiles.
 - Create a private Discord channel such as #nix-agent-test and initially allow only the founder to invoke tools.
 
@@ -23,7 +23,7 @@ docker pull nousresearch/hermes-agent:0.22.3
 docker image inspect --format '{{index .RepoDigests 0}}' nousresearch/hermes-agent:0.22.3
 ~~~
 
-Copy the verified repo@sha256 digest into HERMES_IMAGE in the local .env before production use.
+Copy the verified repo@sha256 digest into HERMES_IMAGE in the local .env before production use. If the example tag does not resolve, select an actually published release and verify its digest; do not use a floating latest tag for production.
 Do not commit .env. Confirm the digest matches the intended platform and stable release.
 
 ~~~bash
@@ -67,6 +67,7 @@ DISCORD_BOT_TOKEN=<that profile's Discord token>
 DISCORD_ALLOWED_USERS=<founder's numeric Discord user ID>
 DISCORD_ALLOWED_CHANNELS=<numeric test channel ID>
 DISCORD_REQUIRE_MENTION=true
+DISCORD_THREAD_REQUIRE_MENTION=true
 DISCORD_ALLOW_BOTS=none
 API_SERVER_ENABLED=false
 ~~~
