@@ -14,6 +14,7 @@ mode_dir="/tmp/${container}-mode"
 mode_file="$mode_dir/mode.env"
 api_key=$(openssl rand -hex 32)
 decision_webhook_secret=$(openssl rand -hex 32)
+founder_relay_secret=$(openssl rand -hex 32)
 brain_gid=12345
 
 cleanup() {
@@ -53,6 +54,7 @@ docker run -d --name "$container" --network "$network" --entrypoint /bin/sh \
   --volume "$repo_root/deploy/hermes/entrypoint.sh:/opt/nix/entrypoint.sh:ro" \
   --volume "$repo_root/deploy/hermes/startup-boundary.py:/opt/nix/startup-boundary.py:ro" \
   --volume "$repo_root/deploy/hermes/patch-run-attribution.py:/opt/nix/patch-run-attribution.py:ro" \
+  --volume "$repo_root/deploy/hermes/patch-specialist-question-route.py:/opt/nix/patch-specialist-question-route.py:ro" \
   --volume "$mode_file:/run/nix/hermes-telegram-mode.env:ro" \
   --volume "$repo_root/deploy/hermes/config.yaml:/opt/data/config.yaml:ro" \
   --volume "$repo_root/deploy/hermes/SOUL.md:/opt/data/SOUL.md:ro" \
@@ -63,6 +65,7 @@ docker run -d --name "$container" --network "$network" --entrypoint /bin/sh \
   --env API_SERVER_ENABLED=true --env API_SERVER_HOST=0.0.0.0 --env API_SERVER_PORT=8642 \
   --env API_SERVER_KEY="$api_key" --env HERMES_GATEWAY_BOOTSTRAP_STATE=running \
   --env HERMES_DECISION_WEBHOOK_SECRET="$decision_webhook_secret" \
+  --env NIX_FOUNDER_RELAY_SECRET="$founder_relay_secret" \
   --env WEBHOOK_ENABLED=true --env WEBHOOK_SECRET="$decision_webhook_secret" \
   --env TELEGRAM_BOT_TOKEN=nix-disabled-token-canary \
   --env TELEGRAM_ALLOWED_USERS=123456789 --env TELEGRAM_HOME_CHANNEL=123456789 \
