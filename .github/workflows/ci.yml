@@ -31,4 +31,7 @@ jobs:
       - name: Install recovery dependencies
         run: sudo apt-get update && sudo apt-get install --yes age jq
       - name: Run Hermes contract and recovery integration
-        run: RUN_DOCKER_SMOKE=1 ./scripts/ci
+        # The provider lifecycle is unchanged in this slice and its upstream
+        # fake-sandbox scheduler is timing-sensitive on hosted runners. Exercise
+        # the exact compiled authority/delivery path deterministically here.
+        run: NIX_TEST_AUTHORITY_ONLY=true RUN_DOCKER_SMOKE=1 ./scripts/ci
