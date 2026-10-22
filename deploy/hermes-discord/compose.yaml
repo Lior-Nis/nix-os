@@ -1,0 +1,21 @@
+name: nix-hermes-discord
+
+services:
+  hermes:
+    image: ${HERMES_IMAGE:?Set HERMES_IMAGE in .env}
+    container_name: nix-hermes-discord
+    restart: unless-stopped
+    command: ["gateway", "run"]
+    environment:
+      API_SERVER_ENABLED: "false"
+      HERMES_DASHBOARD: "0"
+    volumes:
+      - ${HERMES_DATA_DIR:?Set absolute HERMES_DATA_DIR in .env}:/opt/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# Deliberately no ports, Paperclip, Telegram, Postgres, or Docker socket.
+# Separate project/container/volume from the existing Nix stack.
