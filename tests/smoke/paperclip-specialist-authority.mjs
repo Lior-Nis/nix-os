@@ -485,6 +485,15 @@ try {
     countRequests("oversize") !== 0
   ) throw new Error("oversize specialist question was truncated or sent");
 
+  // Leave a terminal, idle issue for the deterministic founder-relay route
+  // phase. The provider-lifecycle mode creates its own independent fixture.
+  await db.update(heartbeatRuns).set({
+    status: "succeeded",
+    finishedAt: new Date(),
+  }).where(eq(heartbeatRuns.id, recoveryRunId));
+  await db.update(issues).set({ executionRunId: null })
+    .where(eq(issues.id, parentIssueId));
+
   process.stdout.write(JSON.stringify({
     childId,
     parentIssueId,

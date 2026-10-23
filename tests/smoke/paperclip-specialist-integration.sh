@@ -398,13 +398,8 @@ jq -e '.childId and .parentIssueId and .productRunId and .chiefIssueId and .chie
   and .committedBeforeWake == true' \
   "$authority_state" >/dev/null
 
-if [[ ${NIX_TEST_AUTHORITY_ONLY:-false} == true ]]; then
-  printf 'paperclip specialist authority delivery matrix: ok\n'
-  exit 0
-fi
-
 # Phase two proves the real wake path and the real patched founder relay route.
-python3 - "$base_url" "$state_file" "$authority_state" "$admin_password" "$relay_secret" "$signature_sentinel" "$project" "$compose_file" <<'PY'
+python3 - "$base_url" "$state_file" "$authority_state" "$admin_password" "$relay_secret" "$signature_sentinel" "$project" "$compose_file" "${NIX_TEST_AUTHORITY_ONLY:-false}" <<'PY'
 import hashlib
 import hmac
 import http.cookies
@@ -415,12 +410,14 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from email.utils import parsedate_to_datetime
 from concurrent.futures import ThreadPoolExecutor
 
 (
     base, state_path, authority_path, password, relay_secret,
-    signature_sentinel, compose_project, compose_path,
+    signature_sentinel, compose_project, compose_path, authority_only_raw,
 ) = sys.argv[1:]
+authority_only = authority_only_raw == "true"
 state = json.load(open(state_path, encoding="utf-8"))
 authority = json.load(open(authority_path, encoding="utf-8"))
 origin = "https://nix-os.test-tailnet.ts.net"
@@ -466,242 +463,247 @@ request("POST", "/api/auth/sign-in/email", {
     "password": password,
 })
 
-sandbox_issue = request("POST", f"/api/companies/{state['companyId']}/issues", {
-    "projectId": state["projectId"],
-    "title": "Exercise fake sandbox native lifecycle",
-    "description": "Start OpenCode and fail only at the intentional dummy provider.",
-    "status": "backlog",
-    "workMode": "standard",
-    "assigneeAgentId": state["specialistId"],
-})
+if not authority_only:
+    sandbox_issue = request("POST", f"/api/companies/{state['companyId']}/issues", {
+        "projectId": state["projectId"],
+        "title": "Exercise fake sandbox native lifecycle",
+        "description": "Start OpenCode and fail only at the intentional dummy provider.",
+        "status": "backlog",
+        "workMode": "standard",
+        "assigneeAgentId": state["specialistId"],
+    })
 
-wake = request("POST", f"/api/agents/{state['specialistId']}/wakeup", {
-    "source": "on_demand",
-    "triggerDetail": "manual",
-    "reason": "hosted_secret_free_integration",
-    "payload": {
-        "issueId": sandbox_issue["id"],
-        "taskId": sandbox_issue["id"],
-        "taskKey": sandbox_issue.get("identifier"),
-    },
-    "idempotencyKey": f"hosted-sandbox:{sandbox_issue['id']}",
-    "forceFreshSession": True,
-})
-sandbox_run_id = wake["id"]
-
-terminal = {"succeeded", "failed", "cancelled", "timed_out", "interrupted"}
-def wait_events(run_id, predicate, timeout=20):
-    deadline = time.time() + timeout
-    observed = []
-    while time.time() < deadline:
-        observed = request("GET", f"/api/heartbeat-runs/{run_id}/events?limit=1000")
-        if predicate(observed):
-            return observed
-        time.sleep(0.5)
-    return observed
-
-deadline = time.time() + 120
-run = wake
-while run.get("status") not in terminal and time.time() < deadline:
-    time.sleep(1)
-    run = request("GET", f"/api/heartbeat-runs/{sandbox_run_id}")
-assert run.get("status") == "failed", run.get("status")
-assert run.get("runtimeMode") == "native", run.get("runtimeMode")
-assert isinstance(run.get("runnerInstanceId"), str) and run["runnerInstanceId"]
-
-events = wait_events(
-    sandbox_run_id,
-    lambda rows: "runner_transport_ineligible" in json.dumps(rows),
-)
-event_types = [event.get("eventType") for event in events]
-assert "native.process_start_requested" in event_types, event_types
-spans = [event.get("payload", {}) for event in events if event.get("eventType") == "run.performance.span"]
-for required in ("environment.acquire", "environment.workspace.realize"):
-    matched = [span for span in spans if span.get("span") == required]
-    assert matched and matched[-1].get("outcome") == "ok", (required, spans)
-assert "runner_transport_ineligible" in json.dumps(events), event_types
-assert "session.started" not in event_types, event_types
-
-lease = {}
-lease_deadline = time.time() + 30
-while time.time() < lease_deadline:
-    leases = request("GET", f"/api/environments/{state['environmentId']}/leases")
-    lease = next(row for row in leases if row.get("heartbeatRunId") == sandbox_run_id)
-    if lease.get("releasedAt") and lease.get("status") in {"released", "failed", "expired"}:
-        break
-    time.sleep(1)
-assert lease.get("provider") == "fake-plugin", lease
-assert str(lease.get("providerLeaseId", "")).startswith(f"fake-plugin://{sandbox_run_id}/"), lease
-assert lease.get("releasedAt"), lease
-assert lease.get("status") in {"released", "failed", "expired"}, lease.get("status")
-
-# The official fake provider intentionally has no runner WebSocket ingress.
-# Its self-contained supported coverage ends at the exact fail-closed transport
-# gate after plugin activation, lease acquisition, workspace realization, and
-# cleanup. The instance-managed local environment is the smallest official,
-# secret-free path through runnerd and OpenCode in hosted CI; the production
-# authenticated WSS transport remains a live-acceptance responsibility.
-request("PATCH", f"/api/agents/{state['specialistId']}", {
-    "defaultEnvironmentId": state["localEnvironmentId"],
-})
-first_turn_canary = "PRODUCT_FIRST_TURN_CANARY_7f31b9c2"
-local_issue = request("POST", f"/api/companies/{state['companyId']}/issues", {
-    "projectId": state["projectId"],
-    "title": "Exercise runnerd and OpenCode dummy failure",
-    "description": (
-        "Start the exact pinned OpenCode runtime and fail only at its nonexistent dummy provider. "
-        + first_turn_canary
-    ),
-    "status": "backlog",
-    "workMode": "standard",
-    "assigneeAgentId": state["specialistId"],
-})
-local_wake = request("POST", f"/api/agents/{state['specialistId']}/wakeup", {
-    "source": "on_demand",
-    "triggerDetail": "manual",
-    "reason": "hosted_secret_free_runner_integration",
-    "payload": {
-        "issueId": local_issue["id"],
-        "taskId": local_issue["id"],
-        "taskKey": local_issue.get("identifier"),
-    },
-    "idempotencyKey": f"hosted-local:{local_issue['id']}",
-    "forceFreshSession": True,
-})
-local_run_id = local_wake["id"]
-deadline = time.time() + 120
-local_run = local_wake
-while local_run.get("status") not in terminal and time.time() < deadline:
-    time.sleep(1)
-    local_run = request("GET", f"/api/heartbeat-runs/{local_run_id}")
-assert local_run.get("status") == "failed", local_run.get("status")
-assert local_run.get("runtimeMode") == "native", local_run.get("runtimeMode")
-assert isinstance(local_run.get("runnerInstanceId"), str) and local_run["runnerInstanceId"]
-
-local_events = wait_events(
-    local_run_id,
-    lambda rows: "turn.failed" in [event.get("eventType") for event in rows],
-)
-local_event_types = [event.get("eventType") for event in local_events]
-for required in (
-    "native.process_start_requested",
-    "session.started",
-    "turn.submitted",
-    "turn.failed",
-):
-    assert required in local_event_types, (
-        required,
-        local_event_types,
-        {
-            "error": local_run.get("error"),
-            "errorCode": local_run.get("errorCode"),
-            "resultJson": local_run.get("resultJson"),
+    wake = request("POST", f"/api/agents/{state['specialistId']}/wakeup", {
+        "source": "on_demand",
+        "triggerDetail": "manual",
+        "reason": "hosted_secret_free_integration",
+        "payload": {
+            "issueId": sandbox_issue["id"],
+            "taskId": sandbox_issue["id"],
+            "taskKey": sandbox_issue.get("identifier"),
         },
-        [
-            {
-                "eventType": event.get("eventType"),
-                "message": event.get("message"),
-                "payload": event.get("payload"),
-            }
-            for event in local_events
-            if event.get("eventType") in {"error", "lifecycle", "native.process_identity_recorded"}
-        ],
+        "idempotencyKey": f"hosted-sandbox:{sandbox_issue['id']}",
+        "forceFreshSession": True,
+    })
+    sandbox_run_id = wake["id"]
+
+    terminal = {"succeeded", "failed", "cancelled", "timed_out", "interrupted"}
+    def wait_events(run_id, predicate, timeout=20):
+        deadline = time.time() + timeout
+        observed = []
+        while time.time() < deadline:
+            observed = request("GET", f"/api/heartbeat-runs/{run_id}/events?limit=1000")
+            if predicate(observed):
+                return observed
+            time.sleep(0.5)
+        return observed
+
+    deadline = time.time() + 120
+    run = wake
+    while run.get("status") not in terminal and time.time() < deadline:
+        time.sleep(1)
+        run = request("GET", f"/api/heartbeat-runs/{sandbox_run_id}")
+    assert run.get("status") == "failed", run.get("status")
+    assert run.get("runtimeMode") == "native", run.get("runtimeMode")
+    assert isinstance(run.get("runnerInstanceId"), str) and run["runnerInstanceId"]
+
+    events = wait_events(
+        sandbox_run_id,
+        lambda rows: "runner_transport_ineligible" in json.dumps(rows),
     )
-session_contexts = [
-    (((event.get("payload") or {}).get("prpEvent") or {}).get("payload") or {}).get("context") or {}
-    for event in local_events
-    if event.get("eventType") == "session.started"
-]
-assert any(context.get("modelProvider") == "nixdummy" for context in session_contexts), session_contexts
-assert local_run.get("errorCode") == "adapter_failed", local_run.get("errorCode")
-assert (local_run.get("resultJson") or {}).get("summary") == (
-    "The OpenCode run failed before it completed."
-), local_run.get("resultJson")
-turn_failed = next(event for event in local_events if event.get("eventType") == "turn.failed")
-turn_failed_payload = (
-    ((turn_failed.get("payload") or {}).get("prpEvent") or {}).get("payload") or {}
-)
-assert turn_failed_payload.get("status") == "failed", turn_failed_payload
-assert first_turn_canary in json.dumps(local_events), "Product turn context omitted its canary"
+    event_types = [event.get("eventType") for event in events]
+    assert "native.process_start_requested" in event_types, event_types
+    spans = [event.get("payload", {}) for event in events if event.get("eventType") == "run.performance.span"]
+    for required in ("environment.acquire", "environment.workspace.realize"):
+        matched = [span for span in spans if span.get("span") == required]
+        assert matched and matched[-1].get("outcome") == "ok", (required, spans)
+    assert "runner_transport_ineligible" in json.dumps(events), event_types
+    assert "session.started" not in event_types, event_types
 
-def normalized_session_ids(rows):
-    return {
-        ((event.get("payload") or {}).get("prpEvent") or {}).get("normalizedSessionId")
-        for event in rows
-        if ((event.get("payload") or {}).get("prpEvent") or {}).get("normalizedSessionId")
-    }
+    lease = {}
+    lease_deadline = time.time() + 30
+    while time.time() < lease_deadline:
+        leases = request("GET", f"/api/environments/{state['environmentId']}/leases")
+        lease = next(row for row in leases if row.get("heartbeatRunId") == sandbox_run_id)
+        if lease.get("releasedAt") and lease.get("status") in {"released", "failed", "expired"}:
+            break
+        time.sleep(1)
+    assert lease.get("provider") == "fake-plugin", lease
+    assert str(lease.get("providerLeaseId", "")).startswith(f"fake-plugin://{sandbox_run_id}/"), lease
+    assert lease.get("releasedAt"), lease
+    assert lease.get("status") in {"released", "failed", "expired"}, lease.get("status")
 
-product_sessions = normalized_session_ids(local_events)
-assert len(product_sessions) == 1, product_sessions
+    # The official fake provider intentionally has no runner WebSocket ingress.
+    # Its self-contained supported coverage ends at the exact fail-closed transport
+    # gate after plugin activation, lease acquisition, workspace realization, and
+    # cleanup. The instance-managed local environment is the smallest official,
+    # secret-free path through runnerd and OpenCode in hosted CI; the production
+    # authenticated WSS transport remains a live-acceptance responsibility.
+    request("PATCH", f"/api/agents/{state['specialistId']}", {
+        "defaultEnvironmentId": state["localEnvironmentId"],
+    })
+    first_turn_canary = "PRODUCT_FIRST_TURN_CANARY_7f31b9c2"
+    local_issue = request("POST", f"/api/companies/{state['companyId']}/issues", {
+        "projectId": state["projectId"],
+        "title": "Exercise runnerd and OpenCode dummy failure",
+        "description": (
+            "Start the exact pinned OpenCode runtime and fail only at its nonexistent dummy provider. "
+            + first_turn_canary
+        ),
+        "status": "backlog",
+        "workMode": "standard",
+        "assigneeAgentId": state["specialistId"],
+    })
+    local_wake = request("POST", f"/api/agents/{state['specialistId']}/wakeup", {
+        "source": "on_demand",
+        "triggerDetail": "manual",
+        "reason": "hosted_secret_free_runner_integration",
+        "payload": {
+            "issueId": local_issue["id"],
+            "taskId": local_issue["id"],
+            "taskKey": local_issue.get("identifier"),
+        },
+        "idempotencyKey": f"hosted-local:{local_issue['id']}",
+        "forceFreshSession": True,
+    })
+    local_run_id = local_wake["id"]
+    deadline = time.time() + 120
+    local_run = local_wake
+    while local_run.get("status") not in terminal and time.time() < deadline:
+        time.sleep(1)
+        local_run = request("GET", f"/api/heartbeat-runs/{local_run_id}")
+    assert local_run.get("status") == "failed", local_run.get("status")
+    assert local_run.get("runtimeMode") == "native", local_run.get("runtimeMode")
+    assert isinstance(local_run.get("runnerInstanceId"), str) and local_run["runnerInstanceId"]
 
-# The authority fixture already committed this same-project child, its Product
-# attribution, and the Growth assignment before handing off the wake request.
-# Now execute Growth through the same pinned runnerd/OpenCode path and prove a
-# fresh task-scoped session does not inherit Product's first-turn canary.
-delegated_child = request("GET", f"/api/issues/{authority['childId']}")
-assert delegated_child.get("parentId") == authority["parentIssueId"], delegated_child
-assert delegated_child.get("projectId") == state["projectId"], delegated_child
-assert delegated_child.get("assigneeAgentId") == state["growthId"], delegated_child
-assert delegated_child.get("createdByAgentId") == state["specialistId"], delegated_child
-assert delegated_child.get("originRunId") == authority["productRunId"], delegated_child
+    local_events = wait_events(
+        local_run_id,
+        lambda rows: "turn.failed" in [event.get("eventType") for event in rows],
+    )
+    local_event_types = [event.get("eventType") for event in local_events]
+    for required in (
+        "native.process_start_requested",
+        "session.started",
+        "turn.submitted",
+        "turn.failed",
+    ):
+        assert required in local_event_types, (
+            required,
+            local_event_types,
+            {
+                "error": local_run.get("error"),
+                "errorCode": local_run.get("errorCode"),
+                "resultJson": local_run.get("resultJson"),
+            },
+            [
+                {
+                    "eventType": event.get("eventType"),
+                    "message": event.get("message"),
+                    "payload": event.get("payload"),
+                }
+                for event in local_events
+                if event.get("eventType") in {"error", "lifecycle", "native.process_identity_recorded"}
+            ],
+        )
+    session_contexts = [
+        (((event.get("payload") or {}).get("prpEvent") or {}).get("payload") or {}).get("context") or {}
+        for event in local_events
+        if event.get("eventType") == "session.started"
+    ]
+    assert any(context.get("modelProvider") == "nixdummy" for context in session_contexts), session_contexts
+    assert local_run.get("errorCode") == "adapter_failed", local_run.get("errorCode")
+    assert (local_run.get("resultJson") or {}).get("summary") == (
+        "The OpenCode run failed before it completed."
+    ), local_run.get("resultJson")
+    turn_failed = next(event for event in local_events if event.get("eventType") == "turn.failed")
+    turn_failed_payload = (
+        ((turn_failed.get("payload") or {}).get("prpEvent") or {}).get("payload") or {}
+    )
+    assert turn_failed_payload.get("status") == "failed", turn_failed_payload
+    assert first_turn_canary in json.dumps(local_events), "Product turn context omitted its canary"
 
-growth_wake = request("POST", f"/api/agents/{state['growthId']}/wakeup", {
-    "source": "assignment",
-    "triggerDetail": "system",
-    "reason": "issue_assigned",
-    "payload": {
-        "issueId": delegated_child["id"],
-        "taskId": delegated_child["id"],
-        "taskKey": delegated_child.get("identifier"),
-        "parentIssueId": authority["parentIssueId"],
-    },
-    "idempotencyKey": f"hosted-growth:{delegated_child['id']}",
-    "forceFreshSession": True,
-})
-growth_run_id = growth_wake["id"]
-deadline = time.time() + 120
-growth_run = growth_wake
-while growth_run.get("status") not in terminal and time.time() < deadline:
-    time.sleep(1)
-    growth_run = request("GET", f"/api/heartbeat-runs/{growth_run_id}")
-assert growth_run.get("status") == "failed", growth_run.get("status")
-assert growth_run.get("runtimeMode") == "native", growth_run.get("runtimeMode")
-assert growth_run.get("agentId") == state["growthId"], growth_run
-assert isinstance(growth_run.get("runnerInstanceId"), str) and growth_run["runnerInstanceId"]
-growth_events = wait_events(
-    growth_run_id,
-    lambda rows: "turn.failed" in [event.get("eventType") for event in rows],
-)
-growth_event_types = [event.get("eventType") for event in growth_events]
-for required in (
-    "native.process_start_requested",
-    "session.started",
-    "turn.submitted",
-    "turn.failed",
-):
-    assert required in growth_event_types, (required, growth_event_types)
-growth_contexts = [
-    (((event.get("payload") or {}).get("prpEvent") or {}).get("payload") or {}).get("context") or {}
-    for event in growth_events
-    if event.get("eventType") == "session.started"
-]
-assert any(context.get("modelProvider") == "nixdummy" for context in growth_contexts), growth_contexts
-assert growth_run.get("errorCode") == "adapter_failed", growth_run.get("errorCode")
-assert (growth_run.get("resultJson") or {}).get("summary") == (
-    "The OpenCode run failed before it completed."
-), growth_run.get("resultJson")
-growth_sessions = normalized_session_ids(growth_events)
-assert len(growth_sessions) == 1, growth_sessions
-assert product_sessions.isdisjoint(growth_sessions), (product_sessions, growth_sessions)
-assert first_turn_canary not in json.dumps(growth_events), (
-    "Product first-turn canary leaked into Growth's fresh context"
-)
+    def normalized_session_ids(rows):
+        return {
+            ((event.get("payload") or {}).get("prpEvent") or {}).get("normalizedSessionId")
+            for event in rows
+            if ((event.get("payload") or {}).get("prpEvent") or {}).get("normalizedSessionId")
+        }
 
-# Keep the founder-decision fixture independent of the deliberately failed
-# OpenCode provider turn. The completed fake-sandbox transport-gate run is a
-# stable originating specialist run whose response continuation can enqueue.
-issue = sandbox_issue
-run_id = sandbox_run_id
+    product_sessions = normalized_session_ids(local_events)
+    assert len(product_sessions) == 1, product_sessions
+
+    # The authority fixture already committed this same-project child, its Product
+    # attribution, and the Growth assignment before handing off the wake request.
+    # Now execute Growth through the same pinned runnerd/OpenCode path and prove a
+    # fresh task-scoped session does not inherit Product's first-turn canary.
+    delegated_child = request("GET", f"/api/issues/{authority['childId']}")
+    assert delegated_child.get("parentId") == authority["parentIssueId"], delegated_child
+    assert delegated_child.get("projectId") == state["projectId"], delegated_child
+    assert delegated_child.get("assigneeAgentId") == state["growthId"], delegated_child
+    assert delegated_child.get("createdByAgentId") == state["specialistId"], delegated_child
+    assert delegated_child.get("originRunId") == authority["productRunId"], delegated_child
+
+    growth_wake = request("POST", f"/api/agents/{state['growthId']}/wakeup", {
+        "source": "assignment",
+        "triggerDetail": "system",
+        "reason": "issue_assigned",
+        "payload": {
+            "issueId": delegated_child["id"],
+            "taskId": delegated_child["id"],
+            "taskKey": delegated_child.get("identifier"),
+            "parentIssueId": authority["parentIssueId"],
+        },
+        "idempotencyKey": f"hosted-growth:{delegated_child['id']}",
+        "forceFreshSession": True,
+    })
+    growth_run_id = growth_wake["id"]
+    deadline = time.time() + 120
+    growth_run = growth_wake
+    while growth_run.get("status") not in terminal and time.time() < deadline:
+        time.sleep(1)
+        growth_run = request("GET", f"/api/heartbeat-runs/{growth_run_id}")
+    assert growth_run.get("status") == "failed", growth_run.get("status")
+    assert growth_run.get("runtimeMode") == "native", growth_run.get("runtimeMode")
+    assert growth_run.get("agentId") == state["growthId"], growth_run
+    assert isinstance(growth_run.get("runnerInstanceId"), str) and growth_run["runnerInstanceId"]
+    growth_events = wait_events(
+        growth_run_id,
+        lambda rows: "turn.failed" in [event.get("eventType") for event in rows],
+    )
+    growth_event_types = [event.get("eventType") for event in growth_events]
+    for required in (
+        "native.process_start_requested",
+        "session.started",
+        "turn.submitted",
+        "turn.failed",
+    ):
+        assert required in growth_event_types, (required, growth_event_types)
+    growth_contexts = [
+        (((event.get("payload") or {}).get("prpEvent") or {}).get("payload") or {}).get("context") or {}
+        for event in growth_events
+        if event.get("eventType") == "session.started"
+    ]
+    assert any(context.get("modelProvider") == "nixdummy" for context in growth_contexts), growth_contexts
+    assert growth_run.get("errorCode") == "adapter_failed", growth_run.get("errorCode")
+    assert (growth_run.get("resultJson") or {}).get("summary") == (
+        "The OpenCode run failed before it completed."
+    ), growth_run.get("resultJson")
+    growth_sessions = normalized_session_ids(growth_events)
+    assert len(growth_sessions) == 1, growth_sessions
+    assert product_sessions.isdisjoint(growth_sessions), (product_sessions, growth_sessions)
+    assert first_turn_canary not in json.dumps(growth_events), (
+        "Product first-turn canary leaked into Growth's fresh context"
+    )
+
+# Hosted CI skips only the provider lifecycle above. Its already-committed
+# authority fixture supplies the same terminal Product origin for the real
+# founder-relay response-route contract below.
+if authority_only:
+    issue = request("GET", f"/api/issues/{authority['parentIssueId']}")
+    run_id = authority["productRunId"]
+else:
+    issue = sandbox_issue
+    run_id = sandbox_run_id
 
 interaction = request("POST", f"/api/issues/{issue['id']}/interactions", {
     "kind": "ask_user_questions",
@@ -731,7 +733,14 @@ before_activity = request("GET", f"/api/issues/{issue['id']}/activity")
 path = f"/api/issues/{issue['id']}/interactions/{interaction['id']}/respond"
 def signed_relay(relay_path, answer_id, message_id, idempotency_key):
     body = {"answers": [{"questionId": "direction", "optionIds": [answer_id]}]}
-    timestamp = str(int(time.time()))
+    # Sign against the receiving server's clock. This keeps the verifier test
+    # deterministic when a suspended local Docker VM has not yet caught up to
+    # the host clock; hosted CI normally returns the same epoch on both sides.
+    health_request = urllib.request.Request(f"{base}/api/health", method="GET")
+    with urllib.request.urlopen(health_request, timeout=5) as health_response:
+        server_date = health_response.headers.get("Date")
+    assert server_date, "Paperclip health response omitted its Date header"
+    timestamp = str(int(parsedate_to_datetime(server_date).timestamp()))
     canonical_body = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     digest = hashlib.sha256(canonical_body.encode()).hexdigest()
     canonical = "\n".join([
@@ -900,9 +909,27 @@ assert not any(
     for row in mismatch_activity
 ), mismatch_activity
 
-request("PATCH", f"/api/issues/{mismatch_issue['id']}", {
-    "assigneeAgentId": state["specialistId"],
-})
+if authority_only:
+    # Both deterministic route phases intentionally reuse the authority issue.
+    # Restore the fixture row without emitting an assignment wake that could
+    # race the following side-effect-free rejection assertions.
+    subprocess.run(
+        [
+            *compose_exec,
+            "--command",
+            (
+                "UPDATE issues SET assignee_agent_id = "
+                f"'{state['specialistId']}' WHERE id = '{mismatch_issue['id']}';"
+            ),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+else:
+    request("PATCH", f"/api/issues/{mismatch_issue['id']}", {
+        "assigneeAgentId": state["specialistId"],
+    })
 restored = request("GET", f"/api/issues/{mismatch_issue['id']}")
 assert restored.get("assigneeAgentId") == state["specialistId"], restored
 
