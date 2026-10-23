@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "system": "Nix OS",
+  "description": "Lean Hermes operating model for the Nix portfolio",
+  "orchestrator": "lnx",
+  "discord_visible_profiles": ["lnx"],
+  "profiles": [
+    {
+      "id": "lnx",
+      "hermes_profile": "default",
+      "kind": "orchestrator",
+      "role": "Portfolio orchestrator for Lior and Nix",
+      "projects": ["pulse", "algua", "meabeclick"]
+    },
+    {
+      "id": "pulse",
+      "hermes_profile": "pulse",
+      "kind": "lead",
+      "role": "Pulse Lead",
+      "projects": ["pulse"]
+    },
+    {
+      "id": "algua",
+      "hermes_profile": "algua",
+      "kind": "lead",
+      "role": "Algua Lead",
+      "projects": ["algua"]
+    },
+    {
+      "id": "meabeclick",
+      "hermes_profile": "meabeclick",
+      "kind": "lead",
+      "role": "MeaBeclick Lead",
+      "projects": ["meabeclick"]
+    },
+    {
+      "id": "meabeclickux",
+      "hermes_profile": "meabeclickux",
+      "kind": "specialist",
+      "role": "MeaBeclick UX Specialist",
+      "parent": "meabeclick",
+      "projects": ["meabeclick"]
+    },
+    {
+      "id": "meabeclickeng",
+      "hermes_profile": "meabeclickeng",
+      "kind": "specialist",
+      "role": "MeaBeclick Engineering Specialist",
+      "parent": "meabeclick",
+      "projects": ["meabeclick"]
+    },
+    {
+      "id": "meabeclickgrowth",
+      "hermes_profile": "meabeclickgrowth",
+      "kind": "specialist",
+      "role": "MeaBeclick Growth Specialist",
+      "parent": "meabeclick",
+      "projects": ["meabeclick"]
+    }
+  ],
+  "projects": [
+    {
+      "id": "pulse",
+      "name": "Pulse",
+      "lead": "pulse",
+      "board": "pulse",
+      "workspace": "${HOME}/Projects/pulse"
+    },
+    {
+      "id": "algua",
+      "name": "Algua",
+      "lead": "algua",
+      "board": "algua",
+      "workspace": "${HOME}/Projects/algua"
+    },
+    {
+      "id": "meabeclick",
+      "name": "MeaBeclick",
+      "lead": "meabeclick",
+      "board": "meabeclick",
+      "workspace": "${HOME}/Projects/meabeclick"
+    }
+  ],
+  "planes": {
+    "human_messaging": "discord",
+    "lior_commitments": "todoist",
+    "delegated_execution": "hermes-kanban",
+    "durable_evidence": ["github", "project-docs"]
+  },
+  "todoist": {
+    "cli": "td",
+    "scope": "lior-only"
+  }
+}

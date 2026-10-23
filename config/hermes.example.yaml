@@ -1,0 +1,22 @@
+# Safe, non-secret baseline. Copy settings deliberately through
+# `hermes config set`; do not copy this file over live config.yaml.
+agent:
+  tool_use_enforcement: true
+  verify_on_stop: true
+approvals:
+  mode: smart
+security:
+  redact_secrets: true
+kanban:
+  dispatch_in_gateway: true
+  max_in_progress: 2
+delegation:
+  max_concurrent_children: 3
+  max_spawn_depth: 2
+memory:
+  write_approval: true
+terminal:
+  backend: local
+  cwd: "."
+# Provider, model, messaging, identity, and credential settings are
+# intentionally omitted. Configure them interactively per profile.
