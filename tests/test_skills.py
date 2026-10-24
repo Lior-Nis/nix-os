@@ -30,6 +30,8 @@ class PackContractTests(unittest.TestCase):
         self.assertEqual(64, len(packs["nixkit"]["sources_sha256"]))
         self.assertEqual("24.22.1", packs["nixkit"]["node_runtime"])
         self.assertEqual(PROFILES, set(packs["profiles"]))
+        self.assertEqual(["caveman"], packs["approved_additions"]["lnx"])
+        self.assertTrue(all(not additions for profile, additions in packs["approved_additions"].items() if profile != "lnx"))
         self.assertNotIn("global", packs["packs"])
         self.assertEqual([], packs["packs"]["public-research"])
         self.assertIn("research", packs["excluded"])
@@ -49,6 +51,17 @@ class PackContractTests(unittest.TestCase):
         self.assertFalse(persistent & excluded)
         self.assertFalse(task_only & excluded)
         self.assertEqual(41, len(persistent | task_only | excluded))
+
+    def test_lnx_caveman_proposal_matches_pinned_source_and_policy(self):
+        installer = load_module("skill_installer_caveman_proposal", ROOT / "scripts/install-skills.py")
+        proposal = json.loads((ROOT / "skills/proposals/lnx-caveman-d8ede5cf.json").read_text(encoding="utf-8"))
+        installer._validate_proposal(
+            proposal,
+            "lnx-caveman-d8ede5cf",
+            "lnx",
+            {"caveman"},
+            {"caveman": ("JuliusBrussee/caveman", "d8ede5cf0c27cc86a074c3224bcbba280a76c60e")},
+        )
 
     def test_installer_compile_time_pin_and_topology_match_canonical_manifest(self):
         installer = load_module("skill_installer_contract", ROOT / "scripts/install-skills.py")
@@ -81,6 +94,7 @@ class SkillInstallerTests(unittest.TestCase):
         kit = base / "kit"
         kit.mkdir()
         packs = json.loads((ROOT / "skills/packs.json").read_text(encoding="utf-8"))
+        packs["approved_additions"] = {profile: [] for profile in PROFILES}
         source_skills = sorted({
             skill
             for values in packs["packs"].values()
