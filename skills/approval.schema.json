@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://its-nix.example/schemas/skill-approval.schema.json",
+  "title": "Nix OS skill approval receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "proposal_id", "profile", "skills", "approved_by", "approved_at", "manifest_commit"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "proposal_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9.-]+$"},
+    "profile": {"enum": ["lnx", "pulse", "algua", "meabeclick", "meabeclickux", "meabeclickeng", "meabeclickgrowth"]},
+    "skills": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"}},
+    "approved_by": {"const": "Lior"},
+    "approved_at": {"type": "string", "format": "date-time"},
+    "manifest_commit": {"type": "string", "pattern": "^[a-f0-9]{40}$"}
+  }
+}

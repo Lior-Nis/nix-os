@@ -4,6 +4,13 @@
   "description": "Lean Hermes operating model for the Nix portfolio",
   "orchestrator": "lnx",
   "discord_visible_profiles": ["lnx"],
+  "skill_governance": {
+    "packs": "skills/packs.json",
+    "proposal_schema": "skills/proposal.schema.json",
+    "approval_schema": "skills/approval.schema.json",
+    "scout_jobs": "automation/skill-scout/jobs.json",
+    "scout_report_schema": "automation/skill-scout/report.schema.json"
+  },
   "profiles": [
     {
       "id": "lnx",

@@ -21,6 +21,16 @@ REQUIRED = {
     "config/hermes.example.yaml",
     "scripts/bootstrap.sh",
     "scripts/verify.py",
+    "scripts/install-skills.py",
+    "scripts/setup-skill-scouts.py",
+    "skills/packs.json",
+    "skills/proposal.schema.json",
+    "skills/approval.schema.json",
+    "docs/SKILL-GOVERNANCE.md",
+    "automation/skill-scout/jobs.json",
+    "automation/skill-scout/report.schema.json",
+    "automation/skill-scout/collect.py",
+    "tests/test_skills.py",
     ".github/workflows/ci.yml",
     *{f"profiles/{name}/ROLE.md" for name in (
         "lnx", "pulse", "algua", "meabeclick", "meabeclickux",
@@ -71,6 +81,28 @@ class RepositoryContractTests(unittest.TestCase):
             (copy / "nix-os.yaml").write_text(json.dumps(manifest), encoding="utf-8")
             errors = verifier.validate_repository(copy)
             self.assertTrue(any("lead" in error and "missing-profile" in error for error in errors), errors)
+
+    def test_verifier_rejects_runtime_schema_and_scout_manifest_drift(self):
+        verifier = load_verifier()
+        with tempfile.TemporaryDirectory() as tmp:
+            copy = Path(tmp) / "repo"
+            shutil.copytree(ROOT, copy, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+            packs_path = copy / "skills/packs.json"
+            packs = json.loads(packs_path.read_text(encoding="utf-8"))
+            packs["nixkit"]["node_runtime"] = "24"
+            packs_path.write_text(json.dumps(packs), encoding="utf-8")
+            report_path = copy / "automation/skill-scout/report.schema.json"
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            report["$defs"]["score_components"]["properties"]["role_value"]["maximum"] = 31
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            jobs_path = copy / "automation/skill-scout/jobs.json"
+            jobs = json.loads(jobs_path.read_text(encoding="utf-8"))
+            jobs["jobs"][0]["delivery"] = "telegram:unexpected"
+            jobs_path.write_text(json.dumps(jobs), encoding="utf-8")
+            errors = verifier.validate_repository(copy)
+            self.assertTrue(any("Node 24.22.1" in error for error in errors), errors)
+            self.assertTrue(any("role_value" in error and "0-30" in error for error in errors), errors)
+            self.assertTrue(any("job manifest must exactly" in error for error in errors), errors)
 
     def test_verifier_rejects_secret_runtime_name_and_absolute_home(self):
         verifier = load_verifier()

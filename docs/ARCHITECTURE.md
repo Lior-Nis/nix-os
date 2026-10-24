@@ -36,6 +36,12 @@ Hermes Kanban is the durable work queue. Each project has one board and one pers
 
 GitHub is canonical for code, issues, reviews, and CI. Project documents are canonical for approved decisions, operating notes, and deliverables that do not belong in source control. A chat claim is not durable evidence.
 
+## Skill capability plane
+
+Persistent third-party capability is declared in `skills/packs.json`, never installed globally. Baseline evidence verification is shared; named role packs are assigned explicitly to the seven profiles. Task-only and excluded skills remain outside persistent prompt context. A pinned, clean NixKit checkout supplies immutable profile-local copies through an exact subset command; the Nix OS wrapper is preview-first and never installs tools, authenticates accounts, or resolves conflicts by replacement.
+
+Weekly discovery is a proposal plane, not an authority plane. Seven profile-local scouts write public-metadata packets to untracked local state. The LNX aggregator alone validates completeness, deduplicates, and may deliver one digest after canaries. Promotion still requires a profile-specific PR and Lior approval.
+
 ## Control flow
 
 1. Lior sends a request to LNX.

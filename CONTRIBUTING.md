@@ -22,11 +22,16 @@ Never add credentials, tokens, `.env` files, authentication stores, memories, se
 2. Keep the manifest, role contracts, bootstrap behavior, tests, and documentation consistent.
 3. Bootstrap must remain preview-first, idempotent, and non-destructive to existing profiles.
 4. Use feature branches and pull requests for consequential changes.
-5. Run:
+5. Keep every NixKit source skill in exactly one semantic class: persistent, task-only, or excluded. Persistent role assignment must be explicit; no wildcard/global pack.
+6. New persistent skills require all hard gates, score >=80, immutable provenance/license evidence, a profile-specific manifest PR, and explicit Lior approval. Popularity alone is never sufficient.
+7. Never hand-edit live Hermes cron stores. Scout changes remain preview-first, local-delivery first, and fail closed on missing packets or same-name drift.
+8. Run:
 
 ```bash
 python3 -m unittest discover -s tests -v
 python3 scripts/verify.py
 bash -n scripts/bootstrap.sh
+python3 -m py_compile scripts/verify.py scripts/install-skills.py scripts/setup-skill-scouts.py automation/skill-scout/collect.py
 bash scripts/bootstrap.sh
+python3 scripts/setup-skill-scouts.py
 ```

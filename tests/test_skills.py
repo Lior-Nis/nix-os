@@ -1,0 +1,315 @@
+from __future__ import annotations
+
+import importlib.util
+import json
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+import textwrap
+import unittest
+
+ROOT = Path(__file__).resolve().parents[1]
+PROFILES = {"lnx", "pulse", "algua", "meabeclick", "meabeclickux", "meabeclickeng", "meabeclickgrowth"}
+
+
+def load_module(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class PackContractTests(unittest.TestCase):
+    def test_exact_profiles_pin_and_complete_skill_classification(self):
+        packs = json.loads((ROOT / "skills/packs.json").read_text(encoding="utf-8"))
+        self.assertEqual("4c86d1d9c9bceec88011fd40c977b92bb51f3a57", packs["nixkit"]["commit"])
+        self.assertEqual(64, len(packs["nixkit"]["sources_sha256"]))
+        self.assertEqual("24.22.1", packs["nixkit"]["node_runtime"])
+        self.assertEqual(PROFILES, set(packs["profiles"]))
+        self.assertNotIn("global", packs["packs"])
+        self.assertNotIn("universal", packs["packs"])
+        self.assertTrue(all(packs["profiles"][profile] for profile in PROFILES))
+        persistent = set().union(*(set(value) for value in packs["packs"].values()))
+        task_only = set(packs["task_only"])
+        excluded = set(packs["excluded"])
+        self.assertFalse(persistent & task_only)
+        self.assertFalse(persistent & excluded)
+        self.assertFalse(task_only & excluded)
+        self.assertEqual(41, len(persistent | task_only | excluded))
+
+    def test_policy_has_hard_gates_and_threshold(self):
+        packs = json.loads((ROOT / "skills/packs.json").read_text(encoding="utf-8"))
+        self.assertEqual(80, packs["governance"]["minimum_score"])
+        self.assertEqual(
+            {"relevance", "provenance", "reliability", "safety_privacy", "license", "hermes_compatibility", "non_duplication"},
+            set(packs["governance"]["hard_gates"]),
+        )
+        self.assertEqual("evidence_only", packs["governance"]["popularity"])
+
+
+class SkillInstallerTests(unittest.TestCase):
+    def setUp(self):
+        self.script = ROOT / "scripts/install-skills.py"
+
+    def _fixture(self, base: Path):
+        home = base / "home"
+        hermes_home = home / ".hermes"
+        kit = base / "kit"
+        kit.mkdir()
+        packs = json.loads((ROOT / "skills/packs.json").read_text(encoding="utf-8"))
+        source_skills = sorted({
+            skill
+            for values in packs["packs"].values()
+            for skill in values
+        } | set(packs["task_only"]) | set(packs["excluded"]))
+        (kit / "sources.json").write_text(json.dumps([{"repo": "example/source", "ref": "b" * 40, "skills": source_skills}]), encoding="utf-8")
+        (kit / "install.mjs").write_text("// fixture: execution is intercepted by fake npx\n", encoding="utf-8")
+        bin_dir = base / "bin"
+        bin_dir.mkdir()
+        fake = bin_dir / "npx"
+        fake.write_text(textwrap.dedent("""\
+            #!/usr/bin/env python3
+            import json, os, pathlib, sys
+            pathlib.Path(os.environ["NIXKIT_LOG"]).write_text(json.dumps(sys.argv[1:]), encoding="utf-8")
+        """), encoding="utf-8")
+        fake.chmod(0o755)
+        subprocess.run(["git", "init", "-q"], cwd=kit, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=kit, check=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=kit, check=True)
+        subprocess.run(["git", "add", "."], cwd=kit, check=True)
+        subprocess.run(["git", "commit", "-qm", "fixture"], cwd=kit, check=True)
+        commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=kit, text=True).strip()
+        packs = json.loads((ROOT / "skills/packs.json").read_text(encoding="utf-8"))
+        packs["nixkit"]["commit"] = commit
+        import hashlib
+        packs["nixkit"]["sources_sha256"] = hashlib.sha256((kit / "sources.json").read_bytes()).hexdigest()
+        manifest = base / "packs.json"
+        manifest.write_text(json.dumps(packs), encoding="utf-8")
+        env = os.environ.copy()
+        env.update({"HOME": str(home), "HERMES_HOME": str(hermes_home), "NIXKIT_LOG": str(base / "calls.json"), "PATH": str(bin_dir) + os.pathsep + env["PATH"]})
+        return home, hermes_home, kit, manifest, env
+
+    def test_preview_is_pure_and_apply_binds_profile_revision_and_exact_subset(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            home, hermes_home, kit, manifest, env = self._fixture(base)
+            command = ["python3", str(self.script), "--manifest", str(manifest), "--nixkit", str(kit), "--profile", "pulse"]
+            preview = subprocess.run(command, cwd=ROOT, env=env, text=True, capture_output=True)
+            self.assertEqual(0, preview.returncode, preview.stderr)
+            self.assertIn("PREVIEW", preview.stdout)
+            self.assertIn('"npx" "--yes" "node@24.22.1"', preview.stdout)
+            self.assertIn(json.dumps(str(kit / "install.mjs")), preview.stdout)
+            self.assertFalse((base / "calls.json").exists())
+            self.assertFalse(hermes_home.exists())
+            applied = subprocess.run(command + ["--apply"], cwd=ROOT, env=env, text=True, capture_output=True)
+            self.assertEqual(0, applied.returncode, applied.stderr)
+            repeated = subprocess.run(command + ["--apply"], cwd=ROOT, env=env, text=True, capture_output=True)
+            self.assertEqual(0, repeated.returncode, repeated.stderr)
+            args = json.loads((base / "calls.json").read_text(encoding="utf-8"))
+            self.assertEqual(["--yes", "node@24.22.1", str(kit / "install.mjs"), "--apply", "--skills", "--agent", "hermes", "--prefix", str(hermes_home / "profiles/pulse")], args[:9])
+            self.assertEqual(["--skill"] * len(args[9::2]), args[9::2])
+            packs = json.loads(manifest.read_text(encoding="utf-8"))
+            expected = sorted({skill for pack in packs["profiles"]["pulse"] for skill in packs["packs"][pack]})
+            self.assertEqual(expected, args[10::2])
+
+    def test_rejects_dirty_checkout_symlink_home_and_unapproved_addition(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            home, hermes_home, kit, manifest, env = self._fixture(base)
+            (kit / "dirty").write_text("x", encoding="utf-8")
+            result = subprocess.run(["python3", str(self.script), "--manifest", str(manifest), "--nixkit", str(kit), "--profile", "lnx"], cwd=ROOT, env=env, text=True, capture_output=True)
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("clean", result.stderr)
+            (kit / "dirty").unlink()
+            hermes_home.parent.mkdir(parents=True)
+            hermes_home.symlink_to(base / "elsewhere", target_is_directory=True)
+            result = subprocess.run(["python3", str(self.script), "--manifest", str(manifest), "--nixkit", str(kit), "--profile", "lnx"], cwd=ROOT, env=env, text=True, capture_output=True)
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("symlink", result.stderr)
+            result = subprocess.run(["python3", str(self.script), "--manifest", str(manifest), "--nixkit", str(kit), "--profile", "pulse", "--skill", "agent-browser"], cwd=ROOT, env=env, text=True, capture_output=True)
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("approval", result.stderr)
+
+
+class ScoutTests(unittest.TestCase):
+    def setUp(self):
+        self.collect = load_module("skill_scout_collect", ROOT / "automation/skill-scout/collect.py")
+
+    def _candidate(self, name="useful", path="skills/useful", repository="example/useful"):
+        return {
+            "name": name,
+            "summary": "A relevant audited skill",
+            "rationale": "It fills a verified role gap",
+            "source_url": f"https://github.com/{repository}/tree/{'a' * 40}/{path}",
+            "repository": repository,
+            "skill_path": path,
+            "revision": "a" * 40,
+            "license": "MIT",
+            "evidence_urls": [f"https://github.com/{repository}/blob/{'a' * 40}/LICENSE"],
+            "risks": [],
+            "score_components": {
+                "role_value": 27, "evidence_quality": 18, "security_provenance": 18,
+                "hermes_compatibility": 14, "maintenance": 9, "documentation_license": 4,
+            },
+            "score": 90,
+            "gates": {gate: True for gate in self.collect.HARD_GATES},
+            "gate_evidence": {gate: f"Evidence for {gate}" for gate in self.collect.HARD_GATES},
+        }
+
+    def _packet(self, profile, week, candidates=None):
+        return {
+            "schema_version": 1, "week": week, "profile": profile,
+            "generated_at": "2026-10-24T12:00:00Z",
+            "checked_sources": ["https://github.com/topics/hermes-agent"],
+            "rejected_count": 0, "candidates": candidates or [],
+        }
+
+    def _write_week(self, root, week, candidates_by_profile=None):
+        candidates_by_profile = candidates_by_profile or {}
+        for profile in self.collect.EXPECTED_PROFILES:
+            packet = self._packet(profile, week, candidates_by_profile.get(profile, []))
+            (root / f"{profile}.json").write_text(json.dumps(packet), encoding="utf-8")
+
+    def test_jobs_are_staggered_local_first_and_aggregator_only_delivery_target(self):
+        data = json.loads((ROOT / "automation/skill-scout/jobs.json").read_text(encoding="utf-8"))
+        self.assertEqual("Asia/Jerusalem", data["timezone"])
+        self.assertEqual(8, len(data["jobs"]))
+        scouts = [job for job in data["jobs"] if job["kind"] == "scout"]
+        aggregators = [job for job in data["jobs"] if job["kind"] == "aggregator"]
+        self.assertEqual(7, len(scouts))
+        self.assertEqual({"default", "pulse", "algua", "meabeclick", "meabeclickux", "meabeclickeng", "meabeclickgrowth"}, {job["hermes_profile"] for job in scouts})
+        self.assertTrue(all(job["delivery"] == "local" for job in scouts))
+        self.assertEqual(["telegram:6926015052"], [job["delivery_enabled"] for job in aggregators])
+        self.assertTrue(aggregators[0]["continuity"])
+
+    def test_collector_validates_all_packets_dedupes_and_silences_empty(self):
+        week = "2026-W43"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            candidate = self._candidate(name="same", repository="Example/Useful")
+            self._write_week(root, week, {"lnx": [candidate], "pulse": [candidate]})
+            result = self.collect.collect_packets(root, week)
+            self.assertEqual("ok", result["status"])
+            self.assertEqual(1, len(result["candidates"]))
+            self.assertEqual(["lnx", "pulse"], result["candidates"][0]["reported_by"])
+            for path in root.glob("*.json"):
+                data = json.loads(path.read_text(encoding="utf-8")); data["candidates"] = []
+                path.write_text(json.dumps(data), encoding="utf-8")
+            self.assertEqual("[SILENT]", self.collect.render_for_aggregator(self.collect.collect_packets(root, week)))
+            (root / "pulse.json").unlink()
+            failed = self.collect.collect_packets(root, week)
+            self.assertEqual("invalid", failed["status"])
+            self.assertNotEqual("[SILENT]", self.collect.render_for_aggregator(failed))
+
+    def test_collector_rejects_missing_source_evidence(self):
+        week = "2026-W43"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); self._write_week(root, week, {"lnx": [self._candidate()]})
+            packet = json.loads((root / "pulse.json").read_text()); packet["checked_sources"] = []
+            (root / "pulse.json").write_text(json.dumps(packet), encoding="utf-8")
+            self.assertEqual("invalid", self.collect.collect_packets(root, week)["status"])
+            packet = self._packet("pulse", week, [self._candidate()]); packet["candidates"][0]["evidence_urls"] = []
+            (root / "pulse.json").write_text(json.dumps(packet), encoding="utf-8")
+            self.assertEqual("invalid", self.collect.collect_packets(root, week)["status"])
+
+    def test_collector_rejects_score_sum_and_component_limits(self):
+        week = "2026-W43"
+        for mutation in ("sum", "limit"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp); candidate = self._candidate()
+                if mutation == "sum": candidate["score"] = 89
+                else: candidate["score_components"]["role_value"] = 31
+                self._write_week(root, week, {"lnx": [candidate]})
+                self.assertEqual("invalid", self.collect.collect_packets(root, week)["status"])
+
+    def test_collector_rejects_false_gate(self):
+        week = "2026-W43"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); candidate = self._candidate(); candidate["gates"]["license"] = False
+            self._write_week(root, week, {"lnx": [candidate]})
+            self.assertEqual("invalid", self.collect.collect_packets(root, week)["status"])
+
+    def test_collector_keeps_same_repository_distinct_skill_paths(self):
+        week = "2026-W43"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_week(root, week, {"lnx": [self._candidate(path="skills/one")], "pulse": [self._candidate(path="skills/two")]})
+            result = self.collect.collect_packets(root, week)
+            self.assertEqual("ok", result["status"])
+            self.assertEqual(["skills/one", "skills/two"], [item["skill_path"] for item in result["candidates"]])
+
+    def test_collector_rejects_conflicting_duplicate_evidence(self):
+        week = "2026-W43"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); first = self._candidate(); second = self._candidate(); second["license"] = "Apache-2.0"
+            self._write_week(root, week, {"lnx": [first], "pulse": [second]})
+            result = self.collect.collect_packets(root, week)
+            self.assertEqual("invalid", result["status"])
+            self.assertTrue(any("conflicting evidence" in error for error in result["errors"]))
+
+    def test_scout_prompt_is_self_contained_and_names_every_field(self):
+        prompt = (ROOT / "automation/skill-scout/scout-prompt.md").read_text(encoding="utf-8")
+        for field in self.collect.PACKET_FIELDS | self.collect.CANDIDATE_FIELDS | set(self.collect.SCORE_LIMITS) | set(self.collect.HARD_GATES):
+            self.assertIn(f'"{field}"', prompt, field)
+        self.assertIn("complete packet contract", prompt)
+        self.assertIn("installed skill inventory first", prompt)
+        self.assertIn("public Hermes skill registries", prompt)
+        self.assertIn("untrusted research content", prompt)
+
+
+class ScoutSetupTests(unittest.TestCase):
+    def test_preview_create_readback_idempotence_and_drift_refusal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            home = base / "home"; state = base / "state"; log = base / "calls.jsonl"
+            fake = base / "hermes"
+            fake.write_text(textwrap.dedent("""\
+                #!/usr/bin/env python3
+                import json, os, pathlib, sys, uuid
+                args=sys.argv[1:]; profile=args[1] if args[:1]==['-p'] else 'default'; cmd=args[2:] if args[:1]==['-p'] else args
+                root=pathlib.Path(os.environ['FAKE_STATE']); root.mkdir(parents=True, exist_ok=True); f=root/f'{profile}.json'
+                jobs=json.loads(f.read_text()) if f.exists() else []
+                with pathlib.Path(os.environ['FAKE_LOG']).open('a') as out: out.write(json.dumps(args)+'\\n')
+                if cmd[:2]==['cron','list']:
+                    for j in jobs: print(f"  {j['id']} [active]\\n    Name:      {j['name']}\\n    Schedule:  {j['schedule_display']}\\n    Deliver:   {', '.join(j['deliver'])}")
+                elif cmd[:2]==['cron','create']:
+                    schedule,prompt=cmd[2],cmd[3]
+                    def value(flag, default=None): return cmd[cmd.index(flag)+1] if flag in cmd else default
+                    j={'id':uuid.uuid4().hex[:8], 'name':value('--name'), 'schedule':{'kind':'cron','value':schedule}, 'schedule_display':schedule, 'prompt':prompt, 'deliver':[value('--deliver','local')], 'continuity':'--continuity' in cmd, 'script':value('--script')}
+                    jobs.append(j); f.write_text(json.dumps(jobs)); print(j['id'])
+                elif cmd[:2]==['cron','edit']:
+                    ref=cmd[2]; j=next(x for x in jobs if x['id']==ref or x['name']==ref); j['deliver']=[cmd[cmd.index('--deliver')+1]]; f.write_text(json.dumps(jobs))
+                else: raise SystemExit('unexpected '+repr(cmd))
+            """), encoding="utf-8")
+            fake.chmod(0o755)
+            env=os.environ.copy(); env.update({"HOME":str(home), "HERMES_HOME":str(home/".hermes"), "HERMES_BIN":str(fake), "FAKE_STATE":str(state), "FAKE_LOG":str(log), "HERMES_SCOUT_TEST_STORE":str(state)})
+            cmd=["python3", str(ROOT/"scripts/setup-skill-scouts.py")]
+            preview=subprocess.run(cmd, cwd=ROOT, env=env, text=True, capture_output=True)
+            self.assertEqual(0, preview.returncode, preview.stderr); self.assertIn("PREVIEW", preview.stdout); self.assertFalse(state.exists())
+            first=subprocess.run(cmd+["--apply"], cwd=ROOT, env=env, text=True, capture_output=True)
+            self.assertEqual(0, first.returncode, first.stderr)
+            before=log.read_text().splitlines()
+            second=subprocess.run(cmd+["--apply"], cwd=ROOT, env=env, text=True, capture_output=True)
+            self.assertEqual(0, second.returncode, second.stderr)
+            after=log.read_text().splitlines()[len(before):]
+            self.assertFalse(any('"create"' in line for line in after), after)
+            enabled=subprocess.run(cmd+["--apply", "--enable-delivery"], cwd=ROOT, env=env, text=True, capture_output=True)
+            self.assertEqual(0, enabled.returncode, enabled.stderr)
+            preview_enabled=subprocess.run(cmd, cwd=ROOT, env=env, text=True, capture_output=True)
+            self.assertIn("nix-skill-scout-aggregate @ 0 21 * * 6 -> telegram:6926015052", preview_enabled.stdout)
+            before_preserve=log.read_text().splitlines()
+            preserve=subprocess.run(cmd+["--apply"], cwd=ROOT, env=env, text=True, capture_output=True)
+            self.assertEqual(0, preserve.returncode, preserve.stderr)
+            self.assertFalse(any('"edit"' in line for line in log.read_text().splitlines()[len(before_preserve):]))
+            aggregator=next(job for job in json.loads((state/"default.json").read_text()) if job["name"]=="nix-skill-scout-aggregate")
+            self.assertEqual(["telegram:6926015052"], aggregator["deliver"])
+            jobs=json.loads((state/"pulse.json").read_text()); jobs[0]["prompt"]="drift"; (state/"pulse.json").write_text(json.dumps(jobs))
+            drift=subprocess.run(cmd+["--apply"], cwd=ROOT, env=env, text=True, capture_output=True)
+            self.assertNotEqual(0, drift.returncode); self.assertIn("drift", drift.stderr.lower())
+
+
+if __name__ == "__main__":
+    unittest.main()
