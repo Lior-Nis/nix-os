@@ -224,7 +224,6 @@ def _install_collector_atomic(destination: Path, source: Path) -> CollectorIdent
         flags |= os.O_NOFOLLOW
     fd: int | None = None
     owned: tuple[int, int] | None = None
-    published = False
     data = b""
     try:
         fd = os.open(temporary, flags, 0o700)
@@ -253,27 +252,30 @@ def _install_collector_atomic(destination: Path, source: Path) -> CollectorIdent
                 f"collector destination appeared during publication; preserved it and refused overwrite: {destination}; "
                 "manual recovery required"
             ) from exc
-        published = True
         installed = os.lstat(destination)
         if not stat.S_ISREG(installed.st_mode) or (installed.st_dev, installed.st_ino) != owned:
             raise Refusal("collector destination inode changed during no-clobber install; manual recovery required")
-        directory_fd = os.open(destination.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
-        os.unlink(temporary)
-        directory_fd = os.open(destination.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
         identity = CollectorIdentity(
             installed.st_dev,
             installed.st_ino,
             stat.S_IMODE(installed.st_mode),
             hashlib.sha256(data).hexdigest(),
         )
+        # The no-clobber link is the publication commit point. Durability sync
+        # failures after that point must not turn success into a rollback that
+        # could race with and delete a replacement pathname.
+        for action in ("sync", "unlink", "sync"):
+            try:
+                if action == "unlink":
+                    os.unlink(temporary)
+                else:
+                    directory_fd = os.open(destination.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+                    try:
+                        os.fsync(directory_fd)
+                    finally:
+                        os.close(directory_fd)
+            except OSError as exc:
+                print(f"warning: collector published but post-publication {action} failed: {exc}", file=sys.stderr)
         owned = None
         return identity
     except FileExistsError as exc:
@@ -281,17 +283,6 @@ def _install_collector_atomic(destination: Path, source: Path) -> CollectorIdent
     finally:
         if fd is not None:
             os.close(fd)
-        if owned is not None and published:
-            try:
-                current = os.lstat(destination)
-                if (
-                    stat.S_ISREG(current.st_mode)
-                    and (current.st_dev, current.st_ino) == owned
-                    and hashlib.sha256(destination.read_bytes()).digest() == hashlib.sha256(data).digest()
-                ):
-                    os.unlink(destination)
-            except FileNotFoundError:
-                pass
         if owned is not None:
             try:
                 current = os.lstat(temporary)
