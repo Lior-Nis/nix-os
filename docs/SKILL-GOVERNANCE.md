@@ -29,7 +29,7 @@ The NixKit root skill named `research` is excluded from persistent packs. Hermes
 
 Two otherwise useful skills remain task-only because their pinned skill text delegates to mutable dependencies at runtime: `web-design-guidelines` fetches latest rules, and `find-docs` invokes `npx ctx7@latest`. Persistent assignment would undermine the immutable-source policy. They can move into a role pack only after an immutable dependency policy is implemented and reviewed.
 
-Setup/grilling, browser, media, knowledge, and Google Workspace skills are also task-only. Conflicting/redundant Superpowers bootstrap/planning/debug/TDD/request-review/subagent/diagnostic skills, Caveman, and Ponytail are excluded in favor of existing Hermes-native capabilities.
+Setup/grilling, browser, media, knowledge, and Google Workspace skills are also task-only. Conflicting/redundant Superpowers bootstrap/planning/debug/TDD/request-review/subagent/diagnostic skills and Ponytail are excluded in favor of existing Hermes-native capabilities. Caveman remains catalog-classified as excluded from baseline packs, but proposal `lnx-caveman-d8ede5cf` grants LNX/default alone a reviewed profile-specific addition at the exact approved revision; every other profile remains unchanged.
 
 ## Candidate gates and scoring
 

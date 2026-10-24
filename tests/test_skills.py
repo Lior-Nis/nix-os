@@ -54,13 +54,22 @@ class PackContractTests(unittest.TestCase):
 
     def test_lnx_caveman_proposal_matches_pinned_source_and_policy(self):
         installer = load_module("skill_installer_caveman_proposal", ROOT / "scripts/install-skills.py")
+        manifest = json.loads((ROOT / "skills/packs.json").read_text(encoding="utf-8"))
         proposal = json.loads((ROOT / "skills/proposals/lnx-caveman-d8ede5cf.json").read_text(encoding="utf-8"))
+        catalog = {"caveman": ("JuliusBrussee/caveman", "d8ede5cf0c27cc86a074c3224bcbba280a76c60e")}
         installer._validate_proposal(
             proposal,
             "lnx-caveman-d8ede5cf",
             "lnx",
             {"caveman"},
-            {"caveman": ("JuliusBrussee/caveman", "d8ede5cf0c27cc86a074c3224bcbba280a76c60e")},
+            catalog,
+        )
+        installer._approval(
+            ROOT / "skills/approvals/lnx-caveman-d8ede5cf.json",
+            "lnx",
+            manifest,
+            {"caveman"},
+            catalog,
         )
 
     def test_installer_compile_time_pin_and_topology_match_canonical_manifest(self):
