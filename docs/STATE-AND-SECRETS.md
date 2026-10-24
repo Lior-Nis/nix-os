@@ -7,6 +7,7 @@
 - non-secret example configuration;
 - architecture and operating documentation;
 - bootstrap, verification, tests, and CI;
+- pinned role-pack declarations, public proposal/approval/report schemas, and declarative scout definitions;
 - technical artifacts intended for durable review.
 
 ## Git must never contain
@@ -15,7 +16,8 @@
 - authentication stores, API keys, bot credentials, cookies, or access tokens;
 - memories, user profiles, session histories, transcripts, or UI history;
 - SQLite or other runtime databases;
-- logs, caches, temporary files, checkpoints, backups, or generated runtime state;
+- logs, caches, temporary files, checkpoints, backups, generated runtime state, or weekly scout packets;
+- live Hermes cron stores or hand-copied `jobs.json` files;
 - student, payment, customer, or other protected PII;
 - machine-specific paths or copied live profile directories.
 
@@ -26,6 +28,12 @@
 Hermes resolves state under `$HERMES_HOME`; when unset, it uses `${HOME}/.hermes`. Each named profile has an isolated local home. The LNX contract maps to Hermes' `default` profile. `ROLE.md` contracts are installed as local `SOUL.md` files only when bootstrap atomically claims an otherwise-missing named profile directory. Bootstrap deliberately does not call `hermes profile create`, because current Hermes versions initialize unrelated state in the active default home.
 
 Existing local profile directories are treated as user-owned. If a directory or identity file already exists, bootstrap reports it and makes no profile-level changes. Configuration remains a deliberate manual operation through Hermes CLI commands.
+
+## Skill and scout state
+
+Role-pack manifests and schemas are reviewable Git state. Installed skill copies belong to each exact local profile home and are never imported back into the repository. NixKit checkouts and authentication stores remain user-owned. The installation wrapper reads only Git metadata, the pinned source manifest, and destination paths; it never reads secrets.
+
+Scout packets live under `${HOME}/.local/share/hermes-scouts/<ISO-WEEK>/` and are untracked runtime data. Hermes cron state remains in each profile's own canonical local store (`${HERMES_HOME}/cron/jobs.json` for default and `${HERMES_HOME}/profiles/<name>/cron/jobs.json` for named profiles). `scripts/setup-skill-scouts.py` uses the CLI to create/edit/remove jobs and reads those stores only for preflight and exact post-command/rollback readback; repository code never writes `jobs.json` directly. Reconciliation rollback is invocation-scoped: it removes only newly created IDs, restores only a delivery target changed by that run, and deletes only a newly installed byte-identical collector. Pre-existing jobs and collectors remain user-owned. A store override is refused except in explicit test mode, where fake command-created state still receives exact readback validation. The collector copy exists only under the default profile's local scripts directory.
 
 ## Secret setup
 

@@ -4,11 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import re
 import sys
 from typing import Any
+from urllib.parse import urlsplit
 
 REQUIRED_FILES = {
     "README.md",
@@ -20,7 +22,19 @@ REQUIRED_FILES = {
     "config/hermes.example.yaml",
     "scripts/bootstrap.sh",
     "scripts/verify.py",
+    "scripts/install-skills.py",
+    "scripts/setup-skill-scouts.py",
+    "skills/packs.json",
+    "skills/proposal.schema.json",
+    "skills/approval.schema.json",
+    "automation/skill-scout/jobs.json",
+    "automation/skill-scout/report.schema.json",
+    "automation/skill-scout/scout-prompt.md",
+    "automation/skill-scout/aggregate-prompt.md",
+    "automation/skill-scout/collect.py",
+    "docs/SKILL-GOVERNANCE.md",
     "tests/test_repository.py",
+    "tests/test_skills.py",
     ".github/workflows/ci.yml",
 }
 EXPECTED_PROFILES = {
@@ -28,6 +42,61 @@ EXPECTED_PROFILES = {
     "meabeclickeng", "meabeclickgrowth",
 }
 EXPECTED_PROJECTS = {"pulse", "algua", "meabeclick"}
+NIXKIT_COMMIT = "5d9ac621d4b2862c94ff8aa419f2f9fc6c9f68f4"
+NIXKIT_SOURCES_SHA256 = "8c465cac697c5dc90a37e3a75242bac2f178c8768d7181883a3b9d673670b656"
+CANONICAL_SCHEMA_SHA256 = {
+    "skills/proposal.schema.json": "d3c84a31c6460bd566ec7e8e5c0c7cabf106100e336b4c81ea05fbb2a6d28ce1",
+    "skills/approval.schema.json": "eeb84ee9c84b3f45eff0ae807586d0a6cc2d35309b46fb7f7fbca696acfda1b7",
+    "automation/skill-scout/report.schema.json": "56cde3a718328b9e4b128cdb14a310ae4d8294936dedec5bada601fd76578c01",
+}
+NIXKIT_SKILLS = {
+    "using-superpowers", "brainstorming", "writing-plans", "executing-plans",
+    "systematic-debugging", "test-driven-development", "verification-before-completion",
+    "requesting-code-review", "receiving-code-review", "using-git-worktrees",
+    "finishing-a-development-branch", "subagent-driven-development", "dispatching-parallel-agents",
+    "diagnosing-superpowers", "setup-matt-pocock-skills", "grill-with-docs", "grilling",
+    "domain-modeling", "to-spec", "to-tickets", "codebase-design", "research", "handoff",
+    "caveman", "ponytail", "frontend-design", "web-design-guidelines", "agent-browser",
+    "remotion-best-practices", "auto-editor", "auto-editor-effects", "auto-editor-export",
+    "auto-editor-transcribe", "obsidian-markdown", "qmd", "gws-shared", "gws-drive",
+    "gws-docs", "gws-drive-upload", "gws-docs-write", "find-docs",
+}
+EXPECTED_PACKS = {
+    "baseline-evidence": ["verification-before-completion"],
+    "orchestrator-control": ["dispatching-parallel-agents", "receiving-code-review", "handoff"],
+    "project-lead-core": ["brainstorming", "domain-modeling", "to-spec", "to-tickets", "codebase-design", "receiving-code-review", "handoff"],
+    "public-research": ["research"],
+    "engineering-delivery": ["executing-plans", "using-git-worktrees", "finishing-a-development-branch", "receiving-code-review", "codebase-design"],
+    "ux-design-review": ["frontend-design"],
+}
+EXPECTED_PACK_ASSIGNMENTS = {
+    "lnx": ["baseline-evidence", "orchestrator-control"],
+    "pulse": ["baseline-evidence", "project-lead-core", "public-research"],
+    "algua": ["baseline-evidence", "project-lead-core", "public-research"],
+    "meabeclick": ["baseline-evidence", "project-lead-core", "public-research"],
+    "meabeclickux": ["baseline-evidence", "ux-design-review"],
+    "meabeclickeng": ["baseline-evidence", "engineering-delivery"],
+    "meabeclickgrowth": ["baseline-evidence", "public-research"],
+}
+HARD_GATES = {"relevance", "provenance", "reliability", "safety_privacy", "license", "hermes_compatibility", "non_duplication"}
+SCORE_LIMITS = {
+    "role_value": 30, "evidence_quality": 20, "security_provenance": 20,
+    "hermes_compatibility": 15, "maintenance": 10, "documentation_license": 5,
+}
+SCOUT_CANDIDATE_FIELDS = {
+    "name", "summary", "rationale", "source_url", "repository", "skill_path", "revision", "license",
+    "evidence_urls", "risks", "score_components", "score", "gates", "gate_evidence",
+}
+EXPECTED_SCOUT_JOBS = [
+    {"name": "nix-skill-scout-pulse", "kind": "scout", "profile": "pulse", "hermes_profile": "pulse", "schedule": "0 18 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
+    {"name": "nix-skill-scout-algua", "kind": "scout", "profile": "algua", "hermes_profile": "algua", "schedule": "20 18 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
+    {"name": "nix-skill-scout-meabeclick", "kind": "scout", "profile": "meabeclick", "hermes_profile": "meabeclick", "schedule": "40 18 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
+    {"name": "nix-skill-scout-meabeclickux", "kind": "scout", "profile": "meabeclickux", "hermes_profile": "meabeclickux", "schedule": "0 19 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
+    {"name": "nix-skill-scout-meabeclickeng", "kind": "scout", "profile": "meabeclickeng", "hermes_profile": "meabeclickeng", "schedule": "20 19 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
+    {"name": "nix-skill-scout-meabeclickgrowth", "kind": "scout", "profile": "meabeclickgrowth", "hermes_profile": "meabeclickgrowth", "schedule": "40 19 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
+    {"name": "nix-skill-scout-lnx", "kind": "scout", "profile": "lnx", "hermes_profile": "default", "schedule": "0 20 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
+    {"name": "nix-skill-scout-aggregate", "kind": "aggregator", "profile": "lnx", "hermes_profile": "default", "schedule": "0 21 * * 6", "prompt_file": "aggregate-prompt.md", "script": "skill-scout-collect.py", "delivery": "local", "delivery_enabled": "telegram:6926015052", "continuity": True},
+]
 EXPECTED_PROFILE_LAYOUT = {
     "lnx": ("default", "orchestrator", None, ["pulse", "algua", "meabeclick"]),
     "pulse": ("pulse", "lead", None, ["pulse"]),
@@ -66,16 +135,43 @@ ABSOLUTE_HOME = re.compile(r"(?<![A-Za-z0-9_])/(?:home|Users)/[^\s`'\"/]+")
 LEGACY_TERMS = ("paper" + "clip", "n" + "8n", "s" + "lack")
 SECRET_PATTERNS = {
     "private key": re.compile(r"-----BEGIN(?: [A-Z0-9]+)* PRIVATE KEY-----"),
-    "GitHub token": re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"),
+    "GitHub token": re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b"),
     "OpenAI-style key": re.compile(r"\bsk-[A-Za-z0-9_-]{32,}\b"),
     "AWS access key": re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"),
     "Discord bot token": re.compile(
         r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{20,30}\.[A-Za-z0-9_-]{6,8}\."
         r"[A-Za-z0-9_-]{25,45}(?![A-Za-z0-9_-])"
     ),
+    "Discord webhook token": re.compile(r"(?i)\bdiscord[_ -]?webhook(?:[_ -]?token)?\s*[:=]\s*[A-Za-z0-9._-]{30,}"),
+    "xox workspace token": re.compile(r"\bxox[bp]-[A-Za-z0-9-]{20,}\b"),
 }
 HERMES_PROFILE_NAME = re.compile(r"^[a-z0-9]+$")
 SQLITE_SIDECAR = re.compile(r"^.+\.(?:db|sqlite|sqlite3)-(?:wal|shm|journal)$")
+HTTP_URL = re.compile(r"(?i)https?://[^\s<>\"']+")
+DISCORD_WEBHOOK_HOSTS = {
+    "discord.com", "canary.discord.com", "ptb.discord.com",
+    "discordapp.com", "canary.discordapp.com", "ptb.discordapp.com",
+}
+DISCORD_WEBHOOK_PATH = re.compile(r"/api/webhooks/[0-9]{17,20}/[A-Za-z0-9._-]{30,}")
+
+
+def _contains_discord_webhook_url(text: str) -> bool:
+    for match in HTTP_URL.finditer(text):
+        candidate = match.group(0).rstrip(".,;:!?)]}")
+        try:
+            parsed = urlsplit(candidate)
+            hostname = (parsed.hostname or "").lower()
+            port = parsed.port
+        except ValueError:
+            continue
+        if (
+            parsed.scheme.lower() in {"http", "https"}
+            and hostname in DISCORD_WEBHOOK_HOSTS
+            and (port is None or port == 443)
+            and DISCORD_WEBHOOK_PATH.fullmatch(parsed.path)
+        ):
+            return True
+    return False
 
 
 def _load_manifest(path: Path, errors: list[str]) -> dict[str, Any]:
@@ -190,6 +286,172 @@ def _validate_manifest(root: Path, manifest: dict[str, Any], errors: list[str]) 
         errors.append("Hermes profile names must be unique")
 
 
+def _load_json_object(path: Path, label: str, errors: list[str]) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        errors.append(f"{label} must be valid JSON: {exc}")
+        return {}
+    if not isinstance(value, dict):
+        errors.append(f"{label} root must be an object")
+        return {}
+    return value
+
+
+def _validate_evidence_schema(schema: dict[str, Any], relative: str, errors: list[str], report: bool) -> None:
+    definitions = schema.get("$defs")
+    if not isinstance(definitions, dict):
+        errors.append(f"{relative} must define the evidence contract")
+        return
+    score = definitions.get("score_components")
+    if not isinstance(score, dict) or set(score.get("required", [])) != set(SCORE_LIMITS) or set((score.get("properties") or {})) != set(SCORE_LIMITS) or score.get("additionalProperties") is not False:
+        errors.append(f"{relative} score_components fields must be exact")
+    else:
+        for name, maximum in SCORE_LIMITS.items():
+            if score["properties"].get(name) != {"type": "integer", "minimum": 0, "maximum": maximum}:
+                errors.append(f"{relative} score component {name} must be exactly 0-{maximum}")
+    for definition, evidence in (("gates", False), ("gate_evidence", True)):
+        contract = definitions.get(definition)
+        if not isinstance(contract, dict) or set(contract.get("required", [])) != HARD_GATES or set((contract.get("properties") or {})) != HARD_GATES or contract.get("additionalProperties") is not False:
+            errors.append(f"{relative} {definition} fields must be the exact seven hard gates")
+            continue
+        expected = {"type": "string", "minLength": 1, "maxLength": 4096} if evidence else {"const": True}
+        if any(contract["properties"].get(gate) != expected for gate in HARD_GATES):
+            errors.append(f"{relative} {definition} values do not fail closed")
+    candidate = definitions.get("candidate") if report else schema
+    if not isinstance(candidate, dict):
+        errors.append(f"{relative} candidate contract must be an object")
+        return
+    required = set(candidate.get("required", []))
+    expected_required = SCOUT_CANDIDATE_FIELDS if report else SCOUT_CANDIDATE_FIELDS | {"schema_version", "proposal_id", "profile", "status"}
+    if required != expected_required:
+        errors.append(f"{relative} candidate required fields must be exact")
+        return
+    properties = candidate.get("properties") or {}
+    if set(properties) != expected_required:
+        errors.append(f"{relative} candidate properties must be exact (no unvalidated optional fields)")
+    if properties.get("score") != {"type": "integer", "minimum": 80, "maximum": 100}:
+        errors.append(f"{relative} candidate score must be constrained to 80-100")
+    evidence_urls = properties.get("evidence_urls")
+    expected_url_items = {"type": "string", "maxLength": 2048, "pattern": "^https://"}
+    if not isinstance(evidence_urls, dict) or evidence_urls.get("minItems") != 2 or evidence_urls.get("maxItems") != 100 or evidence_urls.get("items") != expected_url_items:
+        errors.append(f"{relative} evidence_urls must require bounded HTTPS source and license evidence")
+    risks = properties.get("risks")
+    expected_risks = {"type": "array", "maxItems": 50, "items": {"type": "string", "minLength": 1, "maxLength": 4096}}
+    if risks != expected_risks:
+        errors.append(f"{relative} risks must be a bounded list of bounded nonempty strings")
+    for field in ("summary", "rationale", "license"):
+        if properties.get(field) != {"type": "string", "minLength": 1, "maxLength": 4096}:
+            errors.append(f"{relative} {field} must be a bounded nonempty string")
+    source_url = properties.get("source_url")
+    if not isinstance(source_url, dict) or source_url.get("maxLength") != 2048 or "github\\.com" not in source_url.get("pattern", "") or "[a-f0-9]{40}" not in source_url.get("pattern", ""):
+        errors.append(f"{relative} source_url must require immutable GitHub revision evidence")
+    if properties.get("gates") != {"$ref": "#/$defs/gates"} or properties.get("gate_evidence") != {"$ref": "#/$defs/gate_evidence"} or properties.get("score_components") != {"$ref": "#/$defs/score_components"}:
+        errors.append(f"{relative} candidate must bind the exact score and gate contracts")
+    if report:
+        packet_fields = {"schema_version", "week", "profile", "generated_at", "checked_sources", "rejected_count", "candidates"}
+        if set(schema.get("required", [])) != packet_fields or set((schema.get("properties") or {})) != packet_fields:
+            errors.append(f"{relative} packet fields must be exact")
+        checked = schema.get("properties", {}).get("checked_sources", {})
+        expected_checked = {"type": "array", "minItems": 1, "maxItems": 100, "items": {"type": "string", "maxLength": 2048, "pattern": "^https://"}}
+        if checked != expected_checked:
+            errors.append(f"{relative} checked_sources must require bounded HTTPS evidence")
+        if schema.get("properties", {}).get("rejected_count") != {"type": "integer", "minimum": 0}:
+            errors.append(f"{relative} rejected_count must be nonnegative")
+
+
+def _validate_skills(root: Path, manifest: dict[str, Any], errors: list[str]) -> None:
+    packs = _load_json_object(root / "skills/packs.json", "skills/packs.json", errors)
+    if not packs:
+        return
+    pin = packs.get("nixkit")
+    expected_pin = {
+        "repository": "https://github.com/its-nix/kit.git", "commit": NIXKIT_COMMIT,
+        "sources_sha256": NIXKIT_SOURCES_SHA256, "node_runtime": "24.22.1",
+    }
+    if pin != expected_pin:
+        errors.append("skills/packs.json must use the exact audited NixKit repository, commit, source hash, and Node 24.22.1 runtime")
+    if packs.get("packs") != EXPECTED_PACKS:
+        errors.append("persistent skill packs must match the conservative audited matrix")
+    if packs.get("profiles") != EXPECTED_PACK_ASSIGNMENTS:
+        errors.append("profile pack assignments must match all seven explicit role mappings")
+    approved_additions = packs.get("approved_additions")
+    if approved_additions != {profile: [] for profile in EXPECTED_PROFILES}:
+        errors.append("initial approved_additions must be empty for every profile; future additions require a reviewed verifier/manifest PR and Lior approval")
+    if any(name in {"global", "universal", "all", "*"} for name in (packs.get("packs") or {})):
+        errors.append("wildcard/global/universal skill packs are forbidden")
+    persistent = set().union(*(set(values) for values in EXPECTED_PACKS.values()))
+    task_only = packs.get("task_only")
+    excluded = packs.get("excluded")
+    if not isinstance(task_only, list) or not isinstance(excluded, list):
+        errors.append("task_only and excluded must be explicit lists")
+    else:
+        task, omit = set(task_only), set(excluded)
+        if len(task) != len(task_only) or len(omit) != len(excluded):
+            errors.append("task_only and excluded classifications must not contain duplicates")
+        if persistent & task or persistent & omit or task & omit:
+            errors.append("persistent, task-only, and excluded classifications must be disjoint")
+        if persistent | task | omit != NIXKIT_SKILLS:
+            errors.append("all 41 NixKit skills must be classified exactly once semantically")
+        if not {"web-design-guidelines", "find-docs"} <= task:
+            errors.append("mutable-latest web-design-guidelines and find-docs must remain task-only")
+    governance = packs.get("governance")
+    if not isinstance(governance, dict) or set(governance.get("hard_gates", [])) != HARD_GATES:
+        errors.append("skill governance must declare all seven hard gates")
+    elif (
+        governance.get("minimum_score") != 80
+        or governance.get("popularity") != "evidence_only"
+        or governance.get("approval_authority") != "Lior"
+        or governance.get("initial_baseline_source") != "merged_reviewed_packs"
+        or governance.get("future_additions") != "profile_specific_manifest_pr_and_lior_approval"
+    ):
+        errors.append("skill governance threshold and approval policy are invalid")
+    expected_reference = {
+        "packs": "skills/packs.json", "proposal_schema": "skills/proposal.schema.json",
+        "approval_schema": "skills/approval.schema.json", "scout_jobs": "automation/skill-scout/jobs.json",
+        "scout_report_schema": "automation/skill-scout/report.schema.json",
+    }
+    if manifest.get("skill_governance") != expected_reference:
+        errors.append("nix-os.yaml skill_governance references must be exact")
+    loaded_schemas: dict[str, dict[str, Any]] = {}
+    for relative, expected_digest in CANONICAL_SCHEMA_SHA256.items():
+        path = root / relative
+        try:
+            actual_digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError as exc:
+            errors.append(f"cannot hash canonical schema {relative}: {exc}")
+        else:
+            if actual_digest != expected_digest:
+                errors.append(f"{relative} bytes must match the pinned canonical security schema SHA-256")
+        schema = _load_json_object(path, relative, errors)
+        loaded_schemas[relative] = schema
+        if schema and schema.get("$schema") != "https://json-schema.org/draft/2020-12/schema":
+            errors.append(f"{relative} must use JSON Schema draft 2020-12")
+    if loaded_schemas.get("skills/proposal.schema.json"):
+        _validate_evidence_schema(loaded_schemas["skills/proposal.schema.json"], "skills/proposal.schema.json", errors, False)
+    if loaded_schemas.get("automation/skill-scout/report.schema.json"):
+        _validate_evidence_schema(loaded_schemas["automation/skill-scout/report.schema.json"], "automation/skill-scout/report.schema.json", errors, True)
+    try:
+        scout_prompt = (root / "automation/skill-scout/scout-prompt.md").read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        errors.append(f"cannot inspect self-contained scout prompt: {exc}")
+        scout_prompt = ""
+    prompt_fields = {"checked_sources", "rejected_count", "skill_path", "evidence_urls", "risks", "score_components", "score", "gates", "gate_evidence"} | set(SCORE_LIMITS) | HARD_GATES
+    if any(f'"{field}"' not in scout_prompt for field in prompt_fields) or any(text not in scout_prompt for text in (
+        "complete packet contract", "installed skill inventory first", "public Hermes skill registries",
+        "public GitHub/web sources", "supporting evidence only", "untrusted research content",
+        "Do not install or download executable code", "write anywhere except the single packet",
+    )):
+        errors.append("skill scout prompt must remain self-contained, source-aware, read-only, and explicit about every evidence field")
+    jobs = _load_json_object(root / "automation/skill-scout/jobs.json", "automation/skill-scout/jobs.json", errors)
+    expected_jobs = {
+        "schema_version": 1, "timezone": "Asia/Jerusalem",
+        "packet_root": "${HOME}/.local/share/hermes-scouts", "jobs": EXPECTED_SCOUT_JOBS,
+    }
+    if jobs != expected_jobs:
+        errors.append("skill-scout job manifest must exactly declare seven local staggered scouts and the reviewed default-profile aggregator")
+
+
 def _repository_files(root: Path) -> list[Path]:
     files: list[Path] = []
     for path in root.rglob("*"):
@@ -255,6 +517,8 @@ def _validate_files(root: Path, errors: list[str]) -> None:
         for label, pattern in SECRET_PATTERNS.items():
             if pattern.search(text):
                 errors.append(f"possible {label} found in {rel}")
+        if _contains_discord_webhook_url(text):
+            errors.append(f"possible Discord webhook credential found in {rel}")
         position = 0
         for line in text.splitlines(keepends=True):
             lowered = line.lower()
@@ -277,6 +541,7 @@ def validate_repository(root: Path) -> list[str]:
     manifest = _load_manifest(root / "nix-os.yaml", errors)
     if manifest:
         _validate_manifest(root, manifest, errors)
+        _validate_skills(root, manifest, errors)
     _validate_files(root, errors)
     return sorted(set(errors))
 

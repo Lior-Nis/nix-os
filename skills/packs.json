@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "nixkit": {
+    "repository": "https://github.com/its-nix/kit.git",
+    "commit": "5d9ac621d4b2862c94ff8aa419f2f9fc6c9f68f4",
+    "sources_sha256": "8c465cac697c5dc90a37e3a75242bac2f178c8768d7181883a3b9d673670b656",
+    "node_runtime": "24.22.1"
+  },
+  "packs": {
+    "baseline-evidence": [
+      "verification-before-completion"
+    ],
+    "orchestrator-control": [
+      "dispatching-parallel-agents",
+      "receiving-code-review",
+      "handoff"
+    ],
+    "project-lead-core": [
+      "brainstorming",
+      "domain-modeling",
+      "to-spec",
+      "to-tickets",
+      "codebase-design",
+      "receiving-code-review",
+      "handoff"
+    ],
+    "public-research": [
+      "research"
+    ],
+    "engineering-delivery": [
+      "executing-plans",
+      "using-git-worktrees",
+      "finishing-a-development-branch",
+      "receiving-code-review",
+      "codebase-design"
+    ],
+    "ux-design-review": [
+      "frontend-design"
+    ]
+  },
+  "profiles": {
+    "lnx": ["baseline-evidence", "orchestrator-control"],
+    "pulse": ["baseline-evidence", "project-lead-core", "public-research"],
+    "algua": ["baseline-evidence", "project-lead-core", "public-research"],
+    "meabeclick": ["baseline-evidence", "project-lead-core", "public-research"],
+    "meabeclickux": ["baseline-evidence", "ux-design-review"],
+    "meabeclickeng": ["baseline-evidence", "engineering-delivery"],
+    "meabeclickgrowth": ["baseline-evidence", "public-research"]
+  },
+  "approved_additions": {
+    "lnx": [],
+    "pulse": [],
+    "algua": [],
+    "meabeclick": [],
+    "meabeclickux": [],
+    "meabeclickeng": [],
+    "meabeclickgrowth": []
+  },
+  "task_only": [
+    "setup-matt-pocock-skills",
+    "grill-with-docs",
+    "grilling",
+    "agent-browser",
+    "remotion-best-practices",
+    "auto-editor",
+    "auto-editor-effects",
+    "auto-editor-export",
+    "auto-editor-transcribe",
+    "obsidian-markdown",
+    "qmd",
+    "gws-shared",
+    "gws-drive",
+    "gws-docs",
+    "gws-drive-upload",
+    "gws-docs-write",
+    "web-design-guidelines",
+    "find-docs"
+  ],
+  "excluded": [
+    "using-superpowers",
+    "writing-plans",
+    "systematic-debugging",
+    "test-driven-development",
+    "requesting-code-review",
+    "subagent-driven-development",
+    "diagnosing-superpowers",
+    "caveman",
+    "ponytail"
+  ],
+  "governance": {
+    "hard_gates": [
+      "relevance",
+      "provenance",
+      "reliability",
+      "safety_privacy",
+      "license",
+      "hermes_compatibility",
+      "non_duplication"
+    ],
+    "minimum_score": 80,
+    "popularity": "evidence_only",
+    "approval_authority": "Lior",
+    "initial_baseline_source": "merged_reviewed_packs",
+    "future_additions": "profile_specific_manifest_pr_and_lior_approval"
+  }
+}

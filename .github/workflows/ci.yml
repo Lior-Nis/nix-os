@@ -22,6 +22,12 @@ jobs:
       - name: Bootstrap syntax
         run: bash -n scripts/bootstrap.sh
       - name: Python syntax
-        run: python3 -m compileall -q scripts tests
+        run: python3 -m compileall -q scripts tests automation
       - name: Bootstrap preview
         run: HERMES_BIN=/not-installed/hermes bash scripts/bootstrap.sh
+      - name: Skill installer interface
+        run: python3 scripts/install-skills.py --help
+      - name: Scout setup preview
+        run: HERMES_BIN=/not-installed/hermes python3 scripts/setup-skill-scouts.py
+      - name: Diff whitespace
+        run: git diff --check
