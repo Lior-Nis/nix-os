@@ -59,6 +59,19 @@ def _load_json(path:Path,label:str)->dict:
  if not isinstance(value,dict): raise Refusal(f"{label} root must be an object")
  return value
 
+def _source_catalog(path:Path)->dict[str,tuple[str,str]]:
+ try: value=json.loads(path.read_text(encoding="utf-8"))
+ except (OSError,UnicodeError,json.JSONDecodeError) as exc: raise Refusal(f"cannot parse pinned NixKit sources.json: {exc}") from exc
+ if not isinstance(value,list): raise Refusal("pinned NixKit sources.json root must be an array")
+ catalog:dict[str,tuple[str,str]]={}
+ for source in value:
+  if not isinstance(source,dict) or set(source)!={"repo","ref","skills"} or not isinstance(source.get("repo"),str) or not REPOSITORY.fullmatch(source["repo"]) or not isinstance(source.get("ref"),str) or not SHA.fullmatch(source["ref"]) or not isinstance(source.get("skills"),list): raise Refusal("pinned NixKit sources.json has an invalid source record")
+  for skill in source["skills"]:
+   if not isinstance(skill,str) or not SKILL.fullmatch(skill) or skill in catalog: raise Refusal("pinned NixKit sources.json skill names must be valid and globally unique")
+   catalog[skill]=(source["repo"],source["ref"])
+ if set(catalog)!=NIXKIT_SKILLS: raise Refusal("pinned NixKit sources.json does not contain the exact audited skill catalog")
+ return catalog
+
 def _canonical_manifest(manifest:dict)->None:
  if set(manifest)!={"schema_version","nixkit","packs","profiles","approved_additions","task_only","excluded","governance"} or manifest.get("schema_version")!=1: raise Refusal("canonical pack manifest has invalid fields")
  if manifest.get("nixkit")!={"repository":NIXKIT_REPOSITORY,"commit":NIXKIT_COMMIT,"sources_sha256":NIXKIT_SOURCES_SHA256,"node_runtime":NODE_RUNTIME}: raise Refusal("canonical manifest does not match compile-time NixKit pins")
@@ -86,20 +99,29 @@ def _valid_datetime(value:object)->bool:
  except ValueError: return False
  return parsed.tzinfo is not None and parsed.utcoffset() is not None
 
-def _validate_proposal(p:dict,proposal_id:str,profile:str,skills:set[str])->None:
+def _validate_proposal(p:dict,proposal_id:str,profile:str,skills:set[str],catalog:dict[str,tuple[str,str]])->None:
  required={"schema_version","proposal_id","profile","name","summary","rationale","source_url","repository","skill_path","revision","license","evidence_urls","risks","score_components","score","gates","gate_evidence","status"}
  if set(p)!=required or p.get("schema_version")!=1 or p.get("proposal_id")!=proposal_id or p.get("profile")!=profile or p.get("status")!="candidate" or {p.get("name")}!=skills: raise Refusal("committed proposal identity/status/skills do not match approval")
  if not isinstance(p.get("repository"),str) or not REPOSITORY.fullmatch(p["repository"]) or not isinstance(p.get("skill_path"),str) or not SKILL_PATH.fullmatch(p["skill_path"]) or not SHA.fullmatch(str(p.get("revision",""))): raise Refusal("committed proposal repository/path/revision is invalid")
+ if catalog.get(p["name"])!=(p["repository"],p["revision"]): raise Refusal("approved skill does not uniquely belong to the proposal repository and pinned revision")
  source=f"https://github.com/{p['repository']}/tree/{p['revision']}/{p.get('skill_path','')}"
  if p.get("source_url")!=source: raise Refusal("committed proposal source evidence is not immutable and exact")
- if not isinstance(p.get("evidence_urls"),list) or not p["evidence_urls"] or any(not isinstance(u,str) or urlsplit(u).scheme!="https" or not urlsplit(u).netloc for u in p["evidence_urls"]) or source not in p["evidence_urls"] or not any(f"https://github.com/{p['repository']}/blob/{p['revision']}/" in u and re.search(r"(?:^|/)(?:LICENSE|COPYING)(?:[./-]|$)",urlsplit(u).path,re.I) for u in p["evidence_urls"] if isinstance(u,str)): raise Refusal("committed proposal lacks immutable source/license evidence")
+ license_prefixes=(f"/{p['repository']}/blob/{p['revision']}/",f"/{p['repository']}/tree/{p['revision']}/")
+ def license_url(u:object)->bool:
+  if not isinstance(u,str): return False
+  parsed=urlsplit(u)
+  if parsed.scheme!="https" or parsed.netloc!="github.com" or parsed.username is not None or parsed.password is not None or parsed.port is not None or parsed.query or parsed.fragment: return False
+  if not any(parsed.path.startswith(prefix) for prefix in license_prefixes): return False
+  relative=next(parsed.path[len(prefix):] for prefix in license_prefixes if parsed.path.startswith(prefix))
+  return any(re.fullmatch(r"(?:LICENSE|COPYING|NOTICE)(?:[._-].*)?",part,re.I) for part in relative.split("/") if part)
+ if not isinstance(p.get("evidence_urls"),list) or not p["evidence_urls"] or any(not isinstance(u,str) or urlsplit(u).scheme!="https" or not urlsplit(u).netloc for u in p["evidence_urls"]) or source not in p["evidence_urls"] or not any(license_url(u) for u in p["evidence_urls"]): raise Refusal("committed proposal lacks immutable same-origin source/license evidence")
  components=p.get("score_components"); score=p.get("score")
  if not isinstance(components,dict) or set(components)!=set(SCORE_LIMITS) or any(isinstance(components[k],bool) or not isinstance(components[k],int) or not 0<=components[k]<=SCORE_LIMITS[k] for k in SCORE_LIMITS) or not isinstance(score,int) or score<80 or score!=sum(components.values()): raise Refusal("committed proposal score is invalid")
  if p.get("gates")!={k:True for k in HARD_GATES} or not isinstance(p.get("gate_evidence"),dict) or set(p["gate_evidence"])!=HARD_GATES or any(not isinstance(v,str) or not v.strip() for v in p["gate_evidence"].values()): raise Refusal("committed proposal gates/evidence are invalid")
  for field in ("summary","rationale","license"):
   if not isinstance(p.get(field),str) or not p[field].strip(): raise Refusal(f"committed proposal {field} is invalid")
 
-def _approval(path:Path,profile:str,current:dict,requested:set[str])->None:
+def _approval(path:Path,profile:str,current:dict,requested:set[str],catalog:dict[str,tuple[str,str]])->None:
  for governance_file in (Path("skills/packs.json"), Path("scripts/install-skills.py")): _tracked_clean(governance_file)
  try: relative=path.resolve(strict=True).relative_to(ROOT.resolve())
  except (OSError,ValueError) as exc: raise Refusal("approval receipt must be a canonical path inside this repository") from exc
@@ -114,7 +136,7 @@ def _approval(path:Path,profile:str,current:dict,requested:set[str])->None:
  _run(["git","merge-base","--is-ancestor",commit,"HEAD"],ROOT)
  committed_manifest=_git_json(commit,Path("skills/packs.json"),"manifest"); _canonical_manifest(committed_manifest)
  proposal_path=Path("skills/proposals")/f"{proposal_id}.json"; _tracked_clean(proposal_path)
- proposal=_git_json(commit,proposal_path,"proposal"); _validate_proposal(proposal,proposal_id,profile,requested)
+ proposal=_git_json(commit,proposal_path,"proposal"); _validate_proposal(proposal,proposal_id,profile,requested,catalog)
  if committed_manifest["profiles"][profile]!=current["profiles"][profile] or committed_manifest["approved_additions"][profile]!=current["approved_additions"][profile] or set(committed_manifest["approved_additions"][profile])!=requested: raise Refusal("current profile assignment/additions differ from approved committed state")
 
 def _check_no_symlink(path:Path)->None:
@@ -136,6 +158,7 @@ def main()->int:
   try: actual_hash=hashlib.sha256(sources.read_bytes()).hexdigest()
   except OSError as exc: raise Refusal(f"cannot read pinned NixKit sources.json: {exc}") from exc
   if actual_hash!=NIXKIT_SOURCES_SHA256: raise Refusal("NixKit sources.json content does not match the audited hash")
+  catalog=_source_catalog(sources)
   installer=checkout/"install.mjs"
   if not installer.is_file() or installer.is_symlink(): raise Refusal("NixKit install.mjs is missing or a symlink")
   npx=shutil.which("npx")
@@ -145,7 +168,7 @@ def main()->int:
   declared=set(manifest["approved_additions"][args.profile])
   if additions:
    if additions!=declared or args.approval is None: raise Refusal("requested additions require exact canonical declaration and approval")
-   _approval(args.approval.expanduser().absolute(),args.profile,manifest,additions)
+   _approval(args.approval.expanduser().absolute(),args.profile,manifest,additions,catalog)
   elif args.approval is not None or declared: raise Refusal("declared additions require matching --skill values and approval")
   if args.apply:
    if _run(["git","status","--porcelain","--untracked-files=all"],ROOT): raise Refusal("Nix OS repository must be clean, including untracked files, for apply")

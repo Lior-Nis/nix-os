@@ -33,7 +33,7 @@ Existing local profile directories are treated as user-owned. If a directory or 
 
 Role-pack manifests and schemas are reviewable Git state. Installed skill copies belong to each exact local profile home and are never imported back into the repository. NixKit checkouts and authentication stores remain user-owned. The installation wrapper reads only Git metadata, the pinned source manifest, and destination paths; it never reads secrets.
 
-Scout packets live under `${HOME}/.local/share/hermes-scouts/<ISO-WEEK>/` and are untracked runtime data. Hermes cron state remains in each profile's own local store. `scripts/setup-skill-scouts.py` uses the CLI to create/edit jobs and reads the store only to verify exact readback; repository code never writes `jobs.json` directly. The collector copy exists only under the default profile's local scripts directory.
+Scout packets live under `${HOME}/.local/share/hermes-scouts/<ISO-WEEK>/` and are untracked runtime data. Hermes cron state remains in each profile's own canonical local store (`${HERMES_HOME}/cron/jobs.json` for default and `${HERMES_HOME}/profiles/<name>/cron/jobs.json` for named profiles). `scripts/setup-skill-scouts.py` uses the CLI to create/edit jobs and reads those stores only to verify exact post-command readback; repository code never writes `jobs.json` directly. A store override is refused except in explicit test mode, where fake command-created state still receives exact readback validation. The collector copy exists only under the default profile's local scripts directory.
 
 ## Secret setup
 

@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import textwrap
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 PROFILES = {"lnx", "pulse", "algua", "meabeclick", "meabeclickux", "meabeclickeng", "meabeclickgrowth"}
@@ -76,7 +77,12 @@ class SkillInstallerTests(unittest.TestCase):
             for values in packs["packs"].values()
             for skill in values
         } | set(packs["task_only"]) | set(packs["excluded"]))
-        (kit / "sources.json").write_text(json.dumps([{"repo": "example/source", "ref": "b" * 40, "skills": source_skills}]), encoding="utf-8")
+        source_skills.remove("agent-browser")
+        sources = [
+            {"repo": "example/source", "ref": "b" * 40, "skills": source_skills},
+            {"repo": "vercel-labs/agent-browser", "ref": "dac13bb87468fe9d74a040d862720f6cc17a9565", "skills": ["agent-browser"]},
+        ]
+        (kit / "sources.json").write_text(json.dumps(sources), encoding="utf-8")
         (kit / "install.mjs").write_text("// fixture: execution is intercepted by fake npx\n", encoding="utf-8")
         bin_dir = base / "bin"
         bin_dir.mkdir()
@@ -167,7 +173,7 @@ class SkillInstallerTests(unittest.TestCase):
             home, hermes_home, kit, manifest_path, script, fixture_root, env = self._fixture(base)
             manifest = json.loads(manifest_path.read_text()); manifest["approved_additions"]["pulse"] = ["agent-browser"]
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-            revision = "a" * 40; repository = "example/useful"; skill_path = "skills/agent-browser"
+            revision = "dac13bb87468fe9d74a040d862720f6cc17a9565"; repository = "vercel-labs/agent-browser"; skill_path = "skills/agent-browser"
             proposal = {
                 "schema_version": 1, "proposal_id": "pulse-agent-browser", "profile": "pulse", "name": "agent-browser",
                 "summary": "Audited browser skill", "rationale": "Fills a role gap",
@@ -191,6 +197,32 @@ class SkillInstallerTests(unittest.TestCase):
             receipt["approved_at"] = "2026-10-24 15:00:00"; receipt_path.write_text(json.dumps(receipt))
             dirty = subprocess.run(command, cwd=fixture_root, env=env, text=True, capture_output=True)
             self.assertNotEqual(0, dirty.returncode); self.assertIn("dirty", dirty.stderr)
+
+    def test_proposal_requires_catalog_binding_and_exact_same_origin_license_url(self):
+        installer = load_module("skill_installer_provenance", self.script)
+        revision = "dac13bb87468fe9d74a040d862720f6cc17a9565"
+        repository = "vercel-labs/agent-browser"
+        proposal = {
+            "schema_version": 1, "proposal_id": "pulse-agent-browser", "profile": "pulse", "name": "agent-browser",
+            "summary": "Audited browser skill", "rationale": "Fills a role gap",
+            "source_url": f"https://github.com/{repository}/tree/{revision}/skills/agent-browser", "repository": repository,
+            "skill_path": "skills/agent-browser", "revision": revision, "license": "MIT",
+            "evidence_urls": [f"https://github.com/{repository}/tree/{revision}/skills/agent-browser", f"https://github.com/{repository}/blob/{revision}/LICENSE"],
+            "risks": [], "score_components": {"role_value": 27, "evidence_quality": 18, "security_provenance": 18, "hermes_compatibility": 14, "maintenance": 9, "documentation_license": 4},
+            "score": 90, "gates": {name: True for name in installer.HARD_GATES},
+            "gate_evidence": {name: "Reviewed evidence" for name in installer.HARD_GATES}, "status": "candidate",
+        }
+        catalog = {"agent-browser": (repository, revision)}
+        installer._validate_proposal(proposal, "pulse-agent-browser", "pulse", {"agent-browser"}, catalog)
+        with self.assertRaisesRegex(installer.Refusal, "uniquely belong"):
+            installer._validate_proposal(proposal, "pulse-agent-browser", "pulse", {"agent-browser"}, {"agent-browser": ("evil/repo", revision)})
+        proposal["evidence_urls"][1] = f"https://github.com.evil.invalid/{repository}/blob/{revision}/LICENSE"
+        with self.assertRaisesRegex(installer.Refusal, "same-origin"):
+            installer._validate_proposal(proposal, "pulse-agent-browser", "pulse", {"agent-browser"}, catalog)
+
+    def test_proposal_schema_has_no_unvalidated_optional_popularity_field(self):
+        schema = json.loads((ROOT / "skills/proposal.schema.json").read_text(encoding="utf-8"))
+        self.assertNotIn("popularity_evidence", schema["properties"])
 
     def test_manifest_override_is_not_an_interface(self):
         result = subprocess.run(["python3", str(self.script), "--manifest", "/tmp/evil.json", "--profile", "lnx"], cwd=ROOT, text=True, capture_output=True)
@@ -342,7 +374,8 @@ class ScoutTests(unittest.TestCase):
 
     def test_collector_screens_secrets_controls_and_protected_paths_before_forwarding(self):
         week = "2026-W43"
-        payloads = ("sk-" + "A" * 40, "ghp_" + "A" * 30, "AKIA" + "A" * 16, "-----BEGIN" + " PRIVATE KEY-----", "private/customer-payments/data.json", "bad\u0001control")
+        discord = "M" * 24 + "." + "N" * 6 + "." + "P" * 30
+        payloads = ("sk-" + "A" * 40, "ghp_" + "A" * 30, "AKIA" + "A" * 16, discord, "-----BEGIN" + " PRIVATE KEY-----", "private/customer-payments/data.json", "bad\u0001control")
         for payload in payloads:
             with self.subTest(payload=payload[:12]), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp); candidate = self._candidate(); candidate["summary"] = payload
@@ -351,6 +384,17 @@ class ScoutTests(unittest.TestCase):
                 self.assertEqual("invalid", result["status"])
                 self.assertEqual([], result["candidates"])
                 self.assertNotIn(payload, self.collect.render_for_aggregator(result))
+
+    def test_collector_rejects_deep_json_as_invalid_without_crashing(self):
+        week = "2026-W43"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_week(root, week)
+            deep = "[" * 1100 + "0" + "]" * 1100
+            (root / "lnx.json").write_text(deep, encoding="utf-8")
+            result = self.collect.collect_packets(root, week)
+            self.assertEqual("invalid", result["status"])
+            self.assertTrue(any("nesting" in error for error in result["errors"]))
 
     def test_scout_prompt_is_self_contained_and_names_every_field(self):
         prompt = (ROOT / "automation/skill-scout/scout-prompt.md").read_text(encoding="utf-8")
@@ -363,6 +407,43 @@ class ScoutTests(unittest.TestCase):
 
 
 class ScoutSetupTests(unittest.TestCase):
+    def setUp(self):
+        self.setup = load_module("skill_scout_setup", ROOT / "scripts/setup-skill-scouts.py")
+
+    def test_manifest_validation_is_exact_and_rejects_unknown_or_traversal_fields(self):
+        spec = json.loads((ROOT / "automation/skill-scout/jobs.json").read_text(encoding="utf-8"))
+        self.assertEqual(8, len(self.setup._canonical_spec(spec)))
+        for mutation in ("unknown", "traversal", "delivery"):
+            changed = json.loads(json.dumps(spec))
+            if mutation == "unknown": changed["jobs"][0]["extra"] = True
+            elif mutation == "traversal": changed["jobs"][0]["prompt_file"] = "../scout-prompt.md"
+            else: changed["jobs"][0]["delivery"] = "telegram:evil"
+            with self.subTest(mutation=mutation), self.assertRaises(self.setup.Refusal):
+                self.setup._canonical_spec(changed)
+
+    def test_test_store_override_requires_explicit_test_mode(self):
+        with mock.patch.dict(os.environ, {"HERMES_SCOUT_TEST_STORE": "/tmp/fake"}, clear=False):
+            os.environ.pop("NIX_OS_SCOUT_TEST_MODE", None)
+            with self.assertRaisesRegex(self.setup.Refusal, "explicit test mode"):
+                self.setup._job_store(Path("/tmp/home"), "default")
+            os.environ["NIX_OS_SCOUT_TEST_MODE"] = "1"
+            self.assertEqual(Path("/tmp/fake/default.json"), self.setup._job_store(Path("/tmp/home"), "default"))
+
+    def test_collector_atomic_install_rejects_existing_temp_symlink_and_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); source = root / "source.py"; destination = root / "collector.py"; target = root / "victim"
+            source.write_text("safe", encoding="utf-8"); target.write_text("unchanged", encoding="utf-8")
+            temporary = destination.with_suffix(".tmp")
+            temporary.symlink_to(target)
+            with self.assertRaisesRegex(self.setup.Refusal, "already exists"):
+                self.setup._install_collector_atomic(destination, source)
+            self.assertEqual("unchanged", target.read_text(encoding="utf-8"))
+            self.assertTrue(temporary.is_symlink())
+            temporary.unlink(); temporary.write_text("attacker", encoding="utf-8")
+            with self.assertRaisesRegex(self.setup.Refusal, "already exists"):
+                self.setup._install_collector_atomic(destination, source)
+            self.assertEqual("attacker", temporary.read_text(encoding="utf-8"))
+
     def test_preview_create_readback_idempotence_and_drift_refusal(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
@@ -387,7 +468,7 @@ class ScoutSetupTests(unittest.TestCase):
                 else: raise SystemExit('unexpected '+repr(cmd))
             """), encoding="utf-8")
             fake.chmod(0o755)
-            env=os.environ.copy(); env.update({"HOME":str(home), "HERMES_HOME":str(home/".hermes"), "HERMES_BIN":str(fake), "FAKE_STATE":str(state), "FAKE_LOG":str(log), "HERMES_SCOUT_TEST_STORE":str(state)})
+            env=os.environ.copy(); env.update({"HOME":str(home), "HERMES_HOME":str(home/".hermes"), "HERMES_BIN":str(fake), "FAKE_STATE":str(state), "FAKE_LOG":str(log), "HERMES_SCOUT_TEST_STORE":str(state), "NIX_OS_SCOUT_TEST_MODE":"1"})
             cmd=["python3", str(ROOT/"scripts/setup-skill-scouts.py")]
             preview=subprocess.run(cmd, cwd=ROOT, env=env, text=True, capture_output=True)
             self.assertEqual(0, preview.returncode, preview.stderr); self.assertIn("PREVIEW", preview.stdout); self.assertFalse(state.exists())

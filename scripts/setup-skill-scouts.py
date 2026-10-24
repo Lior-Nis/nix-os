@@ -7,12 +7,27 @@ import argparse
 import json
 import os
 from pathlib import Path
-import shutil
+import stat
 import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 AUTOMATION = ROOT / "automation/skill-scout"
+EXPECTED_JOBS = [
+    {"name": "nix-skill-scout-pulse", "kind": "scout", "profile": "pulse", "hermes_profile": "pulse", "schedule": "0 18 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
+    {"name": "nix-skill-scout-algua", "kind": "scout", "profile": "algua", "hermes_profile": "algua", "schedule": "20 18 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
+    {"name": "nix-skill-scout-meabeclick", "kind": "scout", "profile": "meabeclick", "hermes_profile": "meabeclick", "schedule": "40 18 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
+    {"name": "nix-skill-scout-meabeclickux", "kind": "scout", "profile": "meabeclickux", "hermes_profile": "meabeclickux", "schedule": "0 19 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
+    {"name": "nix-skill-scout-meabeclickeng", "kind": "scout", "profile": "meabeclickeng", "hermes_profile": "meabeclickeng", "schedule": "20 19 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
+    {"name": "nix-skill-scout-meabeclickgrowth", "kind": "scout", "profile": "meabeclickgrowth", "hermes_profile": "meabeclickgrowth", "schedule": "40 19 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
+    {"name": "nix-skill-scout-lnx", "kind": "scout", "profile": "lnx", "hermes_profile": "default", "schedule": "0 20 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
+    {"name": "nix-skill-scout-aggregate", "kind": "aggregator", "profile": "lnx", "hermes_profile": "default", "schedule": "0 21 * * 6", "prompt_file": "aggregate-prompt.md", "script": "skill-scout-collect.py", "delivery": "local", "delivery_enabled": "telegram:6926015052", "continuity": True},
+]
+CANONICAL_FILES = (
+    "automation/skill-scout/jobs.json", "automation/skill-scout/scout-prompt.md",
+    "automation/skill-scout/aggregate-prompt.md", "automation/skill-scout/collect.py",
+    "scripts/setup-skill-scouts.py",
+)
 
 
 class Refusal(RuntimeError):
@@ -33,8 +48,14 @@ def _profile_home(base: Path, profile: str) -> Path:
 def _job_store(base: Path, profile: str) -> Path:
     override = os.environ.get("HERMES_SCOUT_TEST_STORE")
     if override:
+        _validate_test_store_override()
         return Path(override) / f"{profile}.json"
     return _profile_home(base, profile) / "cron/jobs.json"
+
+
+def _validate_test_store_override() -> None:
+    if os.environ.get("HERMES_SCOUT_TEST_STORE") and os.environ.get("NIX_OS_SCOUT_TEST_MODE") != "1":
+        raise Refusal("HERMES_SCOUT_TEST_STORE is forbidden outside explicit test mode")
 
 
 def _read_jobs(path: Path) -> list[dict]:
@@ -128,16 +149,77 @@ def _collector_preflight(destination: Path, source: Path) -> None:
         raise Refusal(f"refusing to replace conflicting collector: {destination}")
 
 
+def _canonical_spec(value: object) -> list[dict]:
+    expected = {"schema_version": 1, "timezone": "Asia/Jerusalem", "packet_root": "${HOME}/.local/share/hermes-scouts", "jobs": EXPECTED_JOBS}
+    if value != expected:
+        raise Refusal("skill-scout manifest must exactly match the hardcoded eight-job canonical topology")
+    return EXPECTED_JOBS
+
+
+def _require_clean_governance() -> None:
+    status = subprocess.run(["git", "status", "--porcelain=v1", "--untracked-files=all"], cwd=ROOT, text=True, capture_output=True, check=False)
+    if status.returncode or status.stdout:
+        raise Refusal("Nix OS repository must be clean, including untracked files, before apply")
+    for relative in CANONICAL_FILES:
+        tracked = subprocess.run(["git", "ls-files", "--error-unmatch", relative], cwd=ROOT, text=True, capture_output=True, check=False)
+        if tracked.returncode:
+            raise Refusal(f"canonical scout governance file must be tracked and committed: {relative}")
+
+
+def _install_collector_atomic(destination: Path, source: Path) -> None:
+    if destination.exists():
+        return
+    temporary = destination.with_suffix(".tmp")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd: int | None = None
+    owned: tuple[int, int] | None = None
+    try:
+        fd = os.open(temporary, flags, 0o700)
+        os.fchmod(fd, 0o700)
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode):
+            raise Refusal("collector temporary path is not a regular file")
+        owned = (opened.st_dev, opened.st_ino)
+        data = source.read_bytes()
+        view = memoryview(data)
+        while view:
+            written = os.write(fd, view)
+            if written <= 0:
+                raise OSError("short write while installing collector")
+            view = view[written:]
+        os.fsync(fd)
+        os.close(fd)
+        fd = None
+        current = os.lstat(temporary)
+        if not stat.S_ISREG(current.st_mode) or (current.st_dev, current.st_ino) != owned:
+            raise Refusal("collector temporary inode changed before atomic replace")
+        os.replace(temporary, destination)
+        owned = None
+    except FileExistsError as exc:
+        raise Refusal(f"collector temporary path already exists: {temporary}") from exc
+    finally:
+        if fd is not None:
+            os.close(fd)
+        if owned is not None:
+            try:
+                current = os.lstat(temporary)
+                if (current.st_dev, current.st_ino) == owned:
+                    os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--enable-delivery", action="store_true", help="Switch only the aggregator to its reviewed Telegram target")
     args = parser.parse_args()
     try:
+        _validate_test_store_override()
         spec = _load(AUTOMATION / "jobs.json")
-        if not isinstance(spec, dict) or spec.get("timezone") != "Asia/Jerusalem" or not isinstance(spec.get("jobs"), list):
-            raise Refusal("invalid skill-scout job manifest")
-        jobs = spec["jobs"]
+        jobs = _canonical_spec(spec)
         base = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))).expanduser().absolute()
         binary = os.environ.get("HERMES_BIN", "hermes")
         collector_source = AUTOMATION / "collect.py"
@@ -149,6 +231,8 @@ def main() -> int:
             print(f"  {job['hermes_profile']}: {job['name']} @ {job['schedule']} -> {_preview_delivery(base, job, args.enable_delivery)}")
         if not args.apply:
             return 0
+
+        _require_clean_governance()
 
         by_profile: dict[str, list[dict]] = {}
         for desired in jobs:
@@ -166,11 +250,7 @@ def main() -> int:
                     raise Refusal(f"same-name cron drift detected for {desired['name']}; refusing overwrite")
 
         collector_dest.parent.mkdir(parents=True, exist_ok=True)
-        if not collector_dest.exists():
-            temporary = collector_dest.with_suffix(".tmp")
-            temporary.write_bytes(collector_source.read_bytes())
-            temporary.chmod(0o700)
-            temporary.replace(collector_dest)
+        _install_collector_atomic(collector_dest, collector_source)
 
         for profile, wanted in by_profile.items():
             for desired in wanted:

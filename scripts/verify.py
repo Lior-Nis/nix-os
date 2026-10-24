@@ -294,6 +294,8 @@ def _validate_evidence_schema(schema: dict[str, Any], relative: str, errors: lis
         errors.append(f"{relative} candidate required fields must be exact")
         return
     properties = candidate.get("properties") or {}
+    if set(properties) != expected_required:
+        errors.append(f"{relative} candidate properties must be exact (no unvalidated optional fields)")
     if properties.get("score") != {"type": "integer", "minimum": 80, "maximum": 100}:
         errors.append(f"{relative} candidate score must be constrained to 80-100")
     evidence_urls = properties.get("evidence_urls")

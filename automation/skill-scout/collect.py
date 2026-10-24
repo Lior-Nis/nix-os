@@ -35,12 +35,19 @@ MAX_PACKET_BYTES = 262_144
 MAX_CANDIDATES = 50
 MAX_TEXT = 4_096
 MAX_URL = 2_048
+MAX_JSON_DEPTH = 100
 SECRET_PATTERNS = {
     "private key": re.compile(r"-----BEGIN(?: [A-Z0-9]+)* PRIVATE KEY-----"),
     "GitHub token": re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"),
     "OpenAI key": re.compile(r"\bsk-[A-Za-z0-9_-]{32,}\b"),
     "AWS access key": re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"),
-    "bearer/token value": re.compile(r"(?i)\b(?:bearer|api[_-]?key|access[_-]?token|secret[_-]?key)\s*[:=]\s*[A-Za-z0-9_./+\-=]{16,}"),
+    "Discord bot token": re.compile(r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{20,30}\.[A-Za-z0-9_-]{6,8}\.[A-Za-z0-9_-]{25,45}(?![A-Za-z0-9_-])"),
+    "bearer/token value": re.compile(r"(?i)\b(?:bearer\s+|api[_-]?key\s*[:=]\s*|access[_-]?token\s*[:=]\s*|secret[_-]?key\s*[:=]\s*)[A-Za-z0-9_./+\-=]{16,}"),
+    "credential query parameter": re.compile(r"(?i)[?&](?:api[_-]?key|access[_-]?token|auth(?:orization)?|bearer|client[_-]?secret|secret|token|key)=[^&#\s]{8,}"),
+    "JWT": re.compile(r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?![A-Za-z0-9_-])"),
+    "npm token": re.compile(r"\bnpm_[A-Za-z0-9]{36}\b"),
+    "Stripe key": re.compile(r"\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b"),
+    "Google API key": re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"),
 }
 PROTECTED_PATH = re.compile(r"(?i)(?:^|[/_.-])(?:students?|customers?|payments?|pricing|cardholders?|invoices?)(?:[/_.-]|$)")
 
@@ -83,6 +90,30 @@ def _screen_value(value: object, location: str) -> list[str]:
     return []
 
 
+def _json_nesting_error(text: str) -> str | None:
+    """Bound JSON container nesting without interpreting escaped string data."""
+    depth = 0
+    in_string = False
+    escaped = False
+    for char in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+        elif char in "[{":
+            depth += 1
+            if depth > MAX_JSON_DEPTH:
+                return f"JSON nesting exceeds {MAX_JSON_DEPTH}"
+        elif char in "]}":
+            depth -= 1
+    return None
+
+
 def _github_url(repository: str, kind: str, revision: str, path: str) -> str:
     return f"https://github.com/{repository}/{kind}/{revision}/{path}"
 
@@ -115,8 +146,17 @@ def _validate_candidate(value: object, location: str) -> tuple[dict, list[str]]:
         errors.append(f"{location}: evidence_urls must be a nonempty list of https URLs")
     elif all(isinstance(value.get(field), str) for field in ("repository", "revision", "skill_path")):
         source = _github_url(value["repository"], "tree", value["revision"], value["skill_path"])
-        prefix = f"https://github.com/{value['repository']}/blob/{value['revision']}/"
-        license_evidence = any(url.startswith(prefix) and re.search(r"(?:^|/)(?:LICENSE|COPYING)(?:[./-]|$)", urlsplit(url).path, re.I) for url in evidence_urls)
+        prefixes = (f"/{value['repository']}/blob/{value['revision']}/", f"/{value['repository']}/tree/{value['revision']}/")
+        license_evidence = False
+        for url in evidence_urls:
+            parsed = urlsplit(url)
+            if parsed.scheme != "https" or parsed.netloc != "github.com" or parsed.query or parsed.fragment:
+                continue
+            for prefix in prefixes:
+                if parsed.path.startswith(prefix):
+                    relative = parsed.path[len(prefix):]
+                    if any(re.fullmatch(r"(?:LICENSE|COPYING|NOTICE)(?:[._-].*)?", part, re.I) for part in relative.split("/") if part):
+                        license_evidence = True
         if source not in evidence_urls or not license_evidence:
             errors.append(f"{location}: evidence_urls require same-repository/revision source and license evidence")
     risks = value.get("risks")
@@ -200,14 +240,22 @@ def collect_packets(packet_dir: Path, week: str) -> dict:
             if screening:
                 errors.extend(screening)
                 continue
+            nesting_error = _json_nesting_error(raw)
+            if nesting_error:
+                errors.append(f"invalid packet {profile}: {nesting_error}")
+                continue
             packet = json.loads(raw)
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        except (OSError, UnicodeError, json.JSONDecodeError, RecursionError, MemoryError) as exc:
             errors.append(f"invalid packet {profile}: {exc}")
             continue
         if not isinstance(packet, dict):
             errors.append(f"invalid packet {profile}: root must be an object")
             continue
-        structured_screening = _screen_value(packet, f"packet {profile}")
+        try:
+            structured_screening = _screen_value(packet, f"packet {profile}")
+        except (RecursionError, MemoryError) as exc:
+            errors.append(f"invalid packet {profile}: cannot safely inspect JSON: {type(exc).__name__}")
+            continue
         if structured_screening:
             errors.extend(structured_screening)
             continue

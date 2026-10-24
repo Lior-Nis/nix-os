@@ -23,8 +23,7 @@
     "score": {"type": "integer", "minimum": 80, "maximum": 100},
     "gates": {"$ref": "#/$defs/gates"},
     "gate_evidence": {"$ref": "#/$defs/gate_evidence"},
-    "status": {"const": "candidate"},
-    "popularity_evidence": {"type": "string"}
+    "status": {"const": "candidate"}
   },
   "$defs": {
     "score_components": {
