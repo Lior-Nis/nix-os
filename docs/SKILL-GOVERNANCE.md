@@ -2,14 +2,14 @@
 
 ## Purpose and authority
 
-`skills/packs.json` is the only declaration of persistent third-party role skills. It pins NixKit itself, the audited NixKit source manifest, explicit named packs, and seven profile assignments. There is deliberately no global or wildcard pack. Human authority remains with Lior: a scout can propose, but cannot install, configure, authenticate, approve, or promote anything.
+`skills/packs.json` is the only declaration of persistent third-party role skills and profile-specific approved additions. It pins NixKit itself, the audited NixKit source manifest, explicit named packs, and seven profile assignments. There is deliberately no global or wildcard pack. Human authority remains with Lior: a scout can propose, but cannot install, configure, authenticate, approve, or promote anything.
 
 The initial baseline is approved only because the pack manifest is merged after review. No synthetic approval receipt is created for it. Any later addition uses a deliberately satisfiable two-commit flow and requires all of the following:
 
 1. Commit a profile-specific proposal at `skills/proposals/<proposal_id>.json`, conforming to `skills/proposal.schema.json`, together with the exact `approved_additions` change in canonical `skills/packs.json`. This is the **proposal/manifest commit**.
 2. Obtain explicit Lior approval of that committed state. The approval cannot be self-issued by automation.
 3. In a later commit, add the receipt at `skills/approvals/<proposal_id>.json`. Its `manifest_commit` is the full SHA of the earlier proposal/manifest commit, and its proposal ID, profile, and exact skill set bind the decision.
-4. Preview, then explicitly apply through `scripts/install-skills.py` with matching `--skill` values and the canonical receipt path.
+4. Preview, then explicitly apply through `scripts/install-skills.py` with matching `--skill` values and one canonical `--approval` receipt per proposal. Receipts are repeatable; their disjoint skill scopes must cover the declared additions exactly.
 
 The installer requires the receipt, proposal, manifest, and installer to be tracked, committed, and unmodified; requires `manifest_commit` to be an ancestor of current `HEAD`; and reads both the proposal and manifest with `git show` from that exact commit. It parses the audited pinned NixKit `sources.json`, requires globally unique skill names, and binds each approved name to the proposal's exact source repository and full pinned ref. It also requires the proposal's canonical GitHub tree URL and same-origin, same-repository/ref `LICENSE`, `COPYING`, or `NOTICE` evidence (blob or tree). It revalidates status, all gates, score, current profile assignment, and exact additions. Thus a receipt committed after the state it approves is valid, while a receipt for a stale, dirty, rewritten, lookalike-host, or unrelated state is not.
 
@@ -17,7 +17,7 @@ Popularity, stars, downloads, or social references are evidence only. They never
 
 ## Classification and role packs
 
-Every one of the 41 skills in the pinned NixKit source manifest belongs semantically to exactly one of these classes:
+Every one of the 49 skills in the pinned NixKit source manifest belongs semantically to exactly one of these classes:
 
 - **Persistent:** appears in one or more named role packs. Reuse between packs is intentional and does not duplicate the source classification.
 - **Task-only:** may be considered for a bounded, approved task but is not continuously loaded.
@@ -27,9 +27,9 @@ The baseline is `verification-before-completion`. LNX adds orchestration and han
 
 The NixKit root skill named `research` is excluded from persistent packs. Hermes already uses `skills/research/` as a category directory containing narrower reviewed research skills, so installing a different root skill at that pathname would violate non-duplication and no-overwrite guarantees. Project leads and Growth retain their existing role-appropriate Hermes research-category skills; the empty `public-research` pack records that intentional compatibility boundary.
 
-Two otherwise useful skills remain task-only because their pinned skill text delegates to mutable dependencies at runtime: `web-design-guidelines` fetches latest rules, and `find-docs` invokes `npx ctx7@latest`. Persistent assignment would undermine the immutable-source policy. They can move into a role pack only after an immutable dependency policy is implemented and reviewed.
+Two otherwise useful skills remain task-only because their pinned skill text delegates to mutable dependencies at runtime: `web-design-guidelines` fetches latest rules, and `find-docs` invokes `npx ctx7@latest`. Persistent assignment would undermine the immutable-source policy. They can move into a role pack only after an immutable dependency policy is implemented and reviewed. The seven newly cataloged namespaced/custom workflow skills (`lnx-grilling`, `lnx-grill-me`, `lnx-domain-modeling`, `lnx-grill-with-docs`, `lnx-to-spec`, `lnx-writing-for-agents`, and `nix-idea-to-mvp`) are explicitly task-only pending separate role-need review.
 
-Setup/grilling, browser, media, knowledge, and Google Workspace skills are also task-only. Conflicting/redundant Superpowers bootstrap/planning/debug/TDD/request-review/subagent/diagnostic skills and Ponytail are excluded in favor of existing Hermes-native capabilities. Caveman remains catalog-classified as excluded from baseline packs, but proposal `lnx-caveman-d8ede5cf` grants LNX/default alone a reviewed profile-specific addition at the exact approved revision; every other profile remains unchanged.
+Setup/grilling, browser, media, knowledge, and Google Workspace skills are also task-only. Conflicting/redundant Superpowers bootstrap/planning/debug/TDD/request-review/subagent/diagnostic skills and Ponytail are excluded in favor of existing Hermes-native capabilities. Caveman remains catalog-classified as excluded from baseline packs, but proposal `lnx-caveman-d8ede5cf` grants LNX/default alone a reviewed profile-specific addition at the exact approved revision. Watch remains catalog-classified as task-only and proposal `lnx-watch-a9cb5b57` declares it as an LNX/default addition; it has no approval receipt in this commit and therefore cannot be previewed or applied as part of the complete LNX additions set. Every other profile remains unchanged.
 
 ## Candidate gates and scoring
 
@@ -53,7 +53,7 @@ NixKit runs through the manifest-pinned Node **24.22.1** package and is expected
 npx --yes node@24.22.1 CHECKOUT/install.mjs --apply --skills --agent hermes --prefix PROFILE_HOME --skill NAME ...
 ```
 
-Run `python3 scripts/install-skills.py --profile PROFILE --nixkit PATH` first. There is no manifest override: only canonical `skills/packs.json` is accepted. Preview performs no profile writes, package execution, or NixKit fetches and prints the exact pinned command. Apply additionally requires `--apply` and a clean Nix OS repository, including no untracked files. The wrapper requires executable `npx` but does not install or change system Node; `npx` provisions only `node@24.22.1` for the invocation. It refuses a symlinked profile-home path, a dirty checkout, a NixKit HEAD other than the pinned full commit, a missing/symlinked `install.mjs`, or `sources.json` bytes other than the audited SHA-256. It passes only the profile's exact sorted subset. NixKit performs immutable profile-local copies, preserves byte-identical repeats, and refuses the whole operation on conflicts.
+Run `python3 scripts/install-skills.py --profile PROFILE --nixkit PATH` first. There is no manifest override: only canonical `skills/packs.json` is accepted. Preview performs no profile writes, package execution, or NixKit fetches and prints the exact pinned command. The audited catalog permits exactly one local-source discriminator, `{"local":"skills","skills":["watch"]}`; it binds to repository `its-nix/kit`, the pinned NixKit revision, path `skills/watch`, and Git tree `64685da3912a54d5f672c4bdce0e89b69b4cd6c8`. Before both preview and apply, the wrapper enumerates that complete local payload and requires its entry set, regular-file/symlink types, symlink targets, Git executable modes, and bytes to match the pinned tree exactly. Ignored, untracked, empty-directory, modified, or otherwise extraneous entries fail closed even when Git porcelain reports a clean checkout. All other records retain the strict `{repo,ref,skills}` shape. Apply additionally requires `--apply` and a clean Nix OS repository, including no untracked files. The wrapper requires executable `npx` but does not install or change system Node; `npx` provisions only `node@24.22.1` for the invocation. It refuses a symlinked profile-home path, a dirty checkout, a NixKit HEAD other than the pinned full commit, a missing/symlinked `install.mjs`, or `sources.json` bytes other than the audited SHA-256. It passes only the profile's exact sorted subset. NixKit performs immutable profile-local copies, preserves byte-identical repeats, and refuses the whole operation on conflicts.
 
 The repository URL may be private. Authenticate the existing checkout with normal GitHub/Git credential tooling; never pass a token to the wrapper or store credentials here. The wrapper does not clone, authenticate, install Node, or repair conflicts.
 

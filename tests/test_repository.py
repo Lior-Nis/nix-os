@@ -26,6 +26,7 @@ REQUIRED = {
     "skills/packs.json",
     "skills/proposal.schema.json",
     "skills/approval.schema.json",
+    "skills/proposals/lnx-watch-a9cb5b57.json",
     "docs/SKILL-GOVERNANCE.md",
     "automation/skill-scout/jobs.json",
     "automation/skill-scout/report.schema.json",

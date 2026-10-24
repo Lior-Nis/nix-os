@@ -2,8 +2,8 @@
   "schema_version": 1,
   "nixkit": {
     "repository": "https://github.com/its-nix/kit.git",
-    "commit": "5d9ac621d4b2862c94ff8aa419f2f9fc6c9f68f4",
-    "sources_sha256": "8c465cac697c5dc90a37e3a75242bac2f178c8768d7181883a3b9d673670b656",
+    "commit": "a9cb5b576097301ee63485649d5703db7479ad8f",
+    "sources_sha256": "6493103af689bdf4bae5455e1d901646fe079e51a69c53b6f5bcf57c62786d21",
     "node_runtime": "24.22.1"
   },
   "packs": {
@@ -46,7 +46,7 @@
     "meabeclickgrowth": ["baseline-evidence", "public-research"]
   },
   "approved_additions": {
-    "lnx": ["caveman"],
+    "lnx": ["caveman", "watch"],
     "pulse": [],
     "algua": [],
     "meabeclick": [],
@@ -72,7 +72,15 @@
     "gws-drive-upload",
     "gws-docs-write",
     "web-design-guidelines",
-    "find-docs"
+    "find-docs",
+    "lnx-grilling",
+    "lnx-grill-me",
+    "lnx-domain-modeling",
+    "lnx-grill-with-docs",
+    "lnx-to-spec",
+    "lnx-writing-for-agents",
+    "nix-idea-to-mvp",
+    "watch"
   ],
   "excluded": [
     "using-superpowers",

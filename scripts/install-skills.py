@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import sys
 from urllib.parse import urlsplit
@@ -19,8 +20,11 @@ CANONICAL_MANIFEST = ROOT / "skills/packs.json"
 PROFILE_MAP = {"lnx":"default","pulse":"pulse","algua":"algua","meabeclick":"meabeclick","meabeclickux":"meabeclickux","meabeclickeng":"meabeclickeng","meabeclickgrowth":"meabeclickgrowth"}
 PROFILES = set(PROFILE_MAP)
 NIXKIT_REPOSITORY = "https://github.com/its-nix/kit.git"
-NIXKIT_COMMIT = "5d9ac621d4b2862c94ff8aa419f2f9fc6c9f68f4"
-NIXKIT_SOURCES_SHA256 = "8c465cac697c5dc90a37e3a75242bac2f178c8768d7181883a3b9d673670b656"
+NIXKIT_COMMIT = "a9cb5b576097301ee63485649d5703db7479ad8f"
+NIXKIT_SOURCES_SHA256 = "6493103af689bdf4bae5455e1d901646fe079e51a69c53b6f5bcf57c62786d21"
+NIXKIT_LOCAL_TREES = {"skills/watch":"64685da3912a54d5f672c4bdce0e89b69b4cd6c8"}
+LEGACY_NIXKIT_COMMIT = "5d9ac621d4b2862c94ff8aa419f2f9fc6c9f68f4"
+LEGACY_NIXKIT_SOURCES_SHA256 = "8c465cac697c5dc90a37e3a75242bac2f178c8768d7181883a3b9d673670b656"
 NODE_RUNTIME = "24.22.1"
 EXPECTED_PACKS = {
  "baseline-evidence":["verification-before-completion"],
@@ -36,7 +40,8 @@ EXPECTED_ASSIGNMENTS = {
  "meabeclickux":["baseline-evidence","ux-design-review"], "meabeclickeng":["baseline-evidence","engineering-delivery"],
  "meabeclickgrowth":["baseline-evidence","public-research"],
 }
-NIXKIT_SKILLS = {"using-superpowers","brainstorming","writing-plans","executing-plans","systematic-debugging","test-driven-development","verification-before-completion","requesting-code-review","receiving-code-review","using-git-worktrees","finishing-a-development-branch","subagent-driven-development","dispatching-parallel-agents","diagnosing-superpowers","setup-matt-pocock-skills","grill-with-docs","grilling","domain-modeling","to-spec","to-tickets","codebase-design","research","handoff","caveman","ponytail","frontend-design","web-design-guidelines","agent-browser","remotion-best-practices","auto-editor","auto-editor-effects","auto-editor-export","auto-editor-transcribe","obsidian-markdown","qmd","gws-shared","gws-drive","gws-docs","gws-drive-upload","gws-docs-write","find-docs"}
+LEGACY_NIXKIT_SKILLS = {"using-superpowers","brainstorming","writing-plans","executing-plans","systematic-debugging","test-driven-development","verification-before-completion","requesting-code-review","receiving-code-review","using-git-worktrees","finishing-a-development-branch","subagent-driven-development","dispatching-parallel-agents","diagnosing-superpowers","setup-matt-pocock-skills","grill-with-docs","grilling","domain-modeling","to-spec","to-tickets","codebase-design","research","handoff","caveman","ponytail","frontend-design","web-design-guidelines","agent-browser","remotion-best-practices","auto-editor","auto-editor-effects","auto-editor-export","auto-editor-transcribe","obsidian-markdown","qmd","gws-shared","gws-drive","gws-docs","gws-drive-upload","gws-docs-write","find-docs"}
+NIXKIT_SKILLS = LEGACY_NIXKIT_SKILLS | {"lnx-grilling","lnx-grill-me","lnx-domain-modeling","lnx-grill-with-docs","lnx-to-spec","lnx-writing-for-agents","nix-idea-to-mvp","watch"}
 HARD_GATES = {"relevance","provenance","reliability","safety_privacy","license","hermes_compatibility","non_duplication"}
 SCORE_LIMITS = {"role_value":30,"evidence_quality":20,"security_provenance":20,"hermes_compatibility":15,"maintenance":10,"documentation_license":5}
 SHA = re.compile(r"^[a-f0-9]{40}$")
@@ -58,33 +63,98 @@ def _run(command:list[str], cwd:Path)->str:
   raise Refusal(f"command failed: {' '.join(command)}: {result.stderr.strip() or result.stdout.strip() or result.returncode}")
  return result.stdout.strip()
 
+def _run_bytes(command:list[str],cwd:Path)->bytes:
+ result=subprocess.run(command,cwd=cwd,capture_output=True,check=False)
+ if result.returncode:
+  detail=result.stderr.decode("utf-8",errors="replace").strip() or result.stdout.decode("utf-8",errors="replace").strip() or str(result.returncode)
+  raise Refusal(f"command failed: {' '.join(command)}: {detail}")
+ return result.stdout
+
+def _verify_local_tree(checkout:Path,relative:str,expected_tree:str)->None:
+ """Require a local source payload to be exactly its pinned Git tree."""
+ if _run(["git","rev-parse",f"{NIXKIT_COMMIT}:{relative}"],checkout)!=expected_tree:
+  raise Refusal(f"pinned local source Git tree is not the audited object: {relative}")
+ raw=_run_bytes(["git","ls-tree","-rz","-r","--full-tree",NIXKIT_COMMIT,"--",relative],checkout)
+ expected:dict[str,tuple[str,str]]={}; prefix=relative+"/"
+ for record in raw.split(b"\0"):
+  if not record: continue
+  try:
+   header,path_bytes=record.split(b"\t",1); mode,kind,object_id=header.decode("ascii").split(" "); path=path_bytes.decode("utf-8")
+  except (ValueError,UnicodeDecodeError) as exc: raise Refusal(f"cannot parse pinned local source Git tree: {relative}") from exc
+  if kind!="blob" or mode not in {"100644","100755","120000"} or not path.startswith(prefix): raise Refusal(f"pinned local source Git tree has an unsupported entry: {path}")
+  child=path[len(prefix):]
+  if not child or child.startswith("/") or any(part in {"",".",".."} for part in child.split("/")) or child in expected: raise Refusal(f"pinned local source Git tree has an invalid path: {path}")
+  expected[child]=(mode,object_id)
+ if not expected: raise Refusal(f"pinned local source Git tree is empty: {relative}")
+ expected_dirs={"/".join(parts[:index]) for child in expected for parts in [child.split("/")] for index in range(1,len(parts))}
+ root=checkout/relative
+ try:
+  root_stat=root.lstat()
+ except OSError as exc: raise Refusal(f"cannot inspect pinned local source payload {relative}: {exc}") from exc
+ if not stat.S_ISDIR(root_stat.st_mode) or root.is_symlink(): raise Refusal(f"pinned local source payload is not a real directory: {relative}")
+ actual:dict[str,os.stat_result]={}
+ def walk(directory:Path,prefix_path:str="")->None:
+  try: entries=list(os.scandir(directory))
+  except OSError as exc: raise Refusal(f"cannot enumerate pinned local source payload {relative}: {exc}") from exc
+  for entry in entries:
+   child=f"{prefix_path}/{entry.name}" if prefix_path else entry.name
+   try: info=entry.stat(follow_symlinks=False)
+   except OSError as exc: raise Refusal(f"cannot inspect pinned local source entry {relative}/{child}: {exc}") from exc
+   actual[child]=info
+   if stat.S_ISDIR(info.st_mode): walk(Path(entry.path),child)
+ walk(root)
+ if set(actual)!=set(expected)|expected_dirs:
+  raise Refusal(f"pinned local source payload file set differs from Git tree: {relative}")
+ for directory in expected_dirs:
+  if not stat.S_ISDIR(actual[directory].st_mode): raise Refusal(f"pinned local source entry type differs from Git tree: {relative}/{directory}")
+ for child,(mode,object_id) in expected.items():
+  path=root/child; info=actual[child]; expected_bytes=_run_bytes(["git","cat-file","blob",object_id],checkout)
+  if mode=="120000":
+   if not stat.S_ISLNK(info.st_mode): raise Refusal(f"pinned local source entry type differs from Git tree: {relative}/{child}")
+   try: actual_bytes=os.fsencode(os.readlink(path))
+   except OSError as exc: raise Refusal(f"cannot read pinned local source symlink {relative}/{child}: {exc}") from exc
+  else:
+   if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode): raise Refusal(f"pinned local source entry type differs from Git tree: {relative}/{child}")
+   if bool(info.st_mode&0o111)!=(mode=="100755"): raise Refusal(f"pinned local source executable mode differs from Git tree: {relative}/{child}")
+   try: actual_bytes=path.read_bytes()
+   except OSError as exc: raise Refusal(f"cannot read pinned local source file {relative}/{child}: {exc}") from exc
+  if actual_bytes!=expected_bytes: raise Refusal(f"pinned local source bytes differ from Git tree: {relative}/{child}")
+
 def _load_json(path:Path,label:str)->dict:
  try: value=json.loads(path.read_text(encoding="utf-8"))
  except (OSError,UnicodeError,json.JSONDecodeError) as exc: raise Refusal(f"cannot read {label}: {exc}") from exc
  if not isinstance(value,dict): raise Refusal(f"{label} root must be an object")
  return value
 
-def _source_catalog(path:Path)->dict[str,tuple[str,str]]:
+def _source_catalog(path:Path)->dict[str,tuple[str,str,str|None]]:
  try: value=json.loads(path.read_text(encoding="utf-8"))
  except (OSError,UnicodeError,json.JSONDecodeError) as exc: raise Refusal(f"cannot parse pinned NixKit sources.json: {exc}") from exc
  if not isinstance(value,list): raise Refusal("pinned NixKit sources.json root must be an array")
- catalog:dict[str,tuple[str,str]]={}
+ catalog:dict[str,tuple[str,str,str|None]]={}; local_records=0
  for source in value:
-  if not isinstance(source,dict) or set(source)!={"repo","ref","skills"} or not isinstance(source.get("repo"),str) or not REPOSITORY.fullmatch(source["repo"]) or not isinstance(source.get("ref"),str) or not SHA.fullmatch(source["ref"]) or not isinstance(source.get("skills"),list): raise Refusal("pinned NixKit sources.json has an invalid source record")
+  if not isinstance(source,dict): raise Refusal("pinned NixKit sources.json has an invalid source record")
+  if set(source)=={"repo","ref","skills"} and isinstance(source.get("repo"),str) and REPOSITORY.fullmatch(source["repo"]) and isinstance(source.get("ref"),str) and SHA.fullmatch(source["ref"]) and isinstance(source.get("skills"),list):
+   repository,revision,expected_path=source["repo"],source["ref"],None
+  elif source=={"local":"skills","skills":["watch"]}:
+   local_records+=1; repository,revision,expected_path="its-nix/kit",NIXKIT_COMMIT,"skills/watch"
+  else: raise Refusal("pinned NixKit sources.json has an invalid discriminated source record")
   for skill in source["skills"]:
    if not isinstance(skill,str) or not SKILL.fullmatch(skill) or skill in catalog: raise Refusal("pinned NixKit sources.json skill names must be valid and globally unique")
-   catalog[skill]=(source["repo"],source["ref"])
+   catalog[skill]=(repository,revision,expected_path)
+ if local_records!=1: raise Refusal("pinned NixKit sources.json must contain exactly the audited local watch record")
  if set(catalog)!=NIXKIT_SKILLS: raise Refusal("pinned NixKit sources.json does not contain the exact audited skill catalog")
  return catalog
 
-def _canonical_manifest(manifest:dict)->None:
+def _canonical_manifest(manifest:dict,allow_legacy:bool=False)->None:
  if set(manifest)!={"schema_version","nixkit","packs","profiles","approved_additions","task_only","excluded","governance"} or manifest.get("schema_version")!=1: raise Refusal("canonical pack manifest has invalid fields")
- if manifest.get("nixkit")!={"repository":NIXKIT_REPOSITORY,"commit":NIXKIT_COMMIT,"sources_sha256":NIXKIT_SOURCES_SHA256,"node_runtime":NODE_RUNTIME}: raise Refusal("canonical manifest does not match compile-time NixKit pins")
+ pin=manifest.get("nixkit"); current_pin={"repository":NIXKIT_REPOSITORY,"commit":NIXKIT_COMMIT,"sources_sha256":NIXKIT_SOURCES_SHA256,"node_runtime":NODE_RUNTIME}; legacy_pin={"repository":NIXKIT_REPOSITORY,"commit":LEGACY_NIXKIT_COMMIT,"sources_sha256":LEGACY_NIXKIT_SOURCES_SHA256,"node_runtime":NODE_RUNTIME}
+ if pin!=current_pin and not (allow_legacy and pin==legacy_pin): raise Refusal("canonical manifest does not match an audited compile-time NixKit pin")
  if manifest.get("packs")!=EXPECTED_PACKS or manifest.get("profiles")!=EXPECTED_ASSIGNMENTS: raise Refusal("canonical manifest does not match the exact seven-profile pack topology")
  additions=manifest.get("approved_additions")
  if not isinstance(additions,dict) or set(additions)!=set(PROFILE_MAP) or any(not isinstance(v,list) or len(v)!=len(set(v)) or any(not isinstance(x,str) or not SKILL.fullmatch(x) for x in v) for v in additions.values()): raise Refusal("canonical manifest has invalid approved additions topology")
  persistent=set().union(*(set(v) for v in EXPECTED_PACKS.values())); task=manifest.get("task_only"); excluded=manifest.get("excluded")
- if not isinstance(task,list) or not isinstance(excluded,list) or len(task)!=len(set(task)) or len(excluded)!=len(set(excluded)) or persistent & set(task) or persistent & set(excluded) or set(task)&set(excluded) or persistent|set(task)|set(excluded)!=NIXKIT_SKILLS: raise Refusal("canonical manifest does not classify the exact NixKit catalog")
+ expected_skills=LEGACY_NIXKIT_SKILLS if pin==legacy_pin else NIXKIT_SKILLS
+ if not isinstance(task,list) or not isinstance(excluded,list) or len(task)!=len(set(task)) or len(excluded)!=len(set(excluded)) or persistent & set(task) or persistent & set(excluded) or set(task)&set(excluded) or persistent|set(task)|set(excluded)!=expected_skills: raise Refusal("canonical manifest does not classify the exact NixKit catalog")
  governance=manifest.get("governance")
  if not isinstance(governance,dict) or set(governance.get("hard_gates",[]))!=HARD_GATES or governance.get("minimum_score")!=80 or governance.get("approval_authority")!="Lior": raise Refusal("canonical manifest governance is invalid")
 
@@ -104,11 +174,13 @@ def _valid_datetime(value:object)->bool:
  except ValueError: return False
  return parsed.tzinfo is not None and parsed.utcoffset() is not None
 
-def _validate_proposal(p:dict,proposal_id:str,profile:str,skills:set[str],catalog:dict[str,tuple[str,str]])->None:
+def _validate_proposal(p:dict,proposal_id:str,profile:str,skills:set[str],catalog:dict[str,tuple[str,str,str|None]])->None:
  required={"schema_version","proposal_id","profile","name","summary","rationale","source_url","repository","skill_path","revision","license","evidence_urls","risks","score_components","score","gates","gate_evidence","status"}
  if set(p)!=required or p.get("schema_version")!=1 or not isinstance(p.get("proposal_id"),str) or not PROPOSAL_ID.fullmatch(p["proposal_id"]) or p.get("proposal_id")!=proposal_id or p.get("profile") not in PROFILES or p.get("profile")!=profile or p.get("status")!="candidate" or not isinstance(p.get("name"),str) or not SKILL.fullmatch(p["name"]) or {p["name"]}!=skills: raise Refusal("committed proposal identity/status/skills do not match approval")
  if not isinstance(p.get("repository"),str) or not REPOSITORY.fullmatch(p["repository"]) or not isinstance(p.get("skill_path"),str) or not SKILL_PATH.fullmatch(p["skill_path"]) or not SHA.fullmatch(str(p.get("revision",""))): raise Refusal("committed proposal repository/path/revision is invalid")
- if catalog.get(p["name"])!=(p["repository"],p["revision"]): raise Refusal("approved skill does not uniquely belong to the proposal repository and pinned revision")
+ identity=catalog.get(p["name"])
+ if identity is None or identity[:2]!=(p["repository"],p["revision"]): raise Refusal("approved skill does not uniquely belong to the proposal repository and pinned revision")
+ if identity[2] is not None and p["skill_path"]!=identity[2]: raise Refusal("approved local skill does not match its exact audited repository path")
  source=f"https://github.com/{p['repository']}/tree/{p['revision']}/{p.get('skill_path','')}"
  if not isinstance(p.get("source_url"),str) or len(p["source_url"])>MAX_URL or p["source_url"]!=source: raise Refusal("committed proposal source evidence is not immutable and exact")
  license_prefixes=(f"/{p['repository']}/blob/{p['revision']}/",f"/{p['repository']}/tree/{p['revision']}/")
@@ -129,7 +201,7 @@ def _validate_proposal(p:dict,proposal_id:str,profile:str,skills:set[str],catalo
  for field in ("summary","rationale","license"):
   if not isinstance(p.get(field),str) or not p[field].strip() or len(p[field])>MAX_TEXT: raise Refusal(f"committed proposal {field} is invalid")
 
-def _approval(path:Path,profile:str,current:dict,requested:set[str],catalog:dict[str,tuple[str,str]])->None:
+def _approval(path:Path,profile:str,current:dict,requested:set[str],catalog:dict[str,tuple[str,str,str|None]])->set[str]:
  for governance_file in (Path("skills/packs.json"), Path("scripts/install-skills.py")): _tracked_clean(governance_file)
  try: relative=path.resolve(strict=True).relative_to(ROOT.resolve())
  except (OSError,ValueError) as exc: raise Refusal("approval receipt must be a canonical path inside this repository") from exc
@@ -139,13 +211,15 @@ def _approval(path:Path,profile:str,current:dict,requested:set[str],catalog:dict
  proposal_id=approval.get("proposal_id")
  if not isinstance(proposal_id,str) or not PROPOSAL_ID.fullmatch(proposal_id) or relative!=Path("skills/approvals")/f"{proposal_id}.json": raise Refusal("approval receipt is not at its canonical proposal-bound path")
  skills=approval.get("skills"); commit=approval.get("manifest_commit")
- if not isinstance(skills,list) or set(skills)!=requested or len(skills)!=len(set(skills)) or not skills or any(not isinstance(x,str) or not SKILL.fullmatch(x) for x in skills): raise Refusal("approval receipt skills do not exactly match requested additions")
+ approved=set(skills) if isinstance(skills,list) else set()
+ if not isinstance(skills,list) or not approved<=requested or len(skills)!=len(approved) or not skills or any(not isinstance(x,str) or not SKILL.fullmatch(x) for x in skills): raise Refusal("approval receipt skills must be a nonempty exact subset of requested additions")
  if not isinstance(commit,str) or not SHA.fullmatch(commit) or not _valid_datetime(approval.get("approved_at")): raise Refusal("approval receipt commit/time is invalid")
  _run(["git","merge-base","--is-ancestor",commit,"HEAD"],ROOT)
- committed_manifest=_git_json(commit,Path("skills/packs.json"),"manifest"); _canonical_manifest(committed_manifest)
+ committed_manifest=_git_json(commit,Path("skills/packs.json"),"manifest"); _canonical_manifest(committed_manifest,allow_legacy=True)
  proposal_path=Path("skills/proposals")/f"{proposal_id}.json"; _tracked_clean(proposal_path)
- proposal=_git_json(commit,proposal_path,"proposal"); _validate_proposal(proposal,proposal_id,profile,requested,catalog)
- if committed_manifest["profiles"][profile]!=current["profiles"][profile] or committed_manifest["approved_additions"][profile]!=current["approved_additions"][profile] or set(committed_manifest["approved_additions"][profile])!=requested: raise Refusal("current profile assignment/additions differ from approved committed state")
+ proposal=_git_json(commit,proposal_path,"proposal"); _validate_proposal(proposal,proposal_id,profile,approved,catalog)
+ if committed_manifest["profiles"][profile]!=current["profiles"][profile] or not approved<=set(committed_manifest["approved_additions"][profile]) or not approved<=set(current["approved_additions"][profile]): raise Refusal("approved scope is absent from the committed or current profile assignment/additions")
+ return approved
 
 def _check_no_symlink(path:Path)->None:
  current=path
@@ -155,7 +229,7 @@ def _check_no_symlink(path:Path)->None:
   current=current.parent
 
 def main()->int:
- parser=argparse.ArgumentParser(description=__doc__); parser.add_argument("--profile",required=True,choices=sorted(PROFILE_MAP)); parser.add_argument("--nixkit",type=Path,default=Path.home()/"src/nixkit"); parser.add_argument("--skill",action="append",default=[]); parser.add_argument("--approval",type=Path); parser.add_argument("--apply",action="store_true"); args=parser.parse_args()
+ parser=argparse.ArgumentParser(description=__doc__); parser.add_argument("--profile",required=True,choices=sorted(PROFILE_MAP)); parser.add_argument("--nixkit",type=Path,default=Path.home()/"src/nixkit"); parser.add_argument("--skill",action="append",default=[]); parser.add_argument("--approval",type=Path,action="append",default=[]); parser.add_argument("--apply",action="store_true"); args=parser.parse_args()
  try:
   manifest=_load_json(CANONICAL_MANIFEST,"canonical pack manifest"); _canonical_manifest(manifest)
   checkout=args.nixkit.expanduser().absolute()
@@ -167,6 +241,9 @@ def main()->int:
   except OSError as exc: raise Refusal(f"cannot read pinned NixKit sources.json: {exc}") from exc
   if actual_hash!=NIXKIT_SOURCES_SHA256: raise Refusal("NixKit sources.json content does not match the audited hash")
   catalog=_source_catalog(sources)
+  local_paths={identity[2] for identity in catalog.values() if identity[2] is not None}
+  if local_paths!=set(NIXKIT_LOCAL_TREES): raise Refusal("pinned NixKit local source paths do not match the audited tree set")
+  for relative,tree in NIXKIT_LOCAL_TREES.items(): _verify_local_tree(checkout,relative,tree)
   installer=checkout/"install.mjs"
   if not installer.is_file() or installer.is_symlink(): raise Refusal("NixKit install.mjs is missing or a symlink")
   npx=shutil.which("npx")
@@ -175,9 +252,14 @@ def main()->int:
   if len(args.skill)!=len(additions) or any(not SKILL.fullmatch(s) for s in additions): raise Refusal("invalid or duplicate requested skill name")
   declared=set(manifest["approved_additions"][args.profile])
   if additions:
-   if additions!=declared or args.approval is None: raise Refusal("requested additions require exact canonical declaration and approval")
-   _approval(args.approval.expanduser().absolute(),args.profile,manifest,additions,catalog)
-  elif args.approval is not None or declared: raise Refusal("declared additions require matching --skill values and approval")
+   if additions!=declared or not args.approval: raise Refusal("requested additions require exact canonical declaration and approval coverage")
+   covered:set[str]=set()
+   for approval_path in args.approval:
+    approved=_approval(approval_path.expanduser().absolute(),args.profile,manifest,additions,catalog)
+    if covered&approved: raise Refusal("approval receipt scopes must be disjoint")
+    covered|=approved
+   if covered!=additions: raise Refusal("approval receipts do not exactly cover requested additions")
+  elif args.approval or declared: raise Refusal("declared additions require matching --skill values and approval")
   if args.apply:
    if _run(["git","status","--porcelain","--untracked-files=all"],ROOT): raise Refusal("Nix OS repository must be clean, including untracked files, for apply")
    for relative in (Path("skills/packs.json"),Path("scripts/install-skills.py")): _tracked_clean(relative)
@@ -186,6 +268,7 @@ def main()->int:
   for skill in sorted(baseline|additions): command.extend(["--skill",skill])
   print(("APPLY" if args.apply else "PREVIEW")+f" profile={args.profile} home={profile_home}"); print("command:"," ".join(json.dumps(v) for v in command))
   if not args.apply:return 0
+  for relative,tree in NIXKIT_LOCAL_TREES.items(): _verify_local_tree(checkout,relative,tree)
   profile_home.mkdir(parents=True,exist_ok=True); result=subprocess.run(command,cwd=checkout,check=False)
   if result.returncode: raise Refusal(f"NixKit refused installation (exit {result.returncode}); existing conflicts were preserved")
   print(f"Installed or preserved {len(baseline|additions)} audited skill(s) for {args.profile}."); return 0
