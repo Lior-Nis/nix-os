@@ -414,8 +414,20 @@ def _validate_skills(root: Path, manifest: dict[str, Any], errors: list[str]) ->
         provenance = str((watch_proposal.get("gate_evidence") or {}).get("provenance", ""))
         if "64685da3912a54d5f672c4bdce0e89b69b4cd6c8" not in provenance:
             errors.append("Watch proposal must record the immutable audited Watch Git tree")
-    if (root / "skills/approvals/lnx-watch-a9cb5b57.json").exists():
-        errors.append("Watch proposal/manifest commit must not contain an approval receipt")
+    watch_receipt_path = root / "skills/approvals/lnx-watch-a9cb5b57.json"
+    if watch_receipt_path.exists():
+        watch_receipt = _load_json_object(watch_receipt_path, "Watch approval receipt", errors)
+        expected_receipt = {
+            "schema_version": 1,
+            "proposal_id": "lnx-watch-a9cb5b57",
+            "profile": "lnx",
+            "skills": ["watch"],
+            "approved_by": "Lior",
+            "approved_at": "2026-10-24T16:20:00+03:00",
+            "manifest_commit": "999cc615cd45c11b5ba10f9d02ff837171c68584",
+        }
+        if watch_receipt != expected_receipt:
+            errors.append("Watch approval receipt must exactly bind Lior's decision to the reviewed proposal/manifest commit")
     if any(name in {"global", "universal", "all", "*"} for name in (packs.get("packs") or {})):
         errors.append("wildcard/global/universal skill packs are forbidden")
     persistent = set().union(*(set(values) for values in EXPECTED_PACKS.values()))

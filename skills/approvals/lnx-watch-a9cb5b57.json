@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "proposal_id": "lnx-watch-a9cb5b57",
+  "profile": "lnx",
+  "skills": ["watch"],
+  "approved_by": "Lior",
+  "approved_at": "2026-10-24T16:20:00+03:00",
+  "manifest_commit": "999cc615cd45c11b5ba10f9d02ff837171c68584"
+}

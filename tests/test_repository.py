@@ -72,6 +72,18 @@ class RepositoryContractTests(unittest.TestCase):
         verifier = load_verifier()
         self.assertEqual([], verifier.validate_repository(ROOT))
 
+    def test_verifier_rejects_watch_approval_receipt_drift(self):
+        verifier = load_verifier()
+        with tempfile.TemporaryDirectory() as tmp:
+            copy = Path(tmp) / "repo"
+            shutil.copytree(ROOT, copy, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+            receipt_path = copy / "skills/approvals/lnx-watch-a9cb5b57.json"
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            receipt["manifest_commit"] = "0" * 40
+            receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+            errors = verifier.validate_repository(copy)
+            self.assertTrue(any("Watch approval receipt" in error for error in errors), errors)
+
     def test_verifier_rejects_invalid_lead_reference(self):
         verifier = load_verifier()
         with tempfile.TemporaryDirectory() as tmp:
