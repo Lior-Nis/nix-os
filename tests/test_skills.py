@@ -40,6 +40,17 @@ class PackContractTests(unittest.TestCase):
         self.assertFalse(task_only & excluded)
         self.assertEqual(41, len(persistent | task_only | excluded))
 
+    def test_installer_compile_time_pin_and_topology_match_canonical_manifest(self):
+        installer = load_module("skill_installer_contract", ROOT / "scripts/install-skills.py")
+        manifest = json.loads((ROOT / "skills/packs.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["nixkit"]["repository"], installer.NIXKIT_REPOSITORY)
+        self.assertEqual(manifest["nixkit"]["commit"], installer.NIXKIT_COMMIT)
+        self.assertEqual(manifest["nixkit"]["sources_sha256"], installer.NIXKIT_SOURCES_SHA256)
+        self.assertEqual(manifest["nixkit"]["node_runtime"], installer.NODE_RUNTIME)
+        self.assertEqual(manifest["packs"], installer.EXPECTED_PACKS)
+        self.assertEqual(manifest["profiles"], installer.EXPECTED_ASSIGNMENTS)
+        self.assertEqual(PROFILES, set(installer.PROFILE_MAP))
+
     def test_policy_has_hard_gates_and_threshold(self):
         packs = json.loads((ROOT / "skills/packs.json").read_text(encoding="utf-8"))
         self.assertEqual(80, packs["governance"]["minimum_score"])
@@ -82,31 +93,43 @@ class SkillInstallerTests(unittest.TestCase):
         subprocess.run(["git", "add", "."], cwd=kit, check=True)
         subprocess.run(["git", "commit", "-qm", "fixture"], cwd=kit, check=True)
         commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=kit, text=True).strip()
-        packs = json.loads((ROOT / "skills/packs.json").read_text(encoding="utf-8"))
         packs["nixkit"]["commit"] = commit
         import hashlib
         packs["nixkit"]["sources_sha256"] = hashlib.sha256((kit / "sources.json").read_bytes()).hexdigest()
-        manifest = base / "packs.json"
+        fixture_root = base / "repo"
+        (fixture_root / "scripts").mkdir(parents=True)
+        (fixture_root / "skills").mkdir()
+        script = fixture_root / "scripts/install-skills.py"
+        source = self.script.read_text(encoding="utf-8")
+        source = source.replace("cd1379bc7878b97b8a637728021b6e33a199154f", commit)
+        source = source.replace("8c465cac697c5dc90a37e3a75242bac2f178c8768d7181883a3b9d673670b656", packs["nixkit"]["sources_sha256"])
+        script.write_text(source, encoding="utf-8")
+        manifest = fixture_root / "skills/packs.json"
         manifest.write_text(json.dumps(packs), encoding="utf-8")
+        subprocess.run(["git", "init", "-q"], cwd=fixture_root, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=fixture_root, check=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=fixture_root, check=True)
+        subprocess.run(["git", "add", "."], cwd=fixture_root, check=True)
+        subprocess.run(["git", "commit", "-qm", "canonical fixture"], cwd=fixture_root, check=True)
         env = os.environ.copy()
         env.update({"HOME": str(home), "HERMES_HOME": str(hermes_home), "NIXKIT_LOG": str(base / "calls.json"), "PATH": str(bin_dir) + os.pathsep + env["PATH"]})
-        return home, hermes_home, kit, manifest, env
+        return home, hermes_home, kit, manifest, script, fixture_root, env
 
     def test_preview_is_pure_and_apply_binds_profile_revision_and_exact_subset(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
-            home, hermes_home, kit, manifest, env = self._fixture(base)
-            command = ["python3", str(self.script), "--manifest", str(manifest), "--nixkit", str(kit), "--profile", "pulse"]
-            preview = subprocess.run(command, cwd=ROOT, env=env, text=True, capture_output=True)
+            home, hermes_home, kit, manifest, script, fixture_root, env = self._fixture(base)
+            command = ["python3", str(script), "--nixkit", str(kit), "--profile", "pulse"]
+            preview = subprocess.run(command, cwd=fixture_root, env=env, text=True, capture_output=True)
             self.assertEqual(0, preview.returncode, preview.stderr)
             self.assertIn("PREVIEW", preview.stdout)
             self.assertIn('"npx" "--yes" "node@24.22.1"', preview.stdout)
             self.assertIn(json.dumps(str(kit / "install.mjs")), preview.stdout)
             self.assertFalse((base / "calls.json").exists())
             self.assertFalse(hermes_home.exists())
-            applied = subprocess.run(command + ["--apply"], cwd=ROOT, env=env, text=True, capture_output=True)
+            applied = subprocess.run(command + ["--apply"], cwd=fixture_root, env=env, text=True, capture_output=True)
             self.assertEqual(0, applied.returncode, applied.stderr)
-            repeated = subprocess.run(command + ["--apply"], cwd=ROOT, env=env, text=True, capture_output=True)
+            repeated = subprocess.run(command + ["--apply"], cwd=fixture_root, env=env, text=True, capture_output=True)
             self.assertEqual(0, repeated.returncode, repeated.stderr)
             args = json.loads((base / "calls.json").read_text(encoding="utf-8"))
             self.assertEqual(["--yes", "node@24.22.1", str(kit / "install.mjs"), "--apply", "--skills", "--agent", "hermes", "--prefix", str(hermes_home / "profiles/pulse")], args[:9])
@@ -114,24 +137,65 @@ class SkillInstallerTests(unittest.TestCase):
             packs = json.loads(manifest.read_text(encoding="utf-8"))
             expected = sorted({skill for pack in packs["profiles"]["pulse"] for skill in packs["packs"][pack]})
             self.assertEqual(expected, args[10::2])
+            (fixture_root / "untracked").write_text("dirty", encoding="utf-8")
+            refused = subprocess.run(command + ["--apply"], cwd=fixture_root, env=env, text=True, capture_output=True)
+            self.assertNotEqual(0, refused.returncode)
+            self.assertIn("including untracked", refused.stderr)
 
     def test_rejects_dirty_checkout_symlink_home_and_unapproved_addition(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
-            home, hermes_home, kit, manifest, env = self._fixture(base)
+            home, hermes_home, kit, manifest, script, fixture_root, env = self._fixture(base)
             (kit / "dirty").write_text("x", encoding="utf-8")
-            result = subprocess.run(["python3", str(self.script), "--manifest", str(manifest), "--nixkit", str(kit), "--profile", "lnx"], cwd=ROOT, env=env, text=True, capture_output=True)
+            command = ["python3", str(script), "--nixkit", str(kit)]
+            result = subprocess.run(command + ["--profile", "lnx"], cwd=fixture_root, env=env, text=True, capture_output=True)
             self.assertNotEqual(0, result.returncode)
             self.assertIn("clean", result.stderr)
             (kit / "dirty").unlink()
             hermes_home.parent.mkdir(parents=True)
             hermes_home.symlink_to(base / "elsewhere", target_is_directory=True)
-            result = subprocess.run(["python3", str(self.script), "--manifest", str(manifest), "--nixkit", str(kit), "--profile", "lnx"], cwd=ROOT, env=env, text=True, capture_output=True)
+            result = subprocess.run(command + ["--profile", "lnx"], cwd=fixture_root, env=env, text=True, capture_output=True)
             self.assertNotEqual(0, result.returncode)
             self.assertIn("symlink", result.stderr)
-            result = subprocess.run(["python3", str(self.script), "--manifest", str(manifest), "--nixkit", str(kit), "--profile", "pulse", "--skill", "agent-browser"], cwd=ROOT, env=env, text=True, capture_output=True)
+            result = subprocess.run(command + ["--profile", "pulse", "--skill", "agent-browser"], cwd=fixture_root, env=env, text=True, capture_output=True)
             self.assertNotEqual(0, result.returncode)
             self.assertIn("approval", result.stderr)
+
+    def test_two_commit_approval_loads_manifest_and_proposal_from_ancestor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            home, hermes_home, kit, manifest_path, script, fixture_root, env = self._fixture(base)
+            manifest = json.loads(manifest_path.read_text()); manifest["approved_additions"]["pulse"] = ["agent-browser"]
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            revision = "a" * 40; repository = "example/useful"; skill_path = "skills/agent-browser"
+            proposal = {
+                "schema_version": 1, "proposal_id": "pulse-agent-browser", "profile": "pulse", "name": "agent-browser",
+                "summary": "Audited browser skill", "rationale": "Fills a role gap",
+                "source_url": f"https://github.com/{repository}/tree/{revision}/{skill_path}", "repository": repository,
+                "skill_path": skill_path, "revision": revision, "license": "MIT",
+                "evidence_urls": [f"https://github.com/{repository}/tree/{revision}/{skill_path}", f"https://github.com/{repository}/blob/{revision}/LICENSE"],
+                "risks": [], "score_components": {"role_value": 27, "evidence_quality": 18, "security_provenance": 18, "hermes_compatibility": 14, "maintenance": 9, "documentation_license": 4},
+                "score": 90, "gates": {name: True for name in ("relevance", "provenance", "reliability", "safety_privacy", "license", "hermes_compatibility", "non_duplication")},
+                "gate_evidence": {name: "Reviewed evidence" for name in ("relevance", "provenance", "reliability", "safety_privacy", "license", "hermes_compatibility", "non_duplication")}, "status": "candidate",
+            }
+            proposal_path = fixture_root / "skills/proposals/pulse-agent-browser.json"; proposal_path.parent.mkdir(); proposal_path.write_text(json.dumps(proposal))
+            subprocess.run(["git", "add", "."], cwd=fixture_root, check=True); subprocess.run(["git", "commit", "-qm", "propose skill"], cwd=fixture_root, check=True)
+            manifest_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=fixture_root, text=True).strip()
+            receipt = {"schema_version": 1, "proposal_id": "pulse-agent-browser", "profile": "pulse", "skills": ["agent-browser"], "approved_by": "Lior", "approved_at": "2026-10-24T15:00:00Z", "manifest_commit": manifest_commit}
+            receipt_path = fixture_root / "skills/approvals/pulse-agent-browser.json"; receipt_path.parent.mkdir(); receipt_path.write_text(json.dumps(receipt))
+            subprocess.run(["git", "add", "."], cwd=fixture_root, check=True); subprocess.run(["git", "commit", "-qm", "record approval"], cwd=fixture_root, check=True)
+            command = ["python3", str(script), "--nixkit", str(kit), "--profile", "pulse", "--skill", "agent-browser", "--approval", str(receipt_path)]
+            result = subprocess.run(command, cwd=fixture_root, env=env, text=True, capture_output=True)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertIn("agent-browser", result.stdout)
+            receipt["approved_at"] = "2026-10-24 15:00:00"; receipt_path.write_text(json.dumps(receipt))
+            dirty = subprocess.run(command, cwd=fixture_root, env=env, text=True, capture_output=True)
+            self.assertNotEqual(0, dirty.returncode); self.assertIn("dirty", dirty.stderr)
+
+    def test_manifest_override_is_not_an_interface(self):
+        result = subprocess.run(["python3", str(self.script), "--manifest", "/tmp/evil.json", "--profile", "lnx"], cwd=ROOT, text=True, capture_output=True)
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("unrecognized arguments", result.stderr)
 
 
 class ScoutTests(unittest.TestCase):
@@ -148,7 +212,10 @@ class ScoutTests(unittest.TestCase):
             "skill_path": path,
             "revision": "a" * 40,
             "license": "MIT",
-            "evidence_urls": [f"https://github.com/{repository}/blob/{'a' * 40}/LICENSE"],
+            "evidence_urls": [
+                f"https://github.com/{repository}/tree/{'a' * 40}/{path}",
+                f"https://github.com/{repository}/blob/{'a' * 40}/LICENSE",
+            ],
             "risks": [],
             "score_components": {
                 "role_value": 27, "evidence_quality": 18, "security_provenance": 18,
@@ -249,6 +316,41 @@ class ScoutTests(unittest.TestCase):
             result = self.collect.collect_packets(root, week)
             self.assertEqual("invalid", result["status"])
             self.assertTrue(any("conflicting evidence" in error for error in result["errors"]))
+
+    def test_collector_rejects_mutable_or_unrelated_provenance(self):
+        week = "2026-W43"
+        mutations = {
+            "mutable-source": lambda c: c.update(source_url="https://github.com/example/useful/tree/main/skills/useful"),
+            "unrelated-license": lambda c: c.update(evidence_urls=[c["source_url"], f"https://github.com/other/repo/blob/{'a' * 40}/LICENSE"]),
+            "mutable-license": lambda c: c.update(evidence_urls=[c["source_url"], "https://github.com/example/useful/blob/main/LICENSE"]),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp); candidate = self._candidate(); mutate(candidate)
+                self._write_week(root, week, {"lnx": [candidate]})
+                self.assertEqual("invalid", self.collect.collect_packets(root, week)["status"])
+
+    def test_collector_rejects_invalid_stale_and_timestamp_mismatched_weeks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual("invalid", self.collect.collect_packets(Path(tmp), "2026-W99")["status"])
+            self.assertEqual("invalid", self.collect.collect_packets(Path(tmp), "2025-W43")["status"])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); self._write_week(root, "2026-W43")
+            packet = json.loads((root / "lnx.json").read_text()); packet["generated_at"] = "2026-10-12T12:00:00Z"
+            (root / "lnx.json").write_text(json.dumps(packet), encoding="utf-8")
+            self.assertEqual("invalid", self.collect.collect_packets(root, "2026-W43")["status"])
+
+    def test_collector_screens_secrets_controls_and_protected_paths_before_forwarding(self):
+        week = "2026-W43"
+        payloads = ("sk-" + "A" * 40, "ghp_" + "A" * 30, "AKIA" + "A" * 16, "-----BEGIN" + " PRIVATE KEY-----", "private/customer-payments/data.json", "bad\u0001control")
+        for payload in payloads:
+            with self.subTest(payload=payload[:12]), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp); candidate = self._candidate(); candidate["summary"] = payload
+                self._write_week(root, week, {"lnx": [candidate]})
+                result = self.collect.collect_packets(root, week)
+                self.assertEqual("invalid", result["status"])
+                self.assertEqual([], result["candidates"])
+                self.assertNotIn(payload, self.collect.render_for_aggregator(result))
 
     def test_scout_prompt_is_self_contained_and_names_every_field(self):
         prompt = (ROOT / "automation/skill-scout/scout-prompt.md").read_text(encoding="utf-8")

@@ -30,6 +30,19 @@ REVISION = re.compile(r"^[a-f0-9]{40}$")
 REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 WEEK = re.compile(r"^[0-9]{4}-W[0-9]{2}$")
 SKILL_PATH = re.compile(r"^(?!/)(?!.*(?:^|/)\.\.(?:/|$))[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$")
+RFC3339 = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$")
+MAX_PACKET_BYTES = 262_144
+MAX_CANDIDATES = 50
+MAX_TEXT = 4_096
+MAX_URL = 2_048
+SECRET_PATTERNS = {
+    "private key": re.compile(r"-----BEGIN(?: [A-Z0-9]+)* PRIVATE KEY-----"),
+    "GitHub token": re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"),
+    "OpenAI key": re.compile(r"\bsk-[A-Za-z0-9_-]{32,}\b"),
+    "AWS access key": re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"),
+    "bearer/token value": re.compile(r"(?i)\b(?:bearer|api[_-]?key|access[_-]?token|secret[_-]?key)\s*[:=]\s*[A-Za-z0-9_./+\-=]{16,}"),
+}
+PROTECTED_PATH = re.compile(r"(?i)(?:^|[/_.-])(?:students?|customers?|payments?|pricing|cardholders?|invoices?)(?:[/_.-]|$)")
 
 
 def current_iso_week() -> str:
@@ -45,7 +58,33 @@ def _is_https_url(value: object) -> bool:
 
 
 def _valid_nonempty_strings(value: object) -> bool:
-    return isinstance(value, list) and bool(value) and all(isinstance(item, str) and bool(item.strip()) for item in value)
+    return isinstance(value, list) and bool(value) and len(value) <= 100 and all(isinstance(item, str) and bool(item.strip()) and len(item) <= MAX_URL for item in value)
+
+
+def _screen_text(text: str, location: str) -> list[str]:
+    errors = []
+    if "\x00" in text or any(ord(char) < 32 and char not in "\t\r\n" for char in text):
+        errors.append(f"{location}: NUL/control characters are forbidden")
+    for label, pattern in SECRET_PATTERNS.items():
+        if pattern.search(text):
+            errors.append(f"{location}: possible {label} is forbidden")
+    if PROTECTED_PATH.search(text):
+        errors.append(f"{location}: protected student/customer/payment/pricing path indicator is forbidden")
+    return errors
+
+
+def _screen_value(value: object, location: str) -> list[str]:
+    if isinstance(value, str):
+        return _screen_text(value, location)
+    if isinstance(value, list):
+        return [error for item in value for error in _screen_value(item, location)]
+    if isinstance(value, dict):
+        return [error for key, item in value.items() for error in _screen_value(key, location) + _screen_value(item, location)]
+    return []
+
+
+def _github_url(repository: str, kind: str, revision: str, path: str) -> str:
+    return f"https://github.com/{repository}/{kind}/{revision}/{path}"
 
 
 def _validate_candidate(value: object, location: str) -> tuple[dict, list[str]]:
@@ -57,7 +96,7 @@ def _validate_candidate(value: object, location: str) -> tuple[dict, list[str]]:
     if not isinstance(value.get("name"), str) or not NAME.fullmatch(value["name"]):
         errors.append(f"{location}: invalid name")
     for field in ("summary", "rationale", "license"):
-        if not isinstance(value.get(field), str) or not value[field].strip():
+        if not isinstance(value.get(field), str) or not value[field].strip() or len(value[field]) > MAX_TEXT:
             errors.append(f"{location}: {field} is required")
     if not _is_https_url(value.get("source_url")):
         errors.append(f"{location}: source_url must be an https URL")
@@ -67,11 +106,21 @@ def _validate_candidate(value: object, location: str) -> tuple[dict, list[str]]:
         errors.append(f"{location}: invalid repository-relative skill_path")
     if not isinstance(value.get("revision"), str) or not REVISION.fullmatch(value["revision"]):
         errors.append(f"{location}: revision must be a full lowercase commit SHA")
+    if all(isinstance(value.get(field), str) for field in ("repository", "revision", "skill_path")):
+        expected_source = _github_url(value["repository"], "tree", value["revision"], value["skill_path"])
+        if value.get("source_url") != expected_source:
+            errors.append(f"{location}: source_url must exactly pin repository/revision/skill_path")
     evidence_urls = value.get("evidence_urls")
     if not _valid_nonempty_strings(evidence_urls) or not all(_is_https_url(url) for url in evidence_urls or []):
         errors.append(f"{location}: evidence_urls must be a nonempty list of https URLs")
+    elif all(isinstance(value.get(field), str) for field in ("repository", "revision", "skill_path")):
+        source = _github_url(value["repository"], "tree", value["revision"], value["skill_path"])
+        prefix = f"https://github.com/{value['repository']}/blob/{value['revision']}/"
+        license_evidence = any(url.startswith(prefix) and re.search(r"(?:^|/)(?:LICENSE|COPYING)(?:[./-]|$)", urlsplit(url).path, re.I) for url in evidence_urls)
+        if source not in evidence_urls or not license_evidence:
+            errors.append(f"{location}: evidence_urls require same-repository/revision source and license evidence")
     risks = value.get("risks")
-    if not isinstance(risks, list) or any(not isinstance(risk, str) or not risk.strip() for risk in risks):
+    if not isinstance(risks, list) or len(risks) > 50 or any(not isinstance(risk, str) or not risk.strip() or len(risk) > MAX_TEXT for risk in risks):
         errors.append(f"{location}: risks must be a list of nonempty strings")
 
     components = value.get("score_components")
@@ -108,14 +157,17 @@ def _validate_candidate(value: object, location: str) -> tuple[dict, list[str]]:
     return dict(value), errors
 
 
-def _valid_generated_at(value: object) -> bool:
-    if not isinstance(value, str):
+def _valid_generated_at(value: object, week: str) -> bool:
+    if not isinstance(value, str) or not RFC3339.fullmatch(value):
         return False
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return False
-    return parsed.tzinfo is not None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return False
+    iso = parsed.date().isocalendar()
+    return week == f"{iso.year:04d}-W{iso.week:02d}"
 
 
 def _dedupe_key(candidate: dict) -> tuple[str, str, str]:
@@ -127,25 +179,44 @@ def collect_packets(packet_dir: Path, week: str) -> dict:
     candidates: list[dict] = []
     if not WEEK.fullmatch(week):
         return {"schema_version": 1, "week": week, "status": "invalid", "errors": ["invalid ISO week"], "candidates": []}
+    try:
+        year, number = int(week[:4]), int(week[6:])
+        date.fromisocalendar(year, number, 1)
+    except ValueError:
+        return {"schema_version": 1, "week": week, "status": "invalid", "errors": ["invalid ISO week"], "candidates": []}
+    if week != current_iso_week():
+        return {"schema_version": 1, "week": week, "status": "invalid", "errors": ["requested week is not the current ISO week"], "candidates": []}
     for profile in EXPECTED_PROFILES:
         path = packet_dir / f"{profile}.json"
         if not path.is_file():
             errors.append(f"missing packet: {profile}")
             continue
         try:
-            packet = json.loads(path.read_text(encoding="utf-8"))
+            if path.stat().st_size > MAX_PACKET_BYTES:
+                errors.append(f"invalid packet {profile}: packet exceeds size limit")
+                continue
+            raw = path.read_text(encoding="utf-8")
+            screening = _screen_text(raw, f"packet {profile}")
+            if screening:
+                errors.extend(screening)
+                continue
+            packet = json.loads(raw)
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
             errors.append(f"invalid packet {profile}: {exc}")
             continue
         if not isinstance(packet, dict):
             errors.append(f"invalid packet {profile}: root must be an object")
             continue
+        structured_screening = _screen_value(packet, f"packet {profile}")
+        if structured_screening:
+            errors.extend(structured_screening)
+            continue
         if set(packet) != PACKET_FIELDS:
             errors.append(f"invalid packet {profile}: fields must be exactly {sorted(PACKET_FIELDS)}")
         if packet.get("schema_version") != 1 or packet.get("week") != week or packet.get("profile") != profile:
             errors.append(f"invalid packet {profile}: identity/week mismatch")
-        if not _valid_generated_at(packet.get("generated_at")):
-            errors.append(f"invalid packet {profile}: generated_at must be timezone-aware ISO-8601")
+        if not _valid_generated_at(packet.get("generated_at"), week):
+            errors.append(f"invalid packet {profile}: generated_at must be strict RFC3339 in the packet ISO week")
         checked_sources = packet.get("checked_sources")
         if not _valid_nonempty_strings(checked_sources) or not all(_is_https_url(url) for url in checked_sources or []):
             errors.append(f"invalid packet {profile}: checked_sources must be a nonempty list of https URLs")
@@ -153,7 +224,7 @@ def collect_packets(packet_dir: Path, week: str) -> dict:
         if isinstance(rejected_count, bool) or not isinstance(rejected_count, int) or rejected_count < 0:
             errors.append(f"invalid packet {profile}: rejected_count must be a nonnegative integer")
         values = packet.get("candidates")
-        if not isinstance(values, list):
+        if not isinstance(values, list) or len(values) > MAX_CANDIDATES:
             errors.append(f"invalid packet {profile}: candidates must be a list")
             continue
         for index, value in enumerate(values):

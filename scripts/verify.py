@@ -297,8 +297,12 @@ def _validate_evidence_schema(schema: dict[str, Any], relative: str, errors: lis
     if properties.get("score") != {"type": "integer", "minimum": 80, "maximum": 100}:
         errors.append(f"{relative} candidate score must be constrained to 80-100")
     evidence_urls = properties.get("evidence_urls")
-    if not isinstance(evidence_urls, dict) or evidence_urls.get("minItems") != 1 or evidence_urls.get("items", {}).get("pattern") != "^https://":
-        errors.append(f"{relative} evidence_urls must require HTTPS evidence")
+    expected_url_items = {"type": "string", "maxLength": 2048, "pattern": "^https://"}
+    if not isinstance(evidence_urls, dict) or evidence_urls.get("minItems") != 2 or evidence_urls.get("maxItems") != 100 or evidence_urls.get("items") != expected_url_items:
+        errors.append(f"{relative} evidence_urls must require bounded HTTPS source and license evidence")
+    source_url = properties.get("source_url")
+    if not isinstance(source_url, dict) or source_url.get("maxLength") != 2048 or "github\\.com" not in source_url.get("pattern", "") or "[a-f0-9]{40}" not in source_url.get("pattern", ""):
+        errors.append(f"{relative} source_url must require immutable GitHub revision evidence")
     if properties.get("gates") != {"$ref": "#/$defs/gates"} or properties.get("gate_evidence") != {"$ref": "#/$defs/gate_evidence"} or properties.get("score_components") != {"$ref": "#/$defs/score_components"}:
         errors.append(f"{relative} candidate must bind the exact score and gate contracts")
     if report:

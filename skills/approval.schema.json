@@ -11,7 +11,7 @@
     "profile": {"enum": ["lnx", "pulse", "algua", "meabeclick", "meabeclickux", "meabeclickeng", "meabeclickgrowth"]},
     "skills": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"}},
     "approved_by": {"const": "Lior"},
-    "approved_at": {"type": "string", "format": "date-time"},
+    "approved_at": {"type": "string", "format": "date-time", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})$"},
     "manifest_commit": {"type": "string", "pattern": "^[a-f0-9]{40}$"}
   }
 }
