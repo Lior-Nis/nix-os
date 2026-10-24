@@ -25,7 +25,7 @@ def load_module(name: str, path: Path):
 class PackContractTests(unittest.TestCase):
     def test_exact_profiles_pin_and_complete_skill_classification(self):
         packs = json.loads((ROOT / "skills/packs.json").read_text(encoding="utf-8"))
-        self.assertEqual("cd1379bc7878b97b8a637728021b6e33a199154f", packs["nixkit"]["commit"])
+        self.assertEqual("3e68b83a0c88fb0d895a4de44b5ba817518321b6", packs["nixkit"]["commit"])
         self.assertEqual(64, len(packs["nixkit"]["sources_sha256"]))
         self.assertEqual("24.22.1", packs["nixkit"]["node_runtime"])
         self.assertEqual(PROFILES, set(packs["profiles"]))
@@ -101,7 +101,7 @@ class SkillInstallerTests(unittest.TestCase):
         (fixture_root / "skills").mkdir()
         script = fixture_root / "scripts/install-skills.py"
         source = self.script.read_text(encoding="utf-8")
-        source = source.replace("cd1379bc7878b97b8a637728021b6e33a199154f", commit)
+        source = source.replace("3e68b83a0c88fb0d895a4de44b5ba817518321b6", commit)
         source = source.replace("8c465cac697c5dc90a37e3a75242bac2f178c8768d7181883a3b9d673670b656", packs["nixkit"]["sources_sha256"])
         script.write_text(source, encoding="utf-8")
         manifest = fixture_root / "skills/packs.json"
