@@ -65,7 +65,7 @@ EXPECTED_PACKS = {
     "baseline-evidence": ["verification-before-completion"],
     "orchestrator-control": ["dispatching-parallel-agents", "receiving-code-review", "handoff"],
     "project-lead-core": ["brainstorming", "domain-modeling", "to-spec", "to-tickets", "codebase-design", "receiving-code-review", "handoff"],
-    "public-research": ["research"],
+    "public-research": [],
     "engineering-delivery": ["executing-plans", "using-git-worktrees", "finishing-a-development-branch", "receiving-code-review", "codebase-design"],
     "ux-design-review": ["frontend-design"],
 }

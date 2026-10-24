@@ -31,6 +31,15 @@ class PackContractTests(unittest.TestCase):
         self.assertEqual("24.22.1", packs["nixkit"]["node_runtime"])
         self.assertEqual(PROFILES, set(packs["profiles"]))
         self.assertNotIn("global", packs["packs"])
+        self.assertEqual([], packs["packs"]["public-research"])
+        self.assertIn("research", packs["excluded"])
+        persistent = {
+            skill
+            for profile_packs in packs["profiles"].values()
+            for pack in profile_packs
+            for skill in packs["packs"][pack]
+        }
+        self.assertNotIn("research", persistent)
         self.assertNotIn("universal", packs["packs"])
         self.assertTrue(all(packs["profiles"][profile] for profile in PROFILES))
         persistent = set().union(*(set(value) for value in packs["packs"].values()))

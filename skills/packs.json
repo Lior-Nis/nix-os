@@ -24,9 +24,7 @@
       "receiving-code-review",
       "handoff"
     ],
-    "public-research": [
-      "research"
-    ],
+    "public-research": [],
     "engineering-delivery": [
       "executing-plans",
       "using-git-worktrees",
@@ -85,7 +83,8 @@
     "subagent-driven-development",
     "diagnosing-superpowers",
     "caveman",
-    "ponytail"
+    "ponytail",
+    "research"
   ],
   "governance": {
     "hard_gates": [
