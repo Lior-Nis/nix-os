@@ -57,6 +57,30 @@ SECRET_PATTERNS = {
     "Google API key": re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"),
 }
 PROTECTED_PATH = re.compile(r"(?i)(?:^|[/_.-])(?:students?|customers?|payments?|pricing|cardholders?|invoices?)(?:[/_.-]|$)")
+HTTP_URL = re.compile(r"(?i)https?://[^\s<>\"']+")
+DISCORD_WEBHOOK_HOSTS = {
+    "discord.com", "canary.discord.com", "ptb.discord.com",
+    "discordapp.com", "canary.discordapp.com", "ptb.discordapp.com",
+}
+
+
+def _contains_discord_webhook_url(text: str) -> bool:
+    for match in HTTP_URL.finditer(text):
+        candidate = match.group(0).rstrip(".,;:!?)]}")
+        try:
+            parsed = urlsplit(candidate)
+            hostname = (parsed.hostname or "").lower()
+            port = parsed.port
+        except ValueError:
+            continue
+        if (
+            parsed.scheme.lower() in {"http", "https"}
+            and hostname in DISCORD_WEBHOOK_HOSTS
+            and (port is None or port == 443)
+            and parsed.path.startswith("/api/webhooks/")
+        ):
+            return True
+    return False
 
 
 def current_iso_week() -> str:
@@ -79,6 +103,8 @@ def _screen_text(text: str, location: str) -> list[str]:
     errors = []
     if "\x00" in text or any(ord(char) < 32 and char not in "\t\r\n" for char in text):
         errors.append(f"{location}: NUL/control characters are forbidden")
+    if _contains_discord_webhook_url(text):
+        errors.append(f"{location}: possible Discord webhook credential is forbidden")
     for label, pattern in SECRET_PATTERNS.items():
         if pattern.search(text):
             errors.append(f"{location}: possible {label} is forbidden")

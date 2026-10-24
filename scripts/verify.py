@@ -4,11 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import re
 import sys
 from typing import Any
+from urllib.parse import urlsplit
 
 REQUIRED_FILES = {
     "README.md",
@@ -42,6 +44,11 @@ EXPECTED_PROFILES = {
 EXPECTED_PROJECTS = {"pulse", "algua", "meabeclick"}
 NIXKIT_COMMIT = "5d9ac621d4b2862c94ff8aa419f2f9fc6c9f68f4"
 NIXKIT_SOURCES_SHA256 = "8c465cac697c5dc90a37e3a75242bac2f178c8768d7181883a3b9d673670b656"
+CANONICAL_SCHEMA_SHA256 = {
+    "skills/proposal.schema.json": "d3c84a31c6460bd566ec7e8e5c0c7cabf106100e336b4c81ea05fbb2a6d28ce1",
+    "skills/approval.schema.json": "eeb84ee9c84b3f45eff0ae807586d0a6cc2d35309b46fb7f7fbca696acfda1b7",
+    "automation/skill-scout/report.schema.json": "56cde3a718328b9e4b128cdb14a310ae4d8294936dedec5bada601fd76578c01",
+}
 NIXKIT_SKILLS = {
     "using-superpowers", "brainstorming", "writing-plans", "executing-plans",
     "systematic-debugging", "test-driven-development", "verification-before-completion",
@@ -141,6 +148,30 @@ SECRET_PATTERNS = {
 }
 HERMES_PROFILE_NAME = re.compile(r"^[a-z0-9]+$")
 SQLITE_SIDECAR = re.compile(r"^.+\.(?:db|sqlite|sqlite3)-(?:wal|shm|journal)$")
+HTTP_URL = re.compile(r"(?i)https?://[^\s<>\"']+")
+DISCORD_WEBHOOK_HOSTS = {
+    "discord.com", "canary.discord.com", "ptb.discord.com",
+    "discordapp.com", "canary.discordapp.com", "ptb.discordapp.com",
+}
+
+
+def _contains_discord_webhook_url(text: str) -> bool:
+    for match in HTTP_URL.finditer(text):
+        candidate = match.group(0).rstrip(".,;:!?)]}")
+        try:
+            parsed = urlsplit(candidate)
+            hostname = (parsed.hostname or "").lower()
+            port = parsed.port
+        except ValueError:
+            continue
+        if (
+            parsed.scheme.lower() in {"http", "https"}
+            and hostname in DISCORD_WEBHOOK_HOSTS
+            and (port is None or port == 443)
+            and parsed.path.startswith("/api/webhooks/")
+        ):
+            return True
+    return False
 
 
 def _load_manifest(path: Path, errors: list[str]) -> dict[str, Any]:
@@ -383,8 +414,16 @@ def _validate_skills(root: Path, manifest: dict[str, Any], errors: list[str]) ->
     if manifest.get("skill_governance") != expected_reference:
         errors.append("nix-os.yaml skill_governance references must be exact")
     loaded_schemas: dict[str, dict[str, Any]] = {}
-    for relative in ("skills/proposal.schema.json", "skills/approval.schema.json", "automation/skill-scout/report.schema.json"):
-        schema = _load_json_object(root / relative, relative, errors)
+    for relative, expected_digest in CANONICAL_SCHEMA_SHA256.items():
+        path = root / relative
+        try:
+            actual_digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError as exc:
+            errors.append(f"cannot hash canonical schema {relative}: {exc}")
+        else:
+            if actual_digest != expected_digest:
+                errors.append(f"{relative} bytes must match the pinned canonical security schema SHA-256")
+        schema = _load_json_object(path, relative, errors)
         loaded_schemas[relative] = schema
         if schema and schema.get("$schema") != "https://json-schema.org/draft/2020-12/schema":
             errors.append(f"{relative} must use JSON Schema draft 2020-12")

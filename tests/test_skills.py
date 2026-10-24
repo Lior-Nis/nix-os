@@ -421,9 +421,10 @@ class ScoutTests(unittest.TestCase):
         week = "2026-W43"
         discord = "M" * 24 + "." + "N" * 6 + "." + "P" * 30
         webhook = "https://discord.com/api/webhooks/" + "1" * 18 + "/" + "W" * 60
+        mixed_case_webhook = "HTTPS://PTB.DiscordApp.Com:443/api/webhooks/" + "2" * 18 + "/" + "X" * 60
         payloads = (
             "sk-" + "A" * 40, "ghp_" + "A" * 30, "github" + "_pat_" + "B" * 60,
-            "AKIA" + "A" * 16, discord, webhook, "discord_webhook_token=" + "T" * 60, "xox" + "b-" + "1" * 12 + "-" + "C" * 30,
+            "AKIA" + "A" * 16, discord, webhook, mixed_case_webhook, "discord_webhook_token=" + "T" * 60, "xox" + "b-" + "1" * 12 + "-" + "C" * 30,
             "xox" + "p-" + "2" * 12 + "-" + "D" * 30, "-----BEGIN" + " PRIVATE KEY-----",
             "private/customer-payments/data.json", "bad\u0001control",
         )
@@ -511,17 +512,45 @@ class ScoutSetupTests(unittest.TestCase):
                 self.setup._install_collector_atomic(destination, source)
             self.assertEqual("attacker", temporary.read_text(encoding="utf-8"))
 
+    def test_collector_rollback_preserves_replacement_same_content_inode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); source = root / "source.py"; destination = root / "collector.py"
+            source.write_text("safe", encoding="utf-8")
+            identity = self.setup._install_collector_atomic(destination, source)
+            self.assertIsNotNone(identity)
+            replacement = root / "replacement"
+            replacement.write_bytes(source.read_bytes()); replacement.chmod(0o700)
+            os.replace(replacement, destination)
+            self.assertNotEqual(identity.inode, destination.stat().st_ino)
+            failures = self.setup._rollback("/missing/hermes", root, [], [], [], destination, identity)
+            self.assertTrue(destination.is_file())
+            self.assertEqual(source.read_bytes(), destination.read_bytes())
+            self.assertTrue(any("inode/device/type/content/mode changed" in failure for failure in failures), failures)
+
+    def test_create_output_requires_exact_real_hermes_id_shape(self):
+        output = "Created job: abcdef123456\n  Name: example\n  Schedule: 0 1 * * *"
+        self.assertEqual("abcdef123456", self.setup._created_job_id(output))
+        for invalid in ("abcdef123456", "Created job: ABCDEF123456", "Created job: abcdef12", "Created job: abcdef123456\nCreated job: fedcba654321"):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(self.setup.Refusal, "manual recovery required"):
+                self.setup._created_job_id(invalid)
+
     def test_exact_job_requires_enabled_operational_state(self):
         desired = self.setup.EXPECTED_JOBS[0]
         actual = {
             "id": "fixture", "name": desired["name"], "schedule": {"kind": "cron", "value": desired["schedule"]},
             "prompt": self.setup._prompt(desired), "deliver": ["local"], "continuity": False, "script": None,
         }
-        self.assertTrue(self.setup._is_exact(actual, desired))  # real legacy persisted shape
+        self.assertTrue(self.setup._is_exact(actual, desired))  # documented legacy missing-enabled shape
         for field, value in (("enabled", True), ("state", "scheduled"), ("status", "active")):
             changed = dict(actual); changed[field] = value
             self.assertTrue(self.setup._is_exact(changed, desired), (field, value))
-        for field, value in (("enabled", False), ("state", "paused"), ("status", "disabled")):
+        rejected = (
+            ("enabled", False), ("enabled", None), ("enabled", 0), ("enabled", 1),
+            ("state", "paused"), ("state", "disabled"), ("state", "running"),
+            ("status", "paused"), ("status", "disabled"), ("status", "enabled"),
+            ("paused_at", "2026-10-24T12:00:00Z"), ("paused", True), ("pause_marker", "manual"),
+        )
+        for field, value in rejected:
             changed = dict(actual); changed[field] = value
             self.assertFalse(self.setup._is_exact(changed, desired), (field, value))
 
@@ -543,9 +572,11 @@ class ScoutSetupTests(unittest.TestCase):
                 if cmd[:2]==['cron','create']:
                     count_path=pathlib.Path(os.environ['FAKE_COUNT']); count=int(count_path.read_text())+1 if count_path.exists() else 1; count_path.write_text(str(count))
                     def value(flag, default=None): return cmd[cmd.index(flag)+1] if flag in cmd else default
-                    job={'id':f'new-{count}', 'name':value('--name'), 'schedule':{'kind':'cron','value':cmd[2]}, 'prompt':cmd[3], 'deliver':[value('--deliver','local')], 'continuity':'--continuity' in cmd, 'script':value('--script')}
-                    if count==2: job['enabled']=False
-                    jobs.append(job); f.write_text(json.dumps(jobs)); print(job['id']); raise SystemExit(0)
+                    job={'id':f'{count:012x}', 'name':value('--name'), 'schedule':{'kind':'cron','value':cmd[2]}, 'prompt':cmd[3], 'deliver':[value('--deliver','local')], 'continuity':'--continuity' in cmd, 'script':value('--script')}
+                    if count==2:
+                        job['enabled']=False
+                        jobs.append({'id':'cccccccccccc', **{key:value for key,value in job.items() if key!='id'}, 'enabled':True})
+                    jobs.append(job); f.write_text(json.dumps(jobs)); print(f"Created job: {job['id']}"); print(f"  Name: {job['name']}"); raise SystemExit(0)
                 if cmd[:2]==['cron','remove']:
                     identifier=cmd[2]; jobs=[job for job in jobs if job.get('id')!=identifier]; f.write_text(json.dumps(jobs)); raise SystemExit(0)
                 if cmd[:2]==['cron','edit']:
@@ -562,10 +593,14 @@ class ScoutSetupTests(unittest.TestCase):
             self.assertNotEqual(0, result.returncode)
             self.assertIn("readback mismatch", result.stderr)
             all_jobs = [job for path in state.glob("*.json") for job in json.loads(path.read_text())]
-            self.assertEqual(preexisting, all_jobs)
+            self.assertIn(preexisting[0], all_jobs)
+            concurrent = [job for job in all_jobs if job.get("id") == "cccccccccccc"]
+            self.assertEqual(1, len(concurrent), all_jobs)
+            self.assertEqual(self.setup.EXPECTED_JOBS[1]["name"], concurrent[0]["name"])
             self.assertFalse((home / ".hermes/scripts/skill-scout-collect.py").exists())
             calls = [json.loads(line) for line in log.read_text().splitlines()]
-            self.assertEqual({"new-1", "new-2"}, {call[-1] for call in calls if call[2:4] == ["cron", "remove"]})
+            self.assertEqual({"000000000001", "000000000002"}, {call[-1] for call in calls if call[2:4] == ["cron", "remove"]})
+            self.assertNotIn("cccccccccccc", {call[-1] for call in calls if call[2:4] == ["cron", "remove"]})
 
     def test_preview_create_readback_idempotence_and_drift_refusal(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -584,8 +619,8 @@ class ScoutSetupTests(unittest.TestCase):
                 elif cmd[:2]==['cron','create']:
                     schedule,prompt=cmd[2],cmd[3]
                     def value(flag, default=None): return cmd[cmd.index(flag)+1] if flag in cmd else default
-                    j={'id':uuid.uuid4().hex[:8], 'name':value('--name'), 'schedule':{'kind':'cron','value':schedule}, 'schedule_display':schedule, 'prompt':prompt, 'deliver':[value('--deliver','local')], 'continuity':'--continuity' in cmd, 'script':value('--script')}
-                    jobs.append(j); f.write_text(json.dumps(jobs)); print(j['id'])
+                    j={'id':uuid.uuid4().hex[:12], 'name':value('--name'), 'schedule':{'kind':'cron','value':schedule}, 'schedule_display':schedule, 'prompt':prompt, 'deliver':[value('--deliver','local')], 'continuity':'--continuity' in cmd, 'script':value('--script')}
+                    jobs.append(j); f.write_text(json.dumps(jobs)); print(f"Created job: {j['id']}"); print(f"  Name: {j['name']}")
                 elif cmd[:2]==['cron','edit']:
                     ref=cmd[2]; j=next(x for x in jobs if x['id']==ref or x['name']==ref); j['deliver']=[cmd[cmd.index('--deliver')+1]]; f.write_text(json.dumps(jobs))
                 else: raise SystemExit('unexpected '+repr(cmd))

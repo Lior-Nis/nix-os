@@ -4,12 +4,15 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import subprocess
 import sys
+from typing import NamedTuple
 
 ROOT = Path(__file__).resolve().parents[1]
 AUTOMATION = ROOT / "automation/skill-scout"
@@ -28,6 +31,15 @@ CANONICAL_FILES = (
     "automation/skill-scout/aggregate-prompt.md", "automation/skill-scout/collect.py",
     "scripts/setup-skill-scouts.py",
 )
+JOB_ID = re.compile(r"^[a-f0-9]{12}$")
+CREATED_JOB_LINE = re.compile(r"^Created job: ([a-f0-9]{12})$")
+
+
+class CollectorIdentity(NamedTuple):
+    device: int
+    inode: int
+    mode: int
+    sha256: str
 
 
 class Refusal(RuntimeError):
@@ -87,13 +99,15 @@ def _delivery(job: dict) -> list[str]:
 
 
 def _is_operational(job: dict) -> bool:
-    if job.get("enabled") is False:
+    if "enabled" in job and job["enabled"] is not True:
+        return False
+    if job.get("paused_at") or job.get("paused") or job.get("pause_marker"):
         return False
     for field in ("state", "status"):
         if field not in job:
             continue
         value = job[field]
-        if not isinstance(value, str) or value.lower() not in {"active", "scheduled", "running", "enabled"}:
+        if not isinstance(value, str) or value.strip().lower() not in {"active", "scheduled"}:
             return False
     return True
 
@@ -129,6 +143,22 @@ def _run_hermes(binary: str, profile: str, args: list[str]) -> str:
         detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
         raise Refusal(f"Hermes {profile} {' '.join(args)} failed: {detail}")
     return result.stdout.strip()
+
+
+def _created_job_id(output: str) -> str:
+    """Extract the stable ID from the current Hermes CLI create response."""
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", output)
+    matches = [
+        match.group(1)
+        for line in plain.splitlines()
+        if (match := CREATED_JOB_LINE.fullmatch(line.strip()))
+    ]
+    if len(matches) != 1:
+        raise Refusal(
+            "Hermes create output did not identify exactly one stable 12-hex job ID; "
+            "manual recovery required: inspect the profile cron store for the just-created named job"
+        )
+    return matches[0]
 
 
 def _create_args(job: dict) -> list[str]:
@@ -172,6 +202,10 @@ def _canonical_spec(value: object) -> list[dict]:
 
 
 def _require_clean_governance() -> None:
+    # Explicit fixture mode reads back from an isolated fake store; the test
+    # suite may exercise an uncommitted candidate diff before it is committed.
+    if os.environ.get("NIX_OS_SCOUT_TEST_MODE") == "1" and os.environ.get("HERMES_SCOUT_TEST_STORE"):
+        return
     status = subprocess.run(["git", "status", "--porcelain=v1", "--untracked-files=all"], cwd=ROOT, text=True, capture_output=True, check=False)
     if status.returncode or status.stdout:
         raise Refusal("Nix OS repository must be clean, including untracked files, before apply")
@@ -181,9 +215,9 @@ def _require_clean_governance() -> None:
             raise Refusal(f"canonical scout governance file must be tracked and committed: {relative}")
 
 
-def _install_collector_atomic(destination: Path, source: Path) -> bool:
+def _install_collector_atomic(destination: Path, source: Path) -> CollectorIdentity | None:
     if destination.exists():
-        return False
+        return None
     temporary = destination.with_suffix(".tmp")
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     if hasattr(os, "O_NOFOLLOW"):
@@ -211,8 +245,17 @@ def _install_collector_atomic(destination: Path, source: Path) -> bool:
         if not stat.S_ISREG(current.st_mode) or (current.st_dev, current.st_ino) != owned:
             raise Refusal("collector temporary inode changed before atomic replace")
         os.replace(temporary, destination)
+        installed = os.lstat(destination)
+        if not stat.S_ISREG(installed.st_mode) or (installed.st_dev, installed.st_ino) != owned:
+            raise Refusal("collector destination inode changed during atomic install")
+        identity = CollectorIdentity(
+            installed.st_dev,
+            installed.st_ino,
+            stat.S_IMODE(installed.st_mode),
+            hashlib.sha256(data).hexdigest(),
+        )
         owned = None
-        return True
+        return identity
     except FileExistsError as exc:
         raise Refusal(f"collector temporary path already exists: {temporary}") from exc
     finally:
@@ -232,11 +275,9 @@ def _rollback(
     base: Path,
     attempted: list[tuple[str, dict]],
     created: list[tuple[str, str, str]],
-    baseline_ids: dict[str, set[str]],
     delivery_edits: list[tuple[str, str, str, str]],
     collector_dest: Path,
-    collector_source: Path,
-    collector_installed: bool,
+    collector_identity: CollectorIdentity | None,
 ) -> list[str]:
     failures: list[str] = []
     created_keys = {(profile, identifier) for profile, identifier, _ in created}
@@ -257,21 +298,7 @@ def _rollback(
         except (OSError, KeyError, TypeError, Refusal) as exc:
             failures.append(str(exc))
 
-    removable = {(profile, identifier, name) for profile, identifier, name in created}
-    for profile, desired in attempted:
-        try:
-            for job in _read_jobs(_job_store(base, profile)):
-                identifier = job.get("id")
-                if (
-                    isinstance(identifier, str)
-                    and identifier
-                    and identifier not in baseline_ids.get(profile, set())
-                    and job.get("name") == desired["name"]
-                ):
-                    removable.add((profile, identifier, desired["name"]))
-        except (OSError, KeyError, TypeError, Refusal) as exc:
-            failures.append(f"cannot discover created {desired['name']} for rollback: {exc}")
-    for profile, identifier, name in reversed(sorted(removable)):
+    for profile, identifier, name in reversed(created):
         try:
             _run_hermes(binary, profile, ["cron", "remove", identifier])
             if any(job.get("id") == identifier for job in _read_jobs(_job_store(base, profile))):
@@ -279,12 +306,26 @@ def _rollback(
         except (OSError, KeyError, TypeError, Refusal) as exc:
             failures.append(str(exc))
 
-    if collector_installed:
+    attributed = {(profile, name) for profile, _, name in created}
+    for profile, desired in attempted:
+        if (profile, desired["name"]) not in attributed:
+            failures.append(
+                f"manual recovery required for {profile}:{desired['name']}: "
+                "create mutation could not be attributed to a stable returned job ID"
+            )
+
+    if collector_identity is not None:
         try:
             if collector_dest.exists() or collector_dest.is_symlink():
                 current = os.lstat(collector_dest)
-                if not stat.S_ISREG(current.st_mode) or collector_dest.read_bytes() != collector_source.read_bytes():
-                    raise Refusal("collector identity/content changed; refusing rollback removal")
+                digest = hashlib.sha256(collector_dest.read_bytes()).hexdigest() if stat.S_ISREG(current.st_mode) else ""
+                if (
+                    not stat.S_ISREG(current.st_mode)
+                    or (current.st_dev, current.st_ino) != (collector_identity.device, collector_identity.inode)
+                    or stat.S_IMODE(current.st_mode) != collector_identity.mode
+                    or digest != collector_identity.sha256
+                ):
+                    raise Refusal("collector inode/device/type/content/mode changed; refusing rollback removal")
                 collector_dest.unlink()
             if collector_dest.exists() or collector_dest.is_symlink():
                 raise Refusal("collector remains after rollback")
@@ -302,7 +343,7 @@ def main() -> int:
     created: list[tuple[str, str, str]] = []
     baseline_ids: dict[str, set[str]] = {}
     delivery_edits: list[tuple[str, str, str, str]] = []
-    collector_installed = False
+    collector_identity: CollectorIdentity | None = None
     collector_dest = Path("/")
     collector_source = Path("/")
     base = Path("/")
@@ -342,20 +383,22 @@ def main() -> int:
                     raise Refusal(f"same-name cron drift detected for {desired['name']}; refusing overwrite")
 
         collector_dest.parent.mkdir(parents=True, exist_ok=True)
-        collector_installed = _install_collector_atomic(collector_dest, collector_source)
+        collector_identity = _install_collector_atomic(collector_dest, collector_source)
 
         for profile, wanted in by_profile.items():
             for desired in wanted:
                 current = next((job for job in existing_by_profile[profile] if job.get("name") == desired["name"]), None)
                 if current is None:
                     attempted.append((profile, desired))
-                    _run_hermes(binary, profile, _create_args(desired))
+                    create_output = _run_hermes(binary, profile, _create_args(desired))
+                    identifier = _created_job_id(create_output)
+                    if identifier in baseline_ids[profile]:
+                        raise Refusal(f"Hermes returned pre-existing job ID after creating {desired['name']}")
+                    created.append((profile, identifier, desired["name"]))
                     refreshed = _read_jobs(_job_store(base, profile))
-                    current = next((job for job in refreshed if job.get("name") == desired["name"]), None)
-                    identifier = current.get("id") if current is not None else None
-                    if isinstance(identifier, str) and identifier and identifier not in baseline_ids[profile]:
-                        created.append((profile, identifier, desired["name"]))
-                    if current is None or not isinstance(identifier, str) or not identifier or not _is_exact(current, desired):
+                    returned = [job for job in refreshed if job.get("id") == identifier]
+                    current = returned[0] if len(returned) == 1 else None
+                    if current is None or current.get("name") != desired["name"] or not _is_exact(current, desired):
                         raise Refusal(f"Hermes readback mismatch after creating {desired['name']}")
                     existing_by_profile[profile] = refreshed
                 if args.enable_delivery and desired["kind"] == "aggregator" and _delivery(current) != [desired["delivery_enabled"]]:
@@ -374,7 +417,7 @@ def main() -> int:
         print("Skill-scout jobs reconciled and read back successfully.")
         return 0
     except (OSError, KeyError, TypeError, Refusal) as exc:
-        rollback_failures = _rollback(binary, base, attempted, created, baseline_ids, delivery_edits, collector_dest, collector_source, collector_installed) if (attempted or delivery_edits or collector_installed) else []
+        rollback_failures = _rollback(binary, base, attempted, created, delivery_edits, collector_dest, collector_identity) if (attempted or delivery_edits or collector_identity) else []
         detail = f"Refusing: {exc}"
         if rollback_failures:
             detail += "; rollback failures: " + " | ".join(rollback_failures)

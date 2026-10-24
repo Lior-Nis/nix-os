@@ -111,6 +111,29 @@ class RepositoryContractTests(unittest.TestCase):
             self.assertTrue(any("risks must be a bounded list" in error for error in errors), errors)
             self.assertTrue(any("job manifest must exactly" in error for error in errors), errors)
 
+    def test_verifier_rejects_any_canonical_schema_security_weakening(self):
+        verifier = load_verifier()
+        mutations = {
+            "additionalProperties": ("skills/proposal.schema.json", lambda schema: schema.update(additionalProperties=True)),
+            "profile": ("skills/approval.schema.json", lambda schema: schema["properties"]["profile"].update(enum=["lnx", "attacker"])),
+            "name": ("skills/proposal.schema.json", lambda schema: schema["properties"]["name"].update(pattern=".*")),
+            "repository": ("skills/proposal.schema.json", lambda schema: schema["properties"]["repository"].update(pattern=".*")),
+            "path": ("skills/proposal.schema.json", lambda schema: schema["properties"]["skill_path"].update(pattern=".*")),
+            "revision": ("automation/skill-scout/report.schema.json", lambda schema: schema["$defs"]["candidate"]["properties"]["revision"].update(pattern=".*")),
+        }
+        for label, (relative, mutate) in mutations.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:
+                copy = Path(tmp) / "repo"
+                shutil.copytree(ROOT, copy, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+                path = copy / relative
+                schema = json.loads(path.read_text(encoding="utf-8")); mutate(schema)
+                path.write_text(json.dumps(schema), encoding="utf-8")
+                errors = verifier.validate_repository(copy)
+                self.assertTrue(
+                    any(relative in error and "pinned canonical security schema" in error for error in errors),
+                    errors,
+                )
+
     def test_verifier_rejects_secret_runtime_name_and_absolute_home(self):
         verifier = load_verifier()
         with tempfile.TemporaryDirectory() as tmp:
