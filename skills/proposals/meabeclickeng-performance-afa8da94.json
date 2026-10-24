@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "proposal_id": "meabeclickeng-performance-afa8da94",
+  "profile": "meabeclickeng",
+  "evidence_urls": [
+    "https://github.com/addyosmani/web-quality-skills/tree/afa8da942115f2961fdbfa80807ea0b232ff6c00/skills/performance",
+    "https://github.com/addyosmani/web-quality-skills/blob/afa8da942115f2961fdbfa80807ea0b232ff6c00/LICENSE",
+    "https://github.com/addyosmani/web-quality-skills/blob/afa8da942115f2961fdbfa80807ea0b232ff6c00/skills/performance/SKILL.md",
+    "https://github.com/addyosmani/web-quality-skills/blob/afa8da942115f2961fdbfa80807ea0b232ff6c00/skills/performance/references/MEASUREMENT.md",
+    "https://github.com/addyosmani/web-quality-skills/blob/afa8da942115f2961fdbfa80807ea0b232ff6c00/skills/performance/references/RUM.md",
+    "https://github.com/addyosmani/web-quality-skills/commit/afa8da942115f2961fdbfa80807ea0b232ff6c00"
+  ],
+  "gate_evidence": {
+    "hermes_compatibility": "The Agent Skills frontmatter is compatible with Hermes; optional provider-specific browser tools have safe fallbacks and no mandatory external credential is required for ordinary audits.",
+    "license": "The skill frontmatter declares MIT and the pinned same-repository LICENSE was inspected and contains the MIT terms.",
+    "non_duplication": "The installed inventory was inspected; production-reliability-assessment is broad, while no existing skill provides this field-versus-lab web-performance measurement and RUM workflow.",
+    "provenance": "The public addyosmani/web-quality-skills repository, exact skill directory, signed GitHub commit, and immutable 40-character revision were verified.",
+    "relevance": "Directly supports phone-first performance, Core Web Vitals, regression measurement, observability evidence, and production RUM boundaries owned by this role.",
+    "reliability": "The pinned SKILL.md and both support references were inspected; they distinguish field, RUM, trace, lab, and static evidence and require repeatable conditions plus before/after reporting.",
+    "safety_privacy": "The package contains documentation and references only; its RUM guidance explicitly excludes query strings, user text, DOM fragments, and personal data and requires authorization for new telemetry behavior."
+  },
+  "gates": {
+    "hermes_compatibility": true,
+    "license": true,
+    "non_duplication": true,
+    "provenance": true,
+    "relevance": true,
+    "reliability": true,
+    "safety_privacy": true
+  },
+  "license": "MIT; verified in repository LICENSE at the pinned revision.",
+  "name": "performance",
+  "rationale": "The profile owns performance and observability for a phone-first SvelteKit platform, but the installed inventory has no web-performance measurement skill. This candidate adds disciplined Core Web Vitals baselining, mobile conditions, before/after verification, and privacy-aware RUM guidance without duplicating the broader production-reliability assessment skill.",
+  "repository": "addyosmani/web-quality-skills",
+  "revision": "afa8da942115f2961fdbfa80807ea0b232ff6c00",
+  "risks": [
+    "Its starter budgets are generic guardrails, not product acceptance thresholds; retain repository budgets and calibrate against representative phone devices, networks, routes, and journeys.",
+    "Optional Chrome DevTools MCP calls may be unavailable; use the documented Lighthouse, browser, PageSpeed, CrUX, or static-hypothesis fallback and state the evidence level.",
+    "RUM changes affect privacy and production telemetry; the pinned guidance requires reuse of existing pipelines and authorization before adding an endpoint, vendor, cookie, or consent behavior."
+  ],
+  "score": 93,
+  "score_components": {
+    "documentation_license": 5,
+    "evidence_quality": 19,
+    "hermes_compatibility": 13,
+    "maintenance": 9,
+    "role_value": 28,
+    "security_provenance": 19
+  },
+  "skill_path": "skills/performance",
+  "source_url": "https://github.com/addyosmani/web-quality-skills/tree/afa8da942115f2961fdbfa80807ea0b232ff6c00/skills/performance",
+  "summary": "Measurement-first web performance workflow separating field data, repeatable lab traces, RUM, and source hypotheses.",
+  "status": "candidate"
+}

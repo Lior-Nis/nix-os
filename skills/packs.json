@@ -2,8 +2,8 @@
   "schema_version": 1,
   "nixkit": {
     "repository": "https://github.com/its-nix/kit.git",
-    "commit": "92338765a1cc942b2a20dda3f1e220d6be0225e1",
-    "sources_sha256": "6493103af689bdf4bae5455e1d901646fe079e51a69c53b6f5bcf57c62786d21",
+    "commit": "f5377ca3219daf4f33f6e8525f9438318dabcd2f",
+    "sources_sha256": "110ecc3872b4fe45ede667afd4ca757d59aef850672045a639eae5ef78415a83",
     "node_runtime": "24.22.1"
   },
   "packs": {
@@ -75,13 +75,31 @@
     "meabeclickgrowth": []
   },
   "approved_additions": {
-    "lnx": ["caveman", "watch"],
-    "pulse": [],
+    "lnx": [
+      "caveman",
+      "watch",
+      "todoist-cli"
+    ],
+    "pulse": [
+      "technical-project-management"
+    ],
     "algua": [],
     "meabeclick": [],
-    "meabeclickux": [],
-    "meabeclickeng": [],
-    "meabeclickgrowth": []
+    "meabeclickux": [
+      "rtl-design",
+      "web-accessibility"
+    ],
+    "meabeclickeng": [
+      "performance",
+      "web-accessibility",
+      "systematic-debugging",
+      "test-driven-development"
+    ],
+    "meabeclickgrowth": [
+      "analytics",
+      "customer-research",
+      "social-media-content-calendar"
+    ]
   },
   "task_only": [
     "setup-matt-pocock-skills",
@@ -102,7 +120,15 @@
     "gws-docs-write",
     "web-design-guidelines",
     "find-docs",
-    "watch"
+    "watch",
+    "performance",
+    "rtl-design",
+    "analytics",
+    "customer-research",
+    "todoist-cli",
+    "technical-project-management",
+    "web-accessibility",
+    "social-media-content-calendar"
   ],
   "excluded": [
     "using-superpowers",

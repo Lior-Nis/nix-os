@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "proposal_id": "meabeclickgrowth-social-media-content-calendar-0319e113",
+  "profile": "meabeclickgrowth",
+  "evidence_urls": [
+    "https://github.com/NousResearch/hermes-agent/tree/0319e113c9602b86ffda350e931cb4b035e1d5d8/optional-skills/creative/social-media-content-calendar",
+    "https://github.com/NousResearch/hermes-agent/blob/0319e113c9602b86ffda350e931cb4b035e1d5d8/LICENSE",
+    "https://github.com/NousResearch/hermes-agent/blob/0319e113c9602b86ffda350e931cb4b035e1d5d8/optional-skills/creative/social-media-content-calendar/SKILL.md",
+    "https://api.github.com/repos/NousResearch/hermes-agent/commits/0319e113c9602b86ffda350e931cb4b035e1d5d8",
+    "https://hermes-agent.nousresearch.com/docs/user-guide/skills/optional/creative/creative-social-media-content-calendar"
+  ],
+  "gate_evidence": {
+    "hermes_compatibility": "This is an official Hermes optional skill with valid frontmatter, declared cross-platform support, built-in tool names, and an official catalog entry; draft-only use has no missing runtime dependency.",
+    "license": "The pinned same-repository LICENSE is MIT, and the official skill page independently lists MIT for this exact optional skill.",
+    "non_duplication": "The current nine-skill profile inventory was inspected and contains no content-calendar or campaign-brief equivalent; xitter is a platform interaction skill, not a governed multi-platform calendar workflow.",
+    "provenance": "The candidate is in the official public Hermes repository and official optional-skills catalog; the exact path and immutable 40-character revision 0319e113c9602b86ffda350e931cb4b035e1d5d8 were verified.",
+    "relevance": "Directly matches the responsibility to prepare content calendars and campaign briefs while preserving the profile's approval and publication boundary.",
+    "reliability": "The complete pinned skill and official generated documentation were inspected. The procedure covers constraints, source inventory, briefs, metrics, editorial risk review, approval states, and read-back verification for any publication.",
+    "safety_privacy": "The skill explicitly requires verified claims, testimonial permission, rights review, approval before publishing, and honest handoff status. In this profile the publish branch can be disabled entirely, avoiding account access and external side effects."
+  },
+  "gates": {
+    "hermes_compatibility": true,
+    "license": true,
+    "non_duplication": true,
+    "provenance": true,
+    "relevance": true,
+    "reliability": true,
+    "safety_privacy": true
+  },
+  "license": "MIT; verified in repository LICENSE at the pinned revision and the official Hermes skill catalog.",
+  "name": "social-media-content-calendar",
+  "rationale": "Preparing parent-facing content calendars is an explicit responsibility, while publishing is outside this profile's authority. No installed skill provides a calendar workflow that ties every post to an objective and metric, inventories verified claims and testimonial permissions, adapts briefs by channel, and distinguishes drafts, approvals, handoffs, and verified publication. This official optional Hermes skill fits that gap and can be run in draft-only mode.",
+  "repository": "NousResearch/hermes-agent",
+  "revision": "0319e113c9602b86ffda350e931cb4b035e1d5d8",
+  "risks": [
+    "The skill includes scheduling and publishing branches; for this profile it must remain in draft or approval-handoff mode because posting and account actions require Lior's explicit approval.",
+    "Its recommended related humanizer skill is not installed in this profile; Hebrew warmth, RTL correctness, and parent-facing voice must instead be checked against the project's binding brand source and by the appropriate human or UX owner.",
+    "Platform cadence examples are generic; a capacity-constrained tutoring business should keep volume low and tie each slot to suitable-family demand rather than maximizing reach."
+  ],
+  "score": 95,
+  "score_components": {
+    "documentation_license": 5,
+    "evidence_quality": 19,
+    "hermes_compatibility": 15,
+    "maintenance": 9,
+    "role_value": 27,
+    "security_provenance": 20
+  },
+  "skill_path": "optional-skills/creative/social-media-content-calendar",
+  "source_url": "https://github.com/NousResearch/hermes-agent/tree/0319e113c9602b86ffda350e931cb4b035e1d5d8/optional-skills/creative/social-media-content-calendar",
+  "summary": "Produces objective-linked, platform-specific content calendars with claim, permission, accessibility, approval, and publishing-status controls.",
+  "status": "candidate"
+}

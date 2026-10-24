@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "proposal_id": "meabeclickeng-web-accessibility-7f446e60",
+  "profile": "meabeclickeng",
+  "evidence_urls": [
+    "https://github.com/magnus919/agent-skills/tree/7f446e60055b335dd26831371a027fa6b59da3e2/web-accessibility",
+    "https://github.com/magnus919/agent-skills/blob/7f446e60055b335dd26831371a027fa6b59da3e2/LICENSE.md",
+    "https://github.com/magnus919/agent-skills/blob/7f446e60055b335dd26831371a027fa6b59da3e2/web-accessibility/SKILL.md",
+    "https://github.com/magnus919/agent-skills/blob/7f446e60055b335dd26831371a027fa6b59da3e2/web-accessibility/references/testing-and-evidence.md",
+    "https://github.com/magnus919/agent-skills/tree/7f446e60055b335dd26831371a027fa6b59da3e2/web-accessibility/evals",
+    "https://github.com/magnus919/agent-skills/commit/7f446e60055b335dd26831371a027fa6b59da3e2"
+  ],
+  "gate_evidence": {
+    "hermes_compatibility": "The skill uses standard name/description frontmatter, explicitly supports Agent Skills frameworks, has no runtime dependency, and can use Hermes-native browser, accessibility-tree, file, and test tooling.",
+    "license": "Pinned repository LICENSE.md contains the full MIT License, and the skill frontmatter also declares MIT.",
+    "non_duplication": "The current MeaBeclick Engineering inventory was inspected; general code and design review skills do not provide this candidate’s dedicated WCAG evidence model, assistive-technology matrix, interaction contracts, and release templates.",
+    "provenance": "Public magnus919/agent-skills repository inspected at immutable 40-character revision 7f446e60055b335dd26831371a027fa6b59da3e2; GitHub reports the revision as a verified commit.",
+    "relevance": "Directly supports Engineering responsibility for accessible implementation, keyboard and focus behavior, forms, responsive input, and evidence-backed release checks.",
+    "reliability": "Pinned SKILL.md, all 17 files in the skill package, evidence guidance, acceptance/release templates, and evaluation fixtures were inspected; completion rules require direct evidence or an explicit failed, blocked, or not-applicable result.",
+    "safety_privacy": "The pinned package contains only Markdown and JSON guidance, declares no runtime dependency, requests no credentials or external messaging, and contains no install, shell, destructive, student, payment, or data-exfiltration workflow."
+  },
+  "gates": {
+    "hermes_compatibility": true,
+    "license": true,
+    "non_duplication": true,
+    "provenance": true,
+    "relevance": true,
+    "reliability": true,
+    "safety_privacy": true
+  },
+  "license": "MIT; verified in repository LICENSE.md at the pinned revision.",
+  "name": "web-accessibility",
+  "rationale": "MeaBeclick Engineering owns implementation quality for a phone-first Hebrew product, while its installed inventory lacks a dedicated accessibility engineering and evidence workflow. This candidate adds WCAG-informed interaction contracts, keyboard and focus checks, assistive-technology evidence, and bounded release verification without replacing UX ownership.",
+  "repository": "magnus919/agent-skills",
+  "revision": "7f446e60055b335dd26831371a027fa6b59da3e2",
+  "risks": [
+    "Some routing links point to sibling skills not installed in this profile; mitigate by using the self-contained accessibility workflow and consulting current official framework documentation where those optional siblings are absent.",
+    "The skill correctly avoids claiming WCAG conformance from automation alone, so release reviews still require scoped manual keyboard, accessibility-tree, and supported assistive-technology evidence."
+  ],
+  "score": 93,
+  "score_components": {
+    "documentation_license": 5,
+    "evidence_quality": 18,
+    "hermes_compatibility": 15,
+    "maintenance": 8,
+    "role_value": 28,
+    "security_provenance": 19
+  },
+  "skill_path": "web-accessibility",
+  "source_url": "https://github.com/magnus919/agent-skills/tree/7f446e60055b335dd26831371a027fa6b59da3e2/web-accessibility",
+  "summary": "Defines WCAG 2.2-informed accessibility requirements, implementation contracts, and evidence-based release checks for web interfaces.",
+  "status": "candidate"
+}

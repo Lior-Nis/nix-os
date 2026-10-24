@@ -14,7 +14,7 @@
     "rationale": {"type": "string", "minLength": 1, "maxLength": 4096},
     "source_url": {"type": "string", "maxLength": 2048, "pattern": "^https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/tree/[a-f0-9]{40}/"},
     "repository": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"},
-    "skill_path": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$"},
+    "skill_path": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.{1,2}(?:/|$))[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$"},
     "revision": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
     "license": {"type": "string", "minLength": 1, "maxLength": 4096},
     "evidence_urls": {"type": "array", "minItems": 2, "maxItems": 100, "items": {"type": "string", "maxLength": 2048, "pattern": "^https://"}},

@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "proposal_id": "meabeclickgrowth-analytics-e85f3cbc",
+  "profile": "meabeclickgrowth",
+  "evidence_urls": [
+    "https://github.com/coreyhaines31/marketingskills/tree/e85f3cbc2e4a79bf33b2a12e9bdd9087d414735b/skills/analytics",
+    "https://github.com/coreyhaines31/marketingskills/blob/e85f3cbc2e4a79bf33b2a12e9bdd9087d414735b/LICENSE",
+    "https://github.com/coreyhaines31/marketingskills/blob/e85f3cbc2e4a79bf33b2a12e9bdd9087d414735b/skills/analytics/SKILL.md",
+    "https://github.com/coreyhaines31/marketingskills/blob/e85f3cbc2e4a79bf33b2a12e9bdd9087d414735b/skills/analytics/references/event-library.md",
+    "https://github.com/coreyhaines31/marketingskills/blob/e85f3cbc2e4a79bf33b2a12e9bdd9087d414735b/skills/analytics/references/ga4-implementation.md",
+    "https://github.com/coreyhaines31/marketingskills/blob/e85f3cbc2e4a79bf33b2a12e9bdd9087d414735b/skills/analytics/references/gtm-implementation.md",
+    "https://api.github.com/repos/coreyhaines31/marketingskills/commits/e85f3cbc2e4a79bf33b2a12e9bdd9087d414735b"
+  ],
+  "gate_evidence": {
+    "hermes_compatibility": "It is a standard SKILL.md with YAML frontmatter and relative references that match Hermes progressive disclosure. Its useful planning mode needs only built-in file and web research tools; vendor-specific implementation is optional and can be omitted.",
+    "license": "The same-repository LICENSE at the pinned revision contains the MIT license, and the repository metadata also identifies MIT.",
+    "non_duplication": "The installed inventory was inspected. Capacity-constrained-service-growth names funnel metrics and semantics but does not provide the candidate's event dictionary, property schema, UTM rules, consent checks, or tracking QA workflow.",
+    "provenance": "Public GitHub repository, exact repository-relative path, and immutable 40-character commit e85f3cbc2e4a79bf33b2a12e9bdd9087d414735b were verified through GitHub's commit API and pinned files.",
+    "relevance": "Directly supports measurable funnel baselines, source attribution, experiment metrics, UTM conventions, and Engineering-ready instrumentation requirements central to the profile's remit.",
+    "reliability": "The pinned main skill plus event-library, GA4, and GTM references were inspected. They include decision-first tracking, matched observation windows, validation checks, consent handling, and explicit no-PII guidance.",
+    "safety_privacy": "The skill states that PII must not enter analytics properties and includes consent and retention checks. For this profile it can be constrained to aggregate specifications, with all implementation delegated to Engineering."
+  },
+  "gates": {
+    "hermes_compatibility": true,
+    "license": true,
+    "non_duplication": true,
+    "provenance": true,
+    "relevance": true,
+    "reliability": true,
+    "safety_privacy": true
+  },
+  "license": "MIT; verified in repository LICENSE at the pinned revision.",
+  "name": "analytics",
+  "rationale": "The profile must establish acquisition, conversion, retention, referral, and utilization baselines and request instrumentation through Engineering. Existing skills identify the metrics but do not supply a detailed event taxonomy, property plan, UTM convention, matching-window rules, QA checklist, and no-PII analytics guardrails. This candidate can be used strictly for measurement specifications and verified handoffs rather than application implementation.",
+  "repository": "coreyhaines31/marketingskills",
+  "revision": "e85f3cbc2e4a79bf33b2a12e9bdd9087d414735b",
+  "risks": [
+    "The references include implementation examples and third-party analytics products; Growth must stop at commercial intent, event semantics, and acceptance criteria, then route implementation through MeaBeclick Lead to Engineering.",
+    "Generic examples include user and account identifiers; any adopted plan must exclude student, family, payment, and contact PII and use only approved aggregate or pseudonymous fields.",
+    "Some GA4 interface labels and defaults can drift; implementation details should be rechecked against current vendor documentation before an Engineering request is accepted."
+  ],
+  "score": 93,
+  "score_components": {
+    "documentation_license": 5,
+    "evidence_quality": 18,
+    "hermes_compatibility": 14,
+    "maintenance": 10,
+    "role_value": 28,
+    "security_provenance": 18
+  },
+  "skill_path": "skills/analytics",
+  "source_url": "https://github.com/coreyhaines31/marketingskills/tree/e85f3cbc2e4a79bf33b2a12e9bdd9087d414735b/skills/analytics",
+  "summary": "Creates decision-linked event, funnel, UTM, privacy, and validation plans for measurable acquisition and conversion work.",
+  "status": "candidate"
+}

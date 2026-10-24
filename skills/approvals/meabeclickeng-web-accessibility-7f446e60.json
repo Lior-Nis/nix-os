@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "proposal_id": "meabeclickeng-web-accessibility-7f446e60",
+  "profile": "meabeclickeng",
+  "skills": ["web-accessibility"],
+  "approved_by": "Lior",
+  "approved_at": "2026-10-25T00:28:00+03:00",
+  "manifest_commit": "80acfdec871514d5cd3c0d16d36dfb54001768b8"
+}

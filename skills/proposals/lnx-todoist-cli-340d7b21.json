@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "proposal_id": "lnx-todoist-cli-340d7b21",
+  "profile": "lnx",
+  "evidence_urls": [
+    "https://github.com/Doist/todoist-cli/tree/340d7b21b89d329d8cae4a6325450911998bdf70/skills/todoist-cli",
+    "https://github.com/Doist/todoist-cli/blob/340d7b21b89d329d8cae4a6325450911998bdf70/LICENSE",
+    "https://github.com/Doist/todoist-cli/blob/340d7b21b89d329d8cae4a6325450911998bdf70/skills/todoist-cli/SKILL.md",
+    "https://github.com/Doist/todoist-cli/commit/340d7b21b89d329d8cae4a6325450911998bdf70",
+    "https://www.skills.sh/doist/todoist-cli"
+  ],
+  "gate_evidence": {
+    "hermes_compatibility": "The candidate is a standalone SKILL.md with valid name, description, compatibility, license, and metadata frontmatter. Its workflow uses a cross-platform CLI process and standard shell invocation; Hermes can load the instructions directly once the separately approved td prerequisite is available.",
+    "license": "The pinned repository LICENSE contains the MIT License and the skill frontmatter also declares MIT.",
+    "non_duplication": "The current LNX inventory was inspected first: 76 installed skills were enumerated and none provides Todoist-specific task, project, reminder, label, filter, or section operations. Existing weekly-review and Kanban skills do not supply a Todoist connector.",
+    "provenance": "The source is Doist's public official todoist-cli repository, inspected at immutable 40-character revision 340d7b21b89d329d8cae4a6325450911998bdf70.",
+    "relevance": "The skill directly supports a personal assistant's recurring commitment capture, daily review, prioritization, and follow-up workflows through a command-line interface.",
+    "reliability": "The pinned 36,873-byte SKILL.md was inspected in full; it documents command discovery, stable identifiers, JSON and NDJSON output, pagination, dry runs, mutation confirmation, multi-account resolution, and error behavior. The repository was active on the generation date and the skill path had recent verified commits with explicit test plans.",
+    "safety_privacy": "The skill treats task content and attachments as untrusted, defaults authentication to the OS credential manager, warns against exposing tokens, hides sensitive developer credentials unless an explicit flag is used, supports read-only login, and gates destructive operations with dry-run or --yes. Residual broad-scope commands are bounded in risks and should remain out of normal LNX workflows."
+  },
+  "gates": {
+    "hermes_compatibility": true,
+    "license": true,
+    "non_duplication": true,
+    "provenance": true,
+    "relevance": true,
+    "reliability": true,
+    "safety_privacy": true
+  },
+  "license": "MIT; verified in repository LICENSE at the pinned revision.",
+  "name": "todoist-cli",
+  "rationale": "The inspected LNX inventory contains planning and review skills but no Todoist-specific capability. This official skill adds a structured command-line workflow for capturing, reviewing, updating, and completing personal commitments, with machine-readable output, dry-run support, and explicit destructive-action gates rather than duplicating the installed Hermes Kanban or weekly-review procedures.",
+  "repository": "Doist/todoist-cli",
+  "revision": "340d7b21b89d329d8cae4a6325450911998bdf70",
+  "risks": [
+    "The skill requires the separate td CLI and Todoist authentication; installing the skill alone does not provide the executable or credentials.",
+    "The documented CLI has broad account and developer-administration surfaces, including opt-in secret-display flags. Constrain LNX to task and project workflows and never invoke token-display, secret-display, account-removal, or developer-app commands without an explicit user request and confirmation.",
+    "Todoist writes are external side effects. Prefer supported dry-run and JSON modes, confirm destructive or notifying actions, and read back the affected object after mutation."
+  ],
+  "score": 93,
+  "score_components": {
+    "documentation_license": 5,
+    "evidence_quality": 19,
+    "hermes_compatibility": 12,
+    "maintenance": 10,
+    "role_value": 28,
+    "security_provenance": 19
+  },
+  "skill_path": "skills/todoist-cli",
+  "source_url": "https://github.com/Doist/todoist-cli/tree/340d7b21b89d329d8cae4a6325450911998bdf70/skills/todoist-cli",
+  "summary": "Manage Todoist tasks, projects, sections, labels, comments, reminders, and daily views through Doist's official td CLI.",
+  "status": "candidate"
+}
