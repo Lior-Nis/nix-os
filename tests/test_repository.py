@@ -102,6 +102,28 @@ class RepositoryContractTests(unittest.TestCase):
                 errors = verifier.validate_repository(copy)
                 self.assertTrue(any("verified Discord message ID/timestamp" in error for error in errors), errors)
 
+    def test_verifier_rejects_complete_proposal_record_sabotage(self):
+        verifier = load_verifier()
+        mutations = {
+            "altered rationale": lambda proposal: proposal.update(rationale="Different but still nonempty rationale"),
+            "empty gate evidence": lambda proposal: proposal["gate_evidence"].update(relevance=""),
+            "schema version": lambda proposal: proposal.update(schema_version=2),
+            "extra field": lambda proposal: proposal.update(unreviewed=True),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:
+                copy = Path(tmp) / "repo"
+                shutil.copytree(ROOT, copy, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+                path = copy / "skills/proposals/lnx-todoist-cli-340d7b21.json"
+                proposal = json.loads(path.read_text(encoding="utf-8"))
+                mutate(proposal)
+                path.write_text(json.dumps(proposal), encoding="utf-8")
+                errors = verifier.validate_repository(copy)
+                self.assertTrue(
+                    any("lnx-todoist-cli-340d7b21" in error and ("complete canonical reviewed record" in error or "complete installer runtime contract" in error) for error in errors),
+                    errors,
+                )
+
     def test_verifier_rejects_invalid_lead_reference(self):
         verifier = load_verifier()
         with tempfile.TemporaryDirectory() as tmp:

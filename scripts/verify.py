@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import re
@@ -42,17 +43,30 @@ REQUIRED_FILES = {
     "tests/test_repository.py",
     "tests/test_skills.py",
     ".github/workflows/ci.yml",
+    "skills/proposals/lnx-todoist-cli-340d7b21.json",
+    "skills/proposals/pulse-technical-project-management-7f446e60.json",
+    "skills/proposals/meabeclickux-rtl-design-b7c52294.json",
+    "skills/proposals/meabeclickux-web-accessibility-7f446e60.json",
+    "skills/proposals/meabeclickeng-performance-afa8da94.json",
+    "skills/proposals/meabeclickeng-web-accessibility-7f446e60.json",
+    "skills/proposals/meabeclickeng-systematic-debugging-51414605.json",
+    "skills/proposals/meabeclickeng-test-driven-development-51414605.json",
+    "skills/proposals/meabeclickgrowth-analytics-e85f3cbc.json",
+    "skills/proposals/meabeclickgrowth-customer-research-e85f3cbc.json",
+    "skills/proposals/meabeclickgrowth-social-media-content-calendar-0319e113.json",
 }
 EXPECTED_PROFILES = {
     "lnx", "pulse", "algua", "meabeclick", "meabeclickux",
     "meabeclickeng", "meabeclickgrowth",
 }
 EXPECTED_PROJECTS = {"pulse", "algua", "meabeclick"}
-NIXKIT_COMMIT = "92338765a1cc942b2a20dda3f1e220d6be0225e1"
+NIXKIT_COMMIT = "f5377ca3219daf4f33f6e8525f9438318dabcd2f"
 NIXKIT_SNAPSHOT_COMMIT = "da5f36fc4c470fa28ffdcab1a6c6aaa3750bded3"
-NIXKIT_SOURCES_SHA256 = "6493103af689bdf4bae5455e1d901646fe079e51a69c53b6f5bcf57c62786d21"
+NIXKIT_SOURCES_SHA256 = "110ecc3872b4fe45ede667afd4ca757d59aef850672045a639eae5ef78415a83"
+PRODUCT_NIXKIT_COMMIT = "92338765a1cc942b2a20dda3f1e220d6be0225e1"
+PRODUCT_NIXKIT_SOURCES_SHA256 = "6493103af689bdf4bae5455e1d901646fe079e51a69c53b6f5bcf57c62786d21"
 CANONICAL_SCHEMA_SHA256 = {
-    "skills/proposal.schema.json": "d3c84a31c6460bd566ec7e8e5c0c7cabf106100e336b4c81ea05fbb2a6d28ce1",
+    "skills/proposal.schema.json": "1c80e6d09d181975cceb6b4c5c125d5dabbbca935dc4da796f4df6790e93d15b",
     "skills/approval.schema.json": "eeb84ee9c84b3f45eff0ae807586d0a6cc2d35309b46fb7f7fbca696acfda1b7",
     "skills/pack-proposal.schema.json": "9b4a7b586bf8746d6f118a1caec3cf149fce1025ba4b1838654d4d73392d8c44",
     "skills/pack-approval.schema.json": "989f947f2219e04c554fb004c319b31c905142c1a32a5aca76fd6bdd2c47b5b0",
@@ -71,6 +85,8 @@ NIXKIT_SKILLS = {
     "gws-docs", "gws-drive-upload", "gws-docs-write", "find-docs",
     "lnx-grilling", "lnx-grill-me", "lnx-domain-modeling", "lnx-grill-with-docs",
     "lnx-to-spec", "lnx-writing-for-agents", "nix-idea-to-mvp", "watch",
+    "performance", "rtl-design", "analytics", "customer-research", "todoist-cli",
+    "technical-project-management", "web-accessibility", "social-media-content-calendar",
 }
 EXPECTED_PACKS = {
     "baseline-evidence": ["verification-before-completion"],
@@ -95,13 +111,32 @@ EXPECTED_PACK_ASSIGNMENTS = {
     "meabeclickgrowth": ["baseline-evidence", "public-research"],
 }
 EXPECTED_APPROVED_ADDITIONS = {
-    "lnx": ["caveman", "watch"],
-    "pulse": [],
+    "lnx": ["caveman", "watch", "todoist-cli"],
+    "pulse": ["technical-project-management"],
     "algua": [],
     "meabeclick": [],
-    "meabeclickux": [],
-    "meabeclickeng": [],
-    "meabeclickgrowth": [],
+    "meabeclickux": ["rtl-design", "web-accessibility"],
+    "meabeclickeng": ["performance", "web-accessibility", "systematic-debugging", "test-driven-development"],
+    "meabeclickgrowth": ["analytics", "customer-research", "social-media-content-calendar"],
+}
+PROPOSALS = {
+    ("lnx", "caveman"): "lnx-caveman-d8ede5cf", ("lnx", "watch"): "lnx-watch-a9cb5b57", ("lnx", "todoist-cli"): "lnx-todoist-cli-340d7b21",
+    ("pulse", "technical-project-management"): "pulse-technical-project-management-7f446e60", ("meabeclickux", "rtl-design"): "meabeclickux-rtl-design-b7c52294", ("meabeclickux", "web-accessibility"): "meabeclickux-web-accessibility-7f446e60",
+    ("meabeclickeng", "performance"): "meabeclickeng-performance-afa8da94", ("meabeclickeng", "web-accessibility"): "meabeclickeng-web-accessibility-7f446e60", ("meabeclickeng", "systematic-debugging"): "meabeclickeng-systematic-debugging-51414605", ("meabeclickeng", "test-driven-development"): "meabeclickeng-test-driven-development-51414605",
+    ("meabeclickgrowth", "analytics"): "meabeclickgrowth-analytics-e85f3cbc", ("meabeclickgrowth", "customer-research"): "meabeclickgrowth-customer-research-e85f3cbc", ("meabeclickgrowth", "social-media-content-calendar"): "meabeclickgrowth-social-media-content-calendar-0319e113",
+}
+EXPECTED_NEW_PROPOSAL_SHA256 = {
+    "lnx-todoist-cli-340d7b21": "392101a83690254bb49e8afcca26f925912f6582239fed00c670c18bee95fb16",
+    "pulse-technical-project-management-7f446e60": "baba66152591061ee8976890094eec5f5f61c75040ac819759bc0331fe1f7ab6",
+    "meabeclickux-rtl-design-b7c52294": "a40394d43bac390bd9ac35af925e75480388d5363e8266ec7c3cc9108bc0f2ad",
+    "meabeclickux-web-accessibility-7f446e60": "cfd82febb9b9b2918802be38094c0504c4efa5cc101461df753c03251329812f",
+    "meabeclickeng-performance-afa8da94": "03f5621c95234d6b36bce88ae56d4b34dbf398cc7359baab554184349a9e29ee",
+    "meabeclickeng-web-accessibility-7f446e60": "cb9fdd69b877365f877b27f6d4630ed36bca37c2a6025fc5987af04c4a641200",
+    "meabeclickeng-systematic-debugging-51414605": "79aea3a17afe46460848c3fbacb42d13e8dd9373cde1ae6379020d2062dac724",
+    "meabeclickeng-test-driven-development-51414605": "0cc56d15a8cb3d3f5ffc4c888e677be037625140c274b11934ce5bf4682fa6c8",
+    "meabeclickgrowth-analytics-e85f3cbc": "21b77593ee901f5629e52db84d2df9d4c8b13629056cc8185135dbec36fbf69d",
+    "meabeclickgrowth-customer-research-e85f3cbc": "dc0058708aefc89b3d7b5b3299f0d82bf90fb5e381ec785291a3560b72fd1746",
+    "meabeclickgrowth-social-media-content-calendar-0319e113": "9bcebf18e107574437e6ebdd610ed86fbb9d02cd5920ab63a63ef5604c3a578f",
 }
 EXPECTED_PROPOSED_PACK_ADDITIONS = {profile: [] for profile in EXPECTED_PROFILES}
 EXPECTED_APPROVED_PACK_ADDITIONS = {profile: (["product-development"] if profile == "lnx" else []) for profile in EXPECTED_PROFILES}
@@ -339,6 +374,20 @@ def _load_json_object(path: Path, label: str, errors: list[str]) -> dict[str, An
     return value
 
 
+def _load_installer_runtime(root: Path, errors: list[str]) -> Any | None:
+    path = root / "scripts/install-skills.py"
+    try:
+        spec = importlib.util.spec_from_file_location("repository_skill_installer", path)
+        if spec is None or spec.loader is None:
+            raise ImportError("could not construct module spec")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    except (ImportError, OSError, SyntaxError) as exc:
+        errors.append(f"cannot load proposal runtime validator: {exc}")
+        return None
+
+
 def _validate_evidence_schema(schema: dict[str, Any], relative: str, errors: list[str], report: bool) -> None:
     definitions = schema.get("$defs")
     if not isinstance(definitions, dict):
@@ -457,6 +506,35 @@ def _validate_skills(root: Path, manifest: dict[str, Any], errors: list[str]) ->
         }
         if watch_receipt != expected_receipt:
             errors.append("Watch approval receipt must exactly bind Lior's decision to the reviewed proposal/manifest commit")
+    proposal_dir = root / "skills/proposals"
+    expected_proposal_files = {f"{proposal_id}.json" for proposal_id in PROPOSALS.values()}
+    actual_proposal_files = {path.name for path in proposal_dir.glob("*.json")} if proposal_dir.is_dir() else set()
+    if actual_proposal_files != expected_proposal_files:
+        errors.append("single-skill proposal files must exactly match all canonical profile-skill assignments")
+    expected_new_ids = set(PROPOSALS.values()) - {"lnx-caveman-d8ede5cf", "lnx-watch-a9cb5b57"}
+    if set(EXPECTED_NEW_PROPOSAL_SHA256) != expected_new_ids or len(expected_new_ids) != 11:
+        errors.append("the exact 11 new assignments must each have one complete canonical proposal digest")
+    installer = _load_installer_runtime(root, errors)
+    for (profile, name), proposal_id in PROPOSALS.items():
+        proposal = _load_json_object(proposal_dir / f"{proposal_id}.json", f"proposal {proposal_id}", errors)
+        if proposal and (proposal.get("proposal_id"), proposal.get("profile"), proposal.get("name"), proposal.get("status")) != (proposal_id, profile, name, "candidate"):
+            errors.append(f"proposal {proposal_id} must exactly bind its canonical profile, skill, and candidate status")
+        if proposal and installer is not None:
+            identity = (proposal.get("repository"), proposal.get("revision"), proposal.get("skill_path"))
+            if proposal_id == "lnx-watch-a9cb5b57":
+                identity = ("its-nix/kit", installer.NIXKIT_COMMIT, "skills/watch")
+            try:
+                installer._validate_proposal(proposal, proposal_id, profile, {name}, {name: identity})
+            except installer.Refusal as exc:
+                errors.append(f"proposal {proposal_id} fails the complete installer runtime contract: {exc}")
+        expected_digest = EXPECTED_NEW_PROPOSAL_SHA256.get(proposal_id)
+        if proposal and expected_digest is not None:
+            canonical = json.dumps(proposal, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+            if hashlib.sha256(canonical).hexdigest() != expected_digest:
+                errors.append(f"proposal {proposal_id} must preserve its complete canonical reviewed record")
+    approval_files = {path.name for path in (root / "skills/approvals").glob("*.json")}
+    if approval_files != {"lnx-caveman-d8ede5cf.json", "lnx-watch-a9cb5b57.json"}:
+        errors.append("single-skill approvals must preserve only the existing Caveman and Watch receipts at proposal stage")
     if packs.get("proposed_pack_additions") != EXPECTED_PROPOSED_PACK_ADDITIONS:
         errors.append("product-development must no longer remain a pending LNX pack proposal")
     if packs.get("approved_pack_additions") != EXPECTED_APPROVED_PACK_ADDITIONS:
@@ -475,11 +553,13 @@ def _validate_skills(root: Path, manifest: dict[str, Any], errors: list[str]) ->
         if persistent & task or persistent & omit or task & omit:
             errors.append("persistent, task-only, and excluded classifications must be disjoint")
         if persistent | task | omit != NIXKIT_SKILLS:
-            errors.append("all 49 NixKit skills must be classified exactly once semantically")
+            errors.append("all 57 NixKit skills must be classified exactly once semantically")
         if not {"web-design-guidelines", "find-docs"} <= task:
             errors.append("mutable-latest web-design-guidelines and find-docs must remain task-only")
         if "watch" not in task:
             errors.append("watch must remain task-only while separately approved for LNX")
+        if not {"performance", "rtl-design", "analytics", "customer-research", "todoist-cli", "technical-project-management", "web-accessibility", "social-media-content-calendar"} <= task:
+            errors.append("all eight newly cataloged profile-specific skills must remain explicitly task-only outside their governed additions")
     governance = packs.get("governance")
     if not isinstance(governance, dict) or set(governance.get("hard_gates", [])) != HARD_GATES:
         errors.append("skill governance must declare all seven hard gates")
@@ -529,9 +609,9 @@ def _validate_skills(root: Path, manifest: dict[str, Any], errors: list[str]) ->
         "ordered_skills": EXPECTED_PACKS["product-development"],
         "nixkit": {
             "repository": "https://github.com/its-nix/kit.git",
-            "commit": NIXKIT_COMMIT,
+            "commit": PRODUCT_NIXKIT_COMMIT,
             "snapshot_commit": NIXKIT_SNAPSHOT_COMMIT,
-            "sources_sha256": NIXKIT_SOURCES_SHA256,
+            "sources_sha256": PRODUCT_NIXKIT_SOURCES_SHA256,
         },
         "request_evidence": PRODUCT_REQUEST_EVIDENCE,
         "status": "pending_approval",

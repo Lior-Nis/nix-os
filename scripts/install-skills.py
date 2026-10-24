@@ -20,10 +20,10 @@ CANONICAL_MANIFEST = ROOT / "skills/packs.json"
 PROFILE_MAP = {"lnx":"default","pulse":"pulse","algua":"algua","meabeclick":"meabeclick","meabeclickux":"meabeclickux","meabeclickeng":"meabeclickeng","meabeclickgrowth":"meabeclickgrowth"}
 PROFILES = set(PROFILE_MAP)
 NIXKIT_REPOSITORY = "https://github.com/its-nix/kit.git"
-NIXKIT_COMMIT = "92338765a1cc942b2a20dda3f1e220d6be0225e1"
+NIXKIT_COMMIT = "f5377ca3219daf4f33f6e8525f9438318dabcd2f"
 NIXKIT_SNAPSHOT_COMMIT = "da5f36fc4c470fa28ffdcab1a6c6aaa3750bded3"
-NIXKIT_SOURCES_SHA256 = "6493103af689bdf4bae5455e1d901646fe079e51a69c53b6f5bcf57c62786d21"
-NIXKIT_INSTALLER_SHA256 = "28826444de3e78455b399e3de18c0b1d79aff038f2432ecca1975fec1e5c82b8"
+NIXKIT_SOURCES_SHA256 = "110ecc3872b4fe45ede667afd4ca757d59aef850672045a639eae5ef78415a83"
+NIXKIT_INSTALLER_SHA256 = "9748b8338c88c766208fa54fa144c95f0cd282a72f95327f485641ce85c18041"
 NIXKIT_LOCAL_TREES = {"skills/watch":"64685da3912a54d5f672c4bdce0e89b69b4cd6c8"}
 NODE_RUNTIME = "24.22.1"
 EXPECTED_PACKS = {
@@ -42,7 +42,7 @@ EXPECTED_ASSIGNMENTS = {
  "meabeclickgrowth":["baseline-evidence","public-research"],
 }
 LEGACY_NIXKIT_SKILLS = {"using-superpowers","brainstorming","writing-plans","executing-plans","systematic-debugging","test-driven-development","verification-before-completion","requesting-code-review","receiving-code-review","using-git-worktrees","finishing-a-development-branch","subagent-driven-development","dispatching-parallel-agents","diagnosing-superpowers","setup-matt-pocock-skills","grill-with-docs","grilling","domain-modeling","to-spec","to-tickets","codebase-design","research","handoff","caveman","ponytail","frontend-design","web-design-guidelines","agent-browser","remotion-best-practices","auto-editor","auto-editor-effects","auto-editor-export","auto-editor-transcribe","obsidian-markdown","qmd","gws-shared","gws-drive","gws-docs","gws-drive-upload","gws-docs-write","find-docs"}
-NIXKIT_SKILLS = LEGACY_NIXKIT_SKILLS | {"lnx-grilling","lnx-grill-me","lnx-domain-modeling","lnx-grill-with-docs","lnx-to-spec","lnx-writing-for-agents","nix-idea-to-mvp","watch"}
+NIXKIT_SKILLS = LEGACY_NIXKIT_SKILLS | {"lnx-grilling","lnx-grill-me","lnx-domain-modeling","lnx-grill-with-docs","lnx-to-spec","lnx-writing-for-agents","nix-idea-to-mvp","watch","performance","rtl-design","analytics","customer-research","todoist-cli","technical-project-management","web-accessibility","social-media-content-calendar"}
 PACK_PROPOSALS = {("lnx","product-development"):"lnx-product-development-92338765"}
 PRODUCT_DEVELOPMENT_SKILLS = EXPECTED_PACKS["product-development"]
 APPROVAL_AUTHORITY_DISCORD_ID = "454290355320520714"
@@ -50,6 +50,8 @@ APPROVAL_CHANNEL_ID = "1563181903253737542"
 PRODUCT_REQUEST_EVIDENCE = {"kind":"request/proposal","platform":"discord","author_id":APPROVAL_AUTHORITY_DISCORD_ID,"channel_id":APPROVAL_CHANNEL_ID,"message_id":"1563496182829948941","quote":"sync it","timestamp":"2026-10-24T10:15:38.341000+00:00"}
 PRODUCT_PROPOSAL_COMMIT = "083d008d3a83cd178e1f79bf962967ae7054fc0e"
 PRODUCT_PROPOSAL_SHA256 = "06db117e1d84486a50f7beaae32f83fc3540ca8fd01eb5dc7fcf0f9e62100288"
+PRODUCT_PROPOSAL_MANIFEST_SHA256 = "7a8a7f67f2498f147f03833501b9c1c39e35bd1cee624e3e833061d77a62cf3f"
+PRODUCT_NIXKIT = {"repository":NIXKIT_REPOSITORY,"commit":"92338765a1cc942b2a20dda3f1e220d6be0225e1","snapshot_commit":NIXKIT_SNAPSHOT_COMMIT,"sources_sha256":"6493103af689bdf4bae5455e1d901646fe079e51a69c53b6f5bcf57c62786d21"}
 PRODUCT_APPROVAL_EVIDENCE = {"kind":"approval","platform":"discord","author_id":APPROVAL_AUTHORITY_DISCORD_ID,"channel_id":APPROVAL_CHANNEL_ID,"message_id":"1563556252829622396","quote":f"approve {PACK_PROPOSALS[('lnx','product-development')]} at {PRODUCT_PROPOSAL_COMMIT}","timestamp":"2026-10-24T14:14:20.145000+00:00"}
 HISTORICAL_APPROVAL_MANIFESTS = {
  "b7d9ba7ce3551e428b6f009c744ad3b71f821338": ("3f64702b483666b22468407d4e5c601911c6730f3f2bc182eacbfa2ca446feaa", ["caveman"]),
@@ -61,7 +63,7 @@ SHA = re.compile(r"^[a-f0-9]{40}$")
 SKILL = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 PROPOSAL_ID = re.compile(r"^[a-z0-9][a-z0-9.-]+$")
 REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
-SKILL_PATH = re.compile(r"^(?!/)(?!.*(?:^|/)\.\.(?:/|$))[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$")
+SKILL_PATH = re.compile(r"^(?!/)(?!.*(?:^|/)\.{1,2}(?:/|$))[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$")
 RFC3339 = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$")
 MAX_TEXT = 4_096
 MAX_URL = 2_048
@@ -157,8 +159,9 @@ def _source_catalog(path:Path)->dict[str,tuple[str,str,str|None]]:
  catalog:dict[str,tuple[str,str,str|None]]={}; local_records=0
  for source in value:
   if not isinstance(source,dict): raise Refusal("pinned NixKit sources.json has an invalid source record")
-  if set(source)=={"repo","ref","skills"} and isinstance(source.get("repo"),str) and REPOSITORY.fullmatch(source["repo"]) and isinstance(source.get("ref"),str) and SHA.fullmatch(source["ref"]) and isinstance(source.get("skills"),list):
-   repository,revision,expected_path=source["repo"],source["ref"],None
+  github_keys=set(source) in ({"repo","ref","skills"},{"repo","ref","path","skills"})
+  if github_keys and isinstance(source.get("repo"),str) and REPOSITORY.fullmatch(source["repo"]) and isinstance(source.get("ref"),str) and SHA.fullmatch(source["ref"]) and isinstance(source.get("skills"),list) and ("path" not in source or isinstance(source["path"],str) and SKILL_PATH.fullmatch(source["path"])):
+   repository,revision,expected_path=source["repo"],source["ref"],source.get("path")
   elif source=={"local":"skills","skills":["watch"]}:
    local_records+=1; repository,revision,expected_path="its-nix/kit",NIXKIT_COMMIT,"skills/watch"
   else: raise Refusal("pinned NixKit sources.json has an invalid discriminated source record")
@@ -225,7 +228,7 @@ def _validate_pack_approval_evidence(value:object,proposal_id:str,proposal_git_c
 
 def _validate_pack_proposal(p:dict,proposal_id:str,profile:str,pack:str,catalog:dict[str,tuple[str,str,str|None]])->None:
  required={"schema_version","proposal_id","profile","pack","ordered_skills","nixkit","request_evidence","status"}
- expected_nixkit={"repository":NIXKIT_REPOSITORY,"commit":NIXKIT_COMMIT,"snapshot_commit":NIXKIT_SNAPSHOT_COMMIT,"sources_sha256":NIXKIT_SOURCES_SHA256}
+ expected_nixkit=PRODUCT_NIXKIT if proposal_id==PACK_PROPOSALS[("lnx","product-development")] else {"repository":NIXKIT_REPOSITORY,"commit":NIXKIT_COMMIT,"snapshot_commit":NIXKIT_SNAPSHOT_COMMIT,"sources_sha256":NIXKIT_SOURCES_SHA256}
  if set(p)!=required or p.get("schema_version")!=1 or p.get("proposal_id")!=proposal_id or not PROPOSAL_ID.fullmatch(str(p.get("proposal_id",""))) or p.get("profile")!=profile or p.get("pack")!=pack or p.get("status")!="pending_approval": raise Refusal("committed pack proposal identity/status is invalid")
  skills=p.get("ordered_skills")
  if not isinstance(skills,list) or skills!=EXPECTED_PACKS[pack] or len(skills)!=len(set(skills)) or any(not isinstance(x,str) or not SKILL.fullmatch(x) for x in skills): raise Refusal("committed pack proposal ordered skills do not match the exact pack")
@@ -264,7 +267,7 @@ def _pack_approval(profile:str,pack:str,current:dict,catalog:dict[str,tuple[str,
  relative=Path("skills/pack-approvals")/f"{proposal_id}.json"; _tracked_clean(relative)
  receipt=_load_json(ROOT/relative,"pack approval receipt")
  required={"schema_version","proposal_id","proposal_git_commit","proposal_file_sha256","profile","pack","ordered_skills","nixkit","approved_by","approval_evidence"}
- expected_nixkit={"repository":NIXKIT_REPOSITORY,"commit":NIXKIT_COMMIT,"snapshot_commit":NIXKIT_SNAPSHOT_COMMIT,"sources_sha256":NIXKIT_SOURCES_SHA256}
+ expected_nixkit=PRODUCT_NIXKIT if proposal_id==PACK_PROPOSALS[("lnx","product-development")] else {"repository":NIXKIT_REPOSITORY,"commit":NIXKIT_COMMIT,"snapshot_commit":NIXKIT_SNAPSHOT_COMMIT,"sources_sha256":NIXKIT_SOURCES_SHA256}
  if set(receipt)!=required or receipt.get("schema_version")!=1 or receipt.get("proposal_id")!=proposal_id or receipt.get("profile")!=profile or receipt.get("pack")!=pack or receipt.get("ordered_skills")!=EXPECTED_PACKS[pack] or receipt.get("nixkit")!=expected_nixkit or receipt.get("approved_by")!="Lior": raise Refusal("malformed, forged, or misbound pack approval receipt")
  commit=receipt.get("proposal_git_commit"); digest=receipt.get("proposal_file_sha256")
  if not isinstance(commit,str) or not SHA.fullmatch(commit) or not isinstance(digest,str) or not re.fullmatch(r"[a-f0-9]{64}",digest): raise Refusal("pack approval proposal commit/hash is invalid")
@@ -279,7 +282,10 @@ def _pack_approval(profile:str,pack:str,current:dict,catalog:dict[str,tuple[str,
  except json.JSONDecodeError as exc: raise Refusal(f"committed pack proposal is invalid JSON: {exc}") from exc
  if not isinstance(proposal,dict): raise Refusal("committed pack proposal must be an object")
  _validate_pack_proposal(proposal,proposal_id,profile,pack,catalog)
- committed_manifest=_git_json(commit,Path("skills/packs.json"),"manifest"); _canonical_manifest(committed_manifest)
+ committed_manifest=_git_json(commit,Path("skills/packs.json"),"manifest")
+ if proposal_id==PACK_PROPOSALS[("lnx","product-development")]:
+  if hashlib.sha256(_git_bytes(commit,Path("skills/packs.json"),"product proposal manifest")).hexdigest()!=PRODUCT_PROPOSAL_MANIFEST_SHA256: raise Refusal("product-development proposal manifest no longer matches its exact reviewed bytes")
+ else: _canonical_manifest(committed_manifest)
  if pack not in committed_manifest["proposed_pack_additions"][profile] or pack in committed_manifest["approved_pack_additions"][profile]: raise Refusal("proposal commit must contain the pending, unapproved pack state")
  if pack not in current["approved_pack_additions"][profile] or pack in current["proposed_pack_additions"][profile]: raise Refusal("current manifest does not contain the exact approved pack state")
 
@@ -394,7 +400,7 @@ def main()->int:
   except OSError as exc: raise Refusal(f"cannot read pinned NixKit sources.json: {exc}") from exc
   if actual_hash!=NIXKIT_SOURCES_SHA256: raise Refusal("NixKit sources.json content does not match the audited hash")
   catalog=_source_catalog(sources)
-  local_paths={identity[2] for identity in catalog.values() if identity[2] is not None}
+  local_paths={identity[2] for identity in catalog.values() if identity[2] in NIXKIT_LOCAL_TREES}
   if local_paths!=set(NIXKIT_LOCAL_TREES): raise Refusal("pinned NixKit local source paths do not match the audited tree set")
   for relative,tree in NIXKIT_LOCAL_TREES.items(): _verify_local_tree(checkout,relative,tree)
   _validate_declared_pack_proposals(manifest,catalog)

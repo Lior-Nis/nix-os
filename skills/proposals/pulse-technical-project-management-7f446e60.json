@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "proposal_id": "pulse-technical-project-management-7f446e60",
+  "profile": "pulse",
+  "evidence_urls": [
+    "https://github.com/magnus919/agent-skills/tree/7f446e60055b335dd26831371a027fa6b59da3e2/technical-project-management",
+    "https://github.com/magnus919/agent-skills/blob/7f446e60055b335dd26831371a027fa6b59da3e2/LICENSE.md",
+    "https://github.com/magnus919/agent-skills/blob/7f446e60055b335dd26831371a027fa6b59da3e2/technical-project-management/SKILL.md",
+    "https://github.com/magnus919/agent-skills/blob/7f446e60055b335dd26831371a027fa6b59da3e2/technical-project-management/references/evaluation-guide.md"
+  ],
+  "gate_evidence": {
+    "hermes_compatibility": "The skill uses standard Agent Skills frontmatter and Markdown, declares host-neutral compatibility, and the repository documents Hermes support; guidance works without the optional Python helper.",
+    "license": "The pinned repository LICENSE.md contains the MIT License and the skill frontmatter also declares MIT.",
+    "non_duplication": "The 64-skill pulse inventory was inspected; project-operations handles task-system mechanics, while no installed skill provides end-to-end technical project control, forecasting, recovery, and closure.",
+    "provenance": "The public repository, candidate directory, SKILL.md, and immutable 40-character revision were verified through GitHub and its public API.",
+    "relevance": "The skill directly covers milestones, dependencies, risks, forecasts, decision briefs, acceptance, and handoff required by a project-owning lead.",
+    "reliability": "Pinned instructions, directory structure, README, evaluation guide, templates/references inventory, and explicit limitations were inspected; the skill separates forecasts from commitments and unknowns from evidence.",
+    "safety_privacy": "The methodology requires authorization for external updates, forbids invented consent, keeps drafts distinct from issued communications, and needs no credentials or network for its guidance; optional code is explicitly excluded from default use pending review."
+  },
+  "gates": {
+    "hermes_compatibility": true,
+    "license": true,
+    "non_duplication": true,
+    "provenance": true,
+    "relevance": true,
+    "reliability": true,
+    "safety_privacy": true
+  },
+  "license": "MIT; verified in repository LICENSE.md at the pinned revision.",
+  "name": "technical-project-management",
+  "rationale": "Pulse Lead owns milestones, blockers, decisions, evidence, and cross-functional delivery, while the installed project-operations skill primarily covers Todoist and GitHub task mechanics. This candidate adds a distinct evidence-first control layer for commitments, dependencies, forecasts, supplier handoffs, recovery options, and closure without replacing the existing systems of record.",
+  "repository": "magnus919/agent-skills",
+  "revision": "7f446e60055b335dd26831371a027fa6b59da3e2",
+  "risks": [
+    "The bundled schedule calculator was not executed during this read-only scout; use the Markdown methodology and templates by default, and review the optional script separately before first use.",
+    "Its own evaluation guide reports limited initial behavioral evidence and no observed score advantage, so treat the framework as decision support rather than proof of better outcomes."
+  ],
+  "score": 93,
+  "score_components": {
+    "documentation_license": 5,
+    "evidence_quality": 18,
+    "hermes_compatibility": 14,
+    "maintenance": 9,
+    "role_value": 29,
+    "security_provenance": 18
+  },
+  "skill_path": "technical-project-management",
+  "source_url": "https://github.com/magnus919/agent-skills/tree/7f446e60055b335dd26831371a027fa6b59da3e2/technical-project-management",
+  "summary": "Coordinates a technical project from mandate through forecasting, recovery, acceptance, and operational handoff.",
+  "status": "candidate"
+}

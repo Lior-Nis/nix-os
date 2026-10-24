@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import textwrap
@@ -26,13 +28,20 @@ def load_module(name: str, path: Path):
 class PackContractTests(unittest.TestCase):
     def test_exact_profiles_pin_and_complete_skill_classification(self):
         packs = json.loads((ROOT / "skills/packs.json").read_text(encoding="utf-8"))
-        self.assertEqual("92338765a1cc942b2a20dda3f1e220d6be0225e1", packs["nixkit"]["commit"])
-        self.assertEqual("6493103af689bdf4bae5455e1d901646fe079e51a69c53b6f5bcf57c62786d21", packs["nixkit"]["sources_sha256"])
+        self.assertEqual("f5377ca3219daf4f33f6e8525f9438318dabcd2f", packs["nixkit"]["commit"])
+        self.assertEqual("110ecc3872b4fe45ede667afd4ca757d59aef850672045a639eae5ef78415a83", packs["nixkit"]["sources_sha256"])
         self.assertEqual(64, len(packs["nixkit"]["sources_sha256"]))
         self.assertEqual("24.22.1", packs["nixkit"]["node_runtime"])
         self.assertEqual(PROFILES, set(packs["profiles"]))
-        self.assertEqual(["caveman", "watch"], packs["approved_additions"]["lnx"])
-        self.assertTrue(all(not additions for profile, additions in packs["approved_additions"].items() if profile != "lnx"))
+        self.assertEqual({
+            "lnx": ["caveman", "watch", "todoist-cli"],
+            "pulse": ["technical-project-management"],
+            "algua": [],
+            "meabeclick": [],
+            "meabeclickux": ["rtl-design", "web-accessibility"],
+            "meabeclickeng": ["performance", "web-accessibility", "systematic-debugging", "test-driven-development"],
+            "meabeclickgrowth": ["analytics", "customer-research", "social-media-content-calendar"],
+        }, packs["approved_additions"])
         self.assertTrue(all(not values for values in packs["proposed_pack_additions"].values()))
         self.assertEqual(["product-development"], packs["approved_pack_additions"]["lnx"])
         self.assertTrue(all(not values for profile, values in packs["approved_pack_additions"].items() if profile != "lnx"))
@@ -54,7 +63,7 @@ class PackContractTests(unittest.TestCase):
         self.assertFalse(persistent & task_only)
         self.assertFalse(persistent & excluded)
         self.assertFalse(task_only & excluded)
-        self.assertEqual(49, len(persistent | task_only | excluded))
+        self.assertEqual(57, len(persistent | task_only | excluded))
         self.assertIn("watch", task_only)
 
     def test_product_pack_is_exact_approved_and_only_changes_lnx_effective_set(self):
@@ -85,6 +94,29 @@ class PackContractTests(unittest.TestCase):
         self.assertEqual("083d008d3a83cd178e1f79bf962967ae7054fc0e", receipt["proposal_git_commit"])
         self.assertEqual("06db117e1d84486a50f7beaae32f83fc3540ca8fd01eb5dc7fcf0f9e62100288", receipt["proposal_file_sha256"])
         self.assertEqual({"kind": "approval", "platform": "discord", "author_id": "454290355320520714", "channel_id": "1563181903253737542", "message_id": "1563556252829622396", "quote": "approve lnx-product-development-92338765 at 083d008d3a83cd178e1f79bf962967ae7054fc0e", "timestamp": "2026-10-24T14:14:20.145000+00:00"}, receipt["approval_evidence"])
+
+    def test_exact_eleven_proposals_preserve_selected_candidate_evidence(self):
+        expected = {
+            "lnx-todoist-cli-340d7b21": ("lnx", "todoist-cli", "392101a83690254bb49e8afcca26f925912f6582239fed00c670c18bee95fb16"),
+            "pulse-technical-project-management-7f446e60": ("pulse", "technical-project-management", "baba66152591061ee8976890094eec5f5f61c75040ac819759bc0331fe1f7ab6"),
+            "meabeclickux-rtl-design-b7c52294": ("meabeclickux", "rtl-design", "a40394d43bac390bd9ac35af925e75480388d5363e8266ec7c3cc9108bc0f2ad"),
+            "meabeclickux-web-accessibility-7f446e60": ("meabeclickux", "web-accessibility", "cfd82febb9b9b2918802be38094c0504c4efa5cc101461df753c03251329812f"),
+            "meabeclickeng-performance-afa8da94": ("meabeclickeng", "performance", "03f5621c95234d6b36bce88ae56d4b34dbf398cc7359baab554184349a9e29ee"),
+            "meabeclickeng-web-accessibility-7f446e60": ("meabeclickeng", "web-accessibility", "cb9fdd69b877365f877b27f6d4630ed36bca37c2a6025fc5987af04c4a641200"),
+            "meabeclickeng-systematic-debugging-51414605": ("meabeclickeng", "systematic-debugging", "79aea3a17afe46460848c3fbacb42d13e8dd9373cde1ae6379020d2062dac724"),
+            "meabeclickeng-test-driven-development-51414605": ("meabeclickeng", "test-driven-development", "0cc56d15a8cb3d3f5ffc4c888e677be037625140c274b11934ce5bf4682fa6c8"),
+            "meabeclickgrowth-analytics-e85f3cbc": ("meabeclickgrowth", "analytics", "21b77593ee901f5629e52db84d2df9d4c8b13629056cc8185135dbec36fbf69d"),
+            "meabeclickgrowth-customer-research-e85f3cbc": ("meabeclickgrowth", "customer-research", "dc0058708aefc89b3d7b5b3299f0d82bf90fb5e381ec785291a3560b72fd1746"),
+            "meabeclickgrowth-social-media-content-calendar-0319e113": ("meabeclickgrowth", "social-media-content-calendar", "9bcebf18e107574437e6ebdd610ed86fbb9d02cd5920ab63a63ef5604c3a578f"),
+        }
+        actual_new = {path.stem for path in (ROOT / "skills/proposals").glob("*.json")} - {"lnx-caveman-d8ede5cf", "lnx-watch-a9cb5b57"}
+        self.assertEqual(set(expected), actual_new)
+        for proposal_id, (profile, name, digest) in expected.items():
+            proposal = json.loads((ROOT / f"skills/proposals/{proposal_id}.json").read_text(encoding="utf-8"))
+            self.assertEqual((proposal_id, profile, name, "candidate"), (proposal["proposal_id"], proposal["profile"], proposal["name"], proposal["status"]))
+            actual_digest = hashlib.sha256(json.dumps(proposal, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+            self.assertEqual(digest, actual_digest, proposal_id)
+        self.assertEqual({"lnx-caveman-d8ede5cf.json", "lnx-watch-a9cb5b57.json"}, {path.name for path in (ROOT / "skills/approvals").glob("*.json")})
 
     def test_lnx_caveman_proposal_matches_pinned_source_and_policy(self):
         installer = load_module("skill_installer_caveman_proposal", ROOT / "scripts/install-skills.py")
@@ -151,13 +183,45 @@ class PackContractTests(unittest.TestCase):
                 with self.assertRaises(installer.Refusal):
                     installer._source_catalog(path)
 
+    def test_source_catalog_normalizes_and_provenance_binds_optional_github_path(self):
+        installer = load_module("skill_installer_scoped_catalog", ROOT / "scripts/install-skills.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "sources.json"
+            ordinary = sorted(installer.NIXKIT_SKILLS - {"watch", "social-media-content-calendar"})
+            scoped_path = "optional-skills/creative/social-media-content-calendar"
+            valid = [
+                {"repo": "example/catalog", "ref": "a" * 40, "skills": ordinary},
+                {"repo": "NousResearch/hermes-agent", "ref": "b" * 40, "path": scoped_path, "skills": ["social-media-content-calendar"]},
+                {"local": "skills", "skills": ["watch"]},
+            ]
+            path.write_text(json.dumps(valid), encoding="utf-8")
+            catalog = installer._source_catalog(path)
+            self.assertEqual(("NousResearch/hermes-agent", "b" * 40, scoped_path), catalog["social-media-content-calendar"])
+            proposal = json.loads((ROOT / "skills/proposals/meabeclickgrowth-social-media-content-calendar-0319e113.json").read_text(encoding="utf-8"))
+            bound = {"social-media-content-calendar": (proposal["repository"], proposal["revision"], proposal["skill_path"])}
+            installer._validate_proposal(proposal, proposal["proposal_id"], proposal["profile"], {proposal["name"]}, bound)
+            wrong = json.loads(json.dumps(proposal)); wrong["skill_path"] = "optional-skills/social-media-content-calendar"; wrong["source_url"] = f"https://github.com/{wrong['repository']}/tree/{wrong['revision']}/{wrong['skill_path']}"; wrong["evidence_urls"][0] = wrong["source_url"]
+            with self.assertRaisesRegex(installer.Refusal, "exact audited repository path"):
+                installer._validate_proposal(wrong, wrong["proposal_id"], wrong["profile"], {wrong["name"]}, bound)
+            for invalid in ("/absolute", ".", "./optional-skills", "optional-skills/./creative", "../escape", "a/../escape", "a//b", ""):
+                changed = json.loads(json.dumps(valid)); changed[1]["path"] = invalid; path.write_text(json.dumps(changed), encoding="utf-8")
+                with self.assertRaises(installer.Refusal, msg=invalid): installer._source_catalog(path)
+
+            schema = json.loads((ROOT / "skills/proposal.schema.json").read_text(encoding="utf-8"))
+            schema_path = re.compile(schema["properties"]["skill_path"]["pattern"])
+            for invalid in ("", ".", "./optional-skills", "optional-skills/./creative", "..", "optional-skills/../creative", "optional-skills//creative"):
+                self.assertIsNone(schema_path.fullmatch(invalid), invalid)
+                malicious = json.loads(json.dumps(proposal)); malicious["skill_path"] = invalid
+                with self.assertRaisesRegex(installer.Refusal, "repository/path/revision"):
+                    installer._validate_proposal(malicious, malicious["proposal_id"], malicious["profile"], {malicious["name"]}, bound)
+
     def test_installer_compile_time_pin_and_topology_match_canonical_manifest(self):
         installer = load_module("skill_installer_contract", ROOT / "scripts/install-skills.py")
         manifest = json.loads((ROOT / "skills/packs.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["nixkit"]["repository"], installer.NIXKIT_REPOSITORY)
         self.assertEqual(manifest["nixkit"]["commit"], installer.NIXKIT_COMMIT)
         self.assertEqual(manifest["nixkit"]["sources_sha256"], installer.NIXKIT_SOURCES_SHA256)
-        self.assertEqual("28826444de3e78455b399e3de18c0b1d79aff038f2432ecca1975fec1e5c82b8", installer.NIXKIT_INSTALLER_SHA256)
+        self.assertEqual("9748b8338c88c766208fa54fa144c95f0cd282a72f95327f485641ce85c18041", installer.NIXKIT_INSTALLER_SHA256)
         self.assertEqual({"skills/watch": "64685da3912a54d5f672c4bdce0e89b69b4cd6c8"}, installer.NIXKIT_LOCAL_TREES)
         self.assertEqual(manifest["nixkit"]["node_runtime"], installer.NODE_RUNTIME)
         self.assertEqual(manifest["packs"], installer.EXPECTED_PACKS)
@@ -232,10 +296,12 @@ class SkillInstallerTests(unittest.TestCase):
         (fixture_root / "skills").mkdir()
         script = fixture_root / "scripts/install-skills.py"
         source = self.script.read_text(encoding="utf-8")
+        source = source.replace("f5377ca3219daf4f33f6e8525f9438318dabcd2f", commit)
+        source = source.replace("110ecc3872b4fe45ede667afd4ca757d59aef850672045a639eae5ef78415a83", packs["nixkit"]["sources_sha256"])
         source = source.replace("92338765a1cc942b2a20dda3f1e220d6be0225e1", commit)
         source = source.replace("6493103af689bdf4bae5455e1d901646fe079e51a69c53b6f5bcf57c62786d21", packs["nixkit"]["sources_sha256"])
         fixture_installer_sha = hashlib.sha256((kit / "install.mjs").read_bytes()).hexdigest()
-        source = source.replace("28826444de3e78455b399e3de18c0b1d79aff038f2432ecca1975fec1e5c82b8", fixture_installer_sha)
+        source = source.replace("9748b8338c88c766208fa54fa144c95f0cd282a72f95327f485641ce85c18041", fixture_installer_sha)
         source = source.replace("64685da3912a54d5f672c4bdce0e89b69b4cd6c8", watch_tree)
         script.write_text(source, encoding="utf-8")
         manifest = fixture_root / "skills/packs.json"
@@ -256,8 +322,10 @@ class SkillInstallerTests(unittest.TestCase):
         subprocess.run(["git", "commit", "-qm", "canonical proposal fixture"], cwd=fixture_root, check=True)
         proposal_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=fixture_root, text=True).strip()
         proposal_hash = hashlib.sha256(subprocess.check_output(["git", "show", f"{proposal_commit}:skills/pack-proposals/lnx-product-development-92338765.json"], cwd=fixture_root)).hexdigest()
+        proposal_manifest_hash = hashlib.sha256(subprocess.check_output(["git", "show", f"{proposal_commit}:skills/packs.json"], cwd=fixture_root)).hexdigest()
         source = source.replace("083d008d3a83cd178e1f79bf962967ae7054fc0e", proposal_commit)
         source = source.replace("06db117e1d84486a50f7beaae32f83fc3540ca8fd01eb5dc7fcf0f9e62100288", proposal_hash)
+        source = source.replace("7a8a7f67f2498f147f03833501b9c1c39e35bd1cee624e3e833061d77a62cf3f", proposal_manifest_hash)
         script.write_text(source, encoding="utf-8")
         manifest.write_text(json.dumps(packs), encoding="utf-8")
         receipt = json.loads((ROOT / "skills/pack-approvals/lnx-product-development-92338765.json").read_text(encoding="utf-8"))

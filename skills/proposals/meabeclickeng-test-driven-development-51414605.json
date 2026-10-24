@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "proposal_id": "meabeclickeng-test-driven-development-51414605",
+  "profile": "meabeclickeng",
+  "evidence_urls": [
+    "https://github.com/NousResearch/hermes-agent/tree/5141460529ad320140f9916be0b88ab1f0af563e/skills/software-development/test-driven-development",
+    "https://github.com/NousResearch/hermes-agent/blob/5141460529ad320140f9916be0b88ab1f0af563e/LICENSE",
+    "https://github.com/NousResearch/hermes-agent/blob/5141460529ad320140f9916be0b88ab1f0af563e/skills/software-development/test-driven-development/SKILL.md",
+    "https://github.com/NousResearch/hermes-agent/commit/5141460529ad320140f9916be0b88ab1f0af563e"
+  ],
+  "gate_evidence": {
+    "hermes_compatibility": "It is a Hermes-bundled skill with valid frontmatter and native terminal-oriented test instructions, with no required third-party agent or unavailable tool.",
+    "license": "The pinned repository LICENSE was inspected and contains the MIT license; the pinned skill frontmatter also declares MIT.",
+    "non_duplication": "The installed inventory was inspected and contains verification-before-completion but no skill that requires RED-GREEN-REFACTOR or a witnessed failing test before implementation.",
+    "provenance": "Published by the official NousResearch/hermes-agent repository and inspected at immutable 40-character revision 5141460529ad320140f9916be0b88ab1f0af563e.",
+    "relevance": "Directly implements the role's test-first requirement for features, bug fixes, refactors, and behavior changes.",
+    "reliability": "The pinned SKILL.md and directory listing were inspected; the workflow explicitly verifies the expected RED failure, minimal GREEN implementation, refactor, and repeat test runs.",
+    "safety_privacy": "The skill is local development guidance with no credential collection, external communication, production-data access, or deployment action."
+  },
+  "gates": {
+    "hermes_compatibility": true,
+    "license": true,
+    "non_duplication": true,
+    "provenance": true,
+    "relevance": true,
+    "reliability": true,
+    "safety_privacy": true
+  },
+  "license": "MIT; verified in repository LICENSE at the pinned revision.",
+  "name": "test-driven-development",
+  "rationale": "The role explicitly calls for test-first or evidence-first implementation, while the installed inventory has no dedicated TDD skill. This candidate supplies an enforceable test-first loop that complements rather than duplicates branch, plan, review, and completion-verification skills.",
+  "repository": "NousResearch/hermes-agent",
+  "revision": "5141460529ad320140f9916be0b88ab1f0af563e",
+  "risks": [
+    "Its absolute delete-and-restart wording may be too rigid for legacy recovery or an approved emergency hotfix; repository policy and explicit human authority must remain controlling."
+  ],
+  "score": 97,
+  "score_components": {
+    "documentation_license": 5,
+    "evidence_quality": 20,
+    "hermes_compatibility": 15,
+    "maintenance": 10,
+    "role_value": 28,
+    "security_provenance": 19
+  },
+  "skill_path": "skills/software-development/test-driven-development",
+  "source_url": "https://github.com/NousResearch/hermes-agent/tree/5141460529ad320140f9916be0b88ab1f0af563e/skills/software-development/test-driven-development",
+  "summary": "RED-GREEN-REFACTOR workflow that requires a witnessed failing test before minimal implementation and cleanup.",
+  "status": "candidate"
+}

@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "proposal_id": "meabeclickeng-systematic-debugging-51414605",
+  "profile": "meabeclickeng",
+  "evidence_urls": [
+    "https://github.com/NousResearch/hermes-agent/blob/5141460529ad320140f9916be0b88ab1f0af563e/LICENSE",
+    "https://github.com/NousResearch/hermes-agent/blob/5141460529ad320140f9916be0b88ab1f0af563e/skills/software-development/systematic-debugging/SKILL.md",
+    "https://github.com/NousResearch/hermes-agent/commit/5141460529ad320140f9916be0b88ab1f0af563e",
+    "https://github.com/NousResearch/hermes-agent/tree/5141460529ad320140f9916be0b88ab1f0af563e/skills/software-development/systematic-debugging",
+    "https://hermes-agent.nousresearch.com/docs/user-guide/skills/bundled/software-development/software-development-systematic-debugging"
+  ],
+  "gate_evidence": {
+    "hermes_compatibility": "The skill is shipped in Hermes' own Agent Skills-compatible format and uses native concepts such as terminal verification and delegate_task with no mandatory external integration.",
+    "license": "The pinned repository LICENSE was inspected and contains the MIT license; the pinned skill frontmatter also declares MIT.",
+    "non_duplication": "The current meabeclickeng inventory was inspected; it includes verification and review workflows but no systematic-debugging skill or equivalent root-cause procedure.",
+    "provenance": "Published by the official NousResearch/hermes-agent repository and inspected at immutable 40-character revision 5141460529ad320140f9916be0b88ab1f0af563e.",
+    "relevance": "Directly supports evidence-first defect diagnosis, failure reproduction, root-cause isolation, minimal fixes, and regression checks for this reliability role.",
+    "reliability": "The pinned SKILL.md was inspected; the pinned directory contains only that documented skill file, and the workflow requires reproduction, single-hypothesis testing, and focused plus full-suite verification.",
+    "safety_privacy": "The inspected skill is procedural documentation, requires no credentials or external messaging, and contains no instruction to read private customer data or bypass approvals."
+  },
+  "gates": {
+    "hermes_compatibility": true,
+    "license": true,
+    "non_duplication": true,
+    "provenance": true,
+    "relevance": true,
+    "reliability": true,
+    "safety_privacy": true
+  },
+  "license": "MIT; verified in repository LICENSE at the pinned revision.",
+  "name": "systematic-debugging",
+  "rationale": "This profile owns defect diagnosis and lesson-generation reliability, but its installed inventory has no dedicated debugging method. The skill adds a Hermes-native root-cause workflow without duplicating the existing planning, review, branch-finishing, or verification skills.",
+  "repository": "NousResearch/hermes-agent",
+  "revision": "5141460529ad320140f9916be0b88ab1f0af563e",
+  "risks": [
+    "Its strict phase ordering can slow trivial diagnosis; apply it proportionally while preserving the root-cause and evidence requirements.",
+    "The deliberately strict root-cause-first language can slow emergency containment; use reversible incident mitigation first when required, then complete the root-cause workflow before declaring resolution.",
+    "The workflow includes generic shell and test-command examples; use repository-specific commands and retain all project approval, protected-path, capital, and live-trading boundaries."
+  ],
+  "score": 98,
+  "score_components": {
+    "documentation_license": 5,
+    "evidence_quality": 20,
+    "hermes_compatibility": 15,
+    "maintenance": 10,
+    "role_value": 28,
+    "security_provenance": 20
+  },
+  "skill_path": "skills/software-development/systematic-debugging",
+  "source_url": "https://github.com/NousResearch/hermes-agent/tree/5141460529ad320140f9916be0b88ab1f0af563e/skills/software-development/systematic-debugging",
+  "summary": "Four-phase root-cause debugging workflow with reproduction, hypothesis testing, minimal fixes, and regression verification.",
+  "status": "candidate"
+}

@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "proposal_id": "meabeclickux-rtl-design-b7c52294",
+  "profile": "meabeclickux",
+  "evidence_urls": [
+    "https://github.com/Baghlani/rtl-design/tree/b7c52294e2b72cab64264c56b6cb9bb53724658b/skills/rtl-design",
+    "https://github.com/Baghlani/rtl-design/blob/b7c52294e2b72cab64264c56b6cb9bb53724658b/LICENSE",
+    "https://github.com/Baghlani/rtl-design/blob/b7c52294e2b72cab64264c56b6cb9bb53724658b/NOTICE.md",
+    "https://github.com/Baghlani/rtl-design/blob/b7c52294e2b72cab64264c56b6cb9bb53724658b/skills/rtl-design/SKILL.md",
+    "https://github.com/Baghlani/rtl-design/blob/b7c52294e2b72cab64264c56b6cb9bb53724658b/skills/rtl-design/references/web.md",
+    "https://github.com/Baghlani/rtl-design/blob/b7c52294e2b72cab64264c56b6cb9bb53724658b/.github/workflows/ci.yml",
+    "https://github.com/Baghlani/rtl-design/blob/b7c52294e2b72cab64264c56b6cb9bb53724658b/tests/check.py",
+    "https://github.com/Baghlani/rtl-design/blob/b7c52294e2b72cab64264c56b6cb9bb53724658b/bench/RESULTS.md"
+  ],
+  "gate_evidence": {
+    "hermes_compatibility": "The skill uses standard YAML frontmatter and the Agent Skills directory structure supported by Hermes, with progressive references and no required service. The optional relative detector command may need an installed-skill absolute path, while the guidance itself has a safe documentation-only fallback.",
+    "license": "The pinned repository LICENSE is Apache License 2.0 and the pinned NOTICE identifies the work, copyright holder, prior-art attribution, and redistribution obligations.",
+    "non_duplication": "The current meabeclickux inventory was inspected: frontend-design and impeccable provide general UI guidance, but none supplies a dedicated RTL/bidi detector and detailed rules for LTR islands, RTL inputs, scroll and gesture inversion, icon mirroring, and SVG anchoring; the candidate explicitly documents coexistence with general design skills.",
+    "provenance": "The public Baghlani/rtl-design repository, immutable lowercase 40-character revision b7c52294e2b72cab64264c56b6cb9bb53724658b, skill directory, commit history, LICENSE, and NOTICE were inspected.",
+    "relevance": "The profile is responsible for Hebrew RTL correctness, mixed-direction content, mobile forms, icon behavior, overflow, and accessibility; the pinned web reference directly addresses those surfaces.",
+    "reliability": "Pinned SKILL.md and web reference were inspected; the repository includes deterministic detector self-tests, Agent Skills specification validation in CI, a documented defect catalog, and a small disclosed benchmark with raw methodology and limitations.",
+    "safety_privacy": "The inspected skill is local documentation plus an optional standard-library detector; no authentication, secret collection, external messaging, publishing, or private-data behavior was found. Safe use can exclude the detector or scope it to public UI source only."
+  },
+  "gates": {
+    "hermes_compatibility": true,
+    "license": true,
+    "non_duplication": true,
+    "provenance": true,
+    "relevance": true,
+    "reliability": true,
+    "safety_privacy": true
+  },
+  "license": "Apache-2.0; verified in repository LICENSE and NOTICE.md at the pinned revision.",
+  "name": "rtl-design",
+  "rationale": "Hebrew RTL correctness is a binding requirement for this phone-first product, while the installed inventory contains broad design and UX guidance but no dedicated RTL or bidi specialist. This skill explicitly composes with general design skills and adds concrete coverage for logical CSS, LTR islands, phone and email inputs, pointer and scroll direction, directional icons, SVG labels, and long-text overflow. Its Persian-specific typography and locale rules must be excluded from Hebrew decisions, but the shared RTL web layer fills a material non-duplicated gap.",
+  "repository": "Baghlani/rtl-design",
+  "revision": "b7c52294e2b72cab64264c56b6cb9bb53724658b",
+  "risks": [
+    "The deep module is Persian-first; for this Hebrew product, use only language-neutral RTL, bidi, forms, motion, icon, overflow, and logical-CSS guidance unless a Hebrew-specific rule is independently verified.",
+    "The bundled detector includes Persian-specific checks that may be irrelevant or noisy for Hebrew; if ever evaluated after installation, scope it only to non-sensitive UI source files and select applicable rules rather than scanning the repository broadly.",
+    "The detector command is written with a relative script path that may not match Hermes runtime working directories; the prose and references remain usable, and any later evaluation should resolve the installed skill directory explicitly rather than assuming the current directory."
+  ],
+  "score": 91,
+  "score_components": {
+    "documentation_license": 5,
+    "evidence_quality": 19,
+    "hermes_compatibility": 13,
+    "maintenance": 6,
+    "role_value": 29,
+    "security_provenance": 19
+  },
+  "skill_path": "skills/rtl-design",
+  "source_url": "https://github.com/Baghlani/rtl-design/tree/b7c52294e2b72cab64264c56b6cb9bb53724658b/skills/rtl-design",
+  "summary": "Adds evidence-backed RTL layout, bidi, form-direction, icon-mirroring, overflow, and deterministic audit guidance for web interfaces.",
+  "status": "candidate"
+}

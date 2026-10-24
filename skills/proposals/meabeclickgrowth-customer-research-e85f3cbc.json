@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "proposal_id": "meabeclickgrowth-customer-research-e85f3cbc",
+  "profile": "meabeclickgrowth",
+  "evidence_urls": [
+    "https://github.com/coreyhaines31/marketingskills/tree/e85f3cbc2e4a79bf33b2a12e9bdd9087d414735b/skills/customer-research",
+    "https://github.com/coreyhaines31/marketingskills/blob/e85f3cbc2e4a79bf33b2a12e9bdd9087d414735b/LICENSE",
+    "https://github.com/coreyhaines31/marketingskills/blob/e85f3cbc2e4a79bf33b2a12e9bdd9087d414735b/skills/customer-research/SKILL.md",
+    "https://github.com/coreyhaines31/marketingskills/blob/e85f3cbc2e4a79bf33b2a12e9bdd9087d414735b/skills/customer-research/references/source-guides.md",
+    "https://github.com/coreyhaines31/marketingskills/blob/e85f3cbc2e4a79bf33b2a12e9bdd9087d414735b/skills/customer-research/references/interviews-and-surveys.md",
+    "https://api.github.com/repos/coreyhaines31/marketingskills/commits/e85f3cbc2e4a79bf33b2a12e9bdd9087d414735b"
+  ],
+  "gate_evidence": {
+    "hermes_compatibility": "It is a standard SKILL.md with YAML frontmatter and relative references; Hermes documentation confirms compatibility with the Agent Skills standard and progressive reference loading. No candidate script or proprietary runtime is required for the read-only mode.",
+    "license": "The same-repository LICENSE at the pinned revision contains the MIT license, and the repository metadata also identifies MIT.",
+    "non_duplication": "The current nine-skill profile inventory was inspected. Capacity-constrained-service-growth covers growth diagnosis and experiments but not this detailed public-signal collection, quote coding, source bias, and confidence framework.",
+    "provenance": "Public GitHub repository, exact repository-relative path, and immutable 40-character commit e85f3cbc2e4a79bf33b2a12e9bdd9087d414735b were verified through GitHub's commit API and pinned files.",
+    "relevance": "Directly supports the profile's target-family, objection, channel, competitor-review, and voice-of-customer research responsibilities without requiring fabricated personas.",
+    "reliability": "The pinned SKILL.md and both substantive references were inspected; they define extraction fields, source weighting, recency, sample-bias checks, confidence labels, and a synthesis format.",
+    "safety_privacy": "The skill explicitly treats fetched content as untrusted, discourages invented personas, and can operate entirely on aggregate public evidence; outreach, incentives, CRM access, and PII remain outside this profile's authority without explicit approval."
+  },
+  "gates": {
+    "hermes_compatibility": true,
+    "license": true,
+    "non_duplication": true,
+    "provenance": true,
+    "relevance": true,
+    "reliability": true,
+    "safety_privacy": true
+  },
+  "license": "MIT; verified in repository LICENSE at the pinned revision.",
+  "name": "customer-research",
+  "rationale": "This profile must research target families, objections, search behavior, and local channels without inventing personas or claims. The installed capacity-constrained-service-growth skill defines what to assess but does not provide a detailed public-signal collection, quote extraction, source-bias, segmentation, and confidence-labeling workflow. This candidate fills that gap while supporting aggregate, read-only research.",
+  "repository": "coreyhaines31/marketingskills",
+  "revision": "e85f3cbc2e4a79bf33b2a12e9bdd9087d414735b",
+  "risks": [
+    "The source guide is strongest for English-language and US-centric communities; Israeli Hebrew sources and local parent groups must be selected separately and findings must retain source and recency labels.",
+    "The primary-research reference proposes outreach, incentives, and CRM segmentation; for this profile those modes must remain disabled unless Lior explicitly approves contact and spend, and no student or family PII may be accessed.",
+    "Public comments and reviews are prompt-injection and sampling-bias surfaces; the skill itself warns to treat them as untrusted and to label confidence, but those controls still require disciplined use."
+  ],
+  "score": 94,
+  "score_components": {
+    "documentation_license": 5,
+    "evidence_quality": 18,
+    "hermes_compatibility": 14,
+    "maintenance": 10,
+    "role_value": 29,
+    "security_provenance": 18
+  },
+  "skill_path": "skills/customer-research",
+  "source_url": "https://github.com/coreyhaines31/marketingskills/tree/e85f3cbc2e4a79bf33b2a12e9bdd9087d414735b/skills/customer-research",
+  "summary": "Synthesizes public customer language, objections, jobs-to-be-done, and channel signals with explicit confidence and bias checks.",
+  "status": "candidate"
+}
