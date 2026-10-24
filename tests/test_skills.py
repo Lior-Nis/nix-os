@@ -543,6 +543,26 @@ class ScoutSetupTests(unittest.TestCase):
             self.assertEqual(source.read_bytes(), destination.read_bytes())
             self.assertTrue(any("inode/device/type/content/mode changed" in failure for failure in failures), failures)
 
+    def test_collector_post_publication_failure_removes_owned_destination(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); source = root / "source.py"; destination = root / "collector.py"
+            source.write_text("safe", encoding="utf-8")
+            real_fsync = self.setup.os.fsync
+            calls = 0
+
+            def fail_first_directory_sync(fd):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    raise OSError("injected directory fsync failure")
+                return real_fsync(fd)
+
+            with mock.patch.object(self.setup.os, "fsync", side_effect=fail_first_directory_sync):
+                with self.assertRaisesRegex(OSError, "injected directory fsync failure"):
+                    self.setup._install_collector_atomic(destination, source)
+            self.assertFalse(destination.exists())
+            self.assertFalse(destination.with_suffix(".tmp").exists())
+
     def test_create_output_requires_exact_real_hermes_id_shape(self):
         output = "Created job: abcdef123456\n  Name: example\n  Schedule: 0 1 * * *"
         self.assertEqual("abcdef123456", self.setup._created_job_id(output))
