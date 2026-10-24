@@ -28,6 +28,10 @@ REQUIRED_FILES = {
     "skills/proposal.schema.json",
     "skills/approval.schema.json",
     "skills/proposals/lnx-watch-a9cb5b57.json",
+    "skills/approvals/lnx-watch-a9cb5b57.json",
+    "skills/pack-proposal.schema.json",
+    "skills/pack-approval.schema.json",
+    "skills/pack-proposals/lnx-product-development-92338765.json",
     "automation/skill-scout/jobs.json",
     "automation/skill-scout/report.schema.json",
     "automation/skill-scout/scout-prompt.md",
@@ -43,11 +47,14 @@ EXPECTED_PROFILES = {
     "meabeclickeng", "meabeclickgrowth",
 }
 EXPECTED_PROJECTS = {"pulse", "algua", "meabeclick"}
-NIXKIT_COMMIT = "a9cb5b576097301ee63485649d5703db7479ad8f"
+NIXKIT_COMMIT = "92338765a1cc942b2a20dda3f1e220d6be0225e1"
+NIXKIT_SNAPSHOT_COMMIT = "da5f36fc4c470fa28ffdcab1a6c6aaa3750bded3"
 NIXKIT_SOURCES_SHA256 = "6493103af689bdf4bae5455e1d901646fe079e51a69c53b6f5bcf57c62786d21"
 CANONICAL_SCHEMA_SHA256 = {
     "skills/proposal.schema.json": "d3c84a31c6460bd566ec7e8e5c0c7cabf106100e336b4c81ea05fbb2a6d28ce1",
     "skills/approval.schema.json": "eeb84ee9c84b3f45eff0ae807586d0a6cc2d35309b46fb7f7fbca696acfda1b7",
+    "skills/pack-proposal.schema.json": "9b4a7b586bf8746d6f118a1caec3cf149fce1025ba4b1838654d4d73392d8c44",
+    "skills/pack-approval.schema.json": "989f947f2219e04c554fb004c319b31c905142c1a32a5aca76fd6bdd2c47b5b0",
     "automation/skill-scout/report.schema.json": "56cde3a718328b9e4b128cdb14a310ae4d8294936dedec5bada601fd76578c01",
 }
 NIXKIT_SKILLS = {
@@ -71,6 +78,11 @@ EXPECTED_PACKS = {
     "public-research": [],
     "engineering-delivery": ["executing-plans", "using-git-worktrees", "finishing-a-development-branch", "receiving-code-review", "codebase-design"],
     "ux-design-review": ["frontend-design"],
+    "product-development": [
+        "lnx-grilling", "lnx-grill-me", "lnx-domain-modeling", "lnx-grill-with-docs",
+        "lnx-to-spec", "lnx-writing-for-agents", "nix-idea-to-mvp", "writing-plans",
+        "subagent-driven-development",
+    ],
 }
 EXPECTED_PACK_ASSIGNMENTS = {
     "lnx": ["baseline-evidence", "orchestrator-control"],
@@ -89,6 +101,14 @@ EXPECTED_APPROVED_ADDITIONS = {
     "meabeclickux": [],
     "meabeclickeng": [],
     "meabeclickgrowth": [],
+}
+EXPECTED_PROPOSED_PACK_ADDITIONS = {profile: (["product-development"] if profile == "lnx" else []) for profile in EXPECTED_PROFILES}
+EXPECTED_APPROVED_PACK_ADDITIONS = {profile: [] for profile in EXPECTED_PROFILES}
+PRODUCT_PROPOSAL_ID = "lnx-product-development-92338765"
+PRODUCT_REQUEST_EVIDENCE = {
+    "kind": "request/proposal", "platform": "discord", "channel_id": "1563181903253737542",
+    "author_id": "454290355320520714", "message_id": "1563496182829948941", "quote": "sync it",
+    "timestamp": "2026-10-24T10:15:38.341000+00:00",
 }
 HARD_GATES = {"relevance", "provenance", "reliability", "safety_privacy", "license", "hermes_compatibility", "non_duplication"}
 SCORE_LIMITS = {
@@ -391,7 +411,7 @@ def _validate_skills(root: Path, manifest: dict[str, Any], errors: list[str]) ->
     if approved_additions != EXPECTED_APPROVED_ADDITIONS:
         errors.append("approved additions must match the exact reviewed profile-specific set")
     watch_proposal = _load_json_object(root / "skills/proposals/lnx-watch-a9cb5b57.json", "Watch proposal", errors)
-    watch_revision = NIXKIT_COMMIT
+    watch_revision = "a9cb5b576097301ee63485649d5703db7479ad8f"
     watch_source = f"https://github.com/its-nix/kit/tree/{watch_revision}/skills/watch"
     watch_license = f"https://github.com/its-nix/kit/blob/{watch_revision}/skills/watch/LICENSE"
     watch_notice = f"https://github.com/its-nix/kit/blob/{watch_revision}/skills/watch/NOTICE.md"
@@ -428,6 +448,10 @@ def _validate_skills(root: Path, manifest: dict[str, Any], errors: list[str]) ->
         }
         if watch_receipt != expected_receipt:
             errors.append("Watch approval receipt must exactly bind Lior's decision to the reviewed proposal/manifest commit")
+    if packs.get("proposed_pack_additions") != EXPECTED_PROPOSED_PACK_ADDITIONS:
+        errors.append("product-development must remain an exact pending LNX pack proposal")
+    if packs.get("approved_pack_additions") != EXPECTED_APPROVED_PACK_ADDITIONS:
+        errors.append("no pack addition may be approved without its committed proposal-bound receipt")
     if any(name in {"global", "universal", "all", "*"} for name in (packs.get("packs") or {})):
         errors.append("wildcard/global/universal skill packs are forbidden")
     persistent = set().union(*(set(values) for values in EXPECTED_PACKS.values()))
@@ -445,9 +469,6 @@ def _validate_skills(root: Path, manifest: dict[str, Any], errors: list[str]) ->
             errors.append("all 49 NixKit skills must be classified exactly once semantically")
         if not {"web-design-guidelines", "find-docs"} <= task:
             errors.append("mutable-latest web-design-guidelines and find-docs must remain task-only")
-        namespaced = {"lnx-grilling", "lnx-grill-me", "lnx-domain-modeling", "lnx-grill-with-docs", "lnx-to-spec", "lnx-writing-for-agents", "nix-idea-to-mvp"}
-        if not namespaced <= task:
-            errors.append("the seven new namespaced NixKit skills must remain explicitly task-only")
         if "watch" not in task:
             errors.append("watch must remain task-only while separately approved for LNX")
     governance = packs.get("governance")
@@ -464,6 +485,8 @@ def _validate_skills(root: Path, manifest: dict[str, Any], errors: list[str]) ->
     expected_reference = {
         "packs": "skills/packs.json", "proposal_schema": "skills/proposal.schema.json",
         "approval_schema": "skills/approval.schema.json", "scout_jobs": "automation/skill-scout/jobs.json",
+        "pack_proposal_schema": "skills/pack-proposal.schema.json",
+        "pack_approval_schema": "skills/pack-approval.schema.json",
         "scout_report_schema": "automation/skill-scout/report.schema.json",
     }
     if manifest.get("skill_governance") != expected_reference:
@@ -486,6 +509,32 @@ def _validate_skills(root: Path, manifest: dict[str, Any], errors: list[str]) ->
         _validate_evidence_schema(loaded_schemas["skills/proposal.schema.json"], "skills/proposal.schema.json", errors, False)
     if loaded_schemas.get("automation/skill-scout/report.schema.json"):
         _validate_evidence_schema(loaded_schemas["automation/skill-scout/report.schema.json"], "automation/skill-scout/report.schema.json", errors, True)
+    product_proposal = _load_json_object(
+        root / f"skills/pack-proposals/{PRODUCT_PROPOSAL_ID}.json", "product-development pack proposal", errors
+    )
+    expected_product_proposal = {
+        "schema_version": 1,
+        "proposal_id": PRODUCT_PROPOSAL_ID,
+        "profile": "lnx",
+        "pack": "product-development",
+        "ordered_skills": EXPECTED_PACKS["product-development"],
+        "nixkit": {
+            "repository": "https://github.com/its-nix/kit.git",
+            "commit": NIXKIT_COMMIT,
+            "snapshot_commit": NIXKIT_SNAPSHOT_COMMIT,
+            "sources_sha256": NIXKIT_SOURCES_SHA256,
+        },
+        "request_evidence": PRODUCT_REQUEST_EVIDENCE,
+        "status": "pending_approval",
+    }
+    if product_proposal != expected_product_proposal:
+        errors.append("product-development proposal must exactly bind the pending pack, NixKit pins, and request/proposal evidence")
+    proposal_files = sorted(path.name for path in (root / "skills/pack-proposals").glob("*.json"))
+    if proposal_files != [f"{PRODUCT_PROPOSAL_ID}.json"]:
+        errors.append("pack proposal directory must contain only the current canonical product-development proposal")
+    approval_dir = root / "skills/pack-approvals"
+    if approval_dir.exists() and any(approval_dir.iterdir()):
+        errors.append("pending product-development proposal must not have a pack approval receipt")
     try:
         scout_prompt = (root / "automation/skill-scout/scout-prompt.md").read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:

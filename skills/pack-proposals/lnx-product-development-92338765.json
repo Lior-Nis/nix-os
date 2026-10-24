@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "proposal_id": "lnx-product-development-92338765",
+  "profile": "lnx",
+  "pack": "product-development",
+  "ordered_skills": [
+    "lnx-grilling",
+    "lnx-grill-me",
+    "lnx-domain-modeling",
+    "lnx-grill-with-docs",
+    "lnx-to-spec",
+    "lnx-writing-for-agents",
+    "nix-idea-to-mvp",
+    "writing-plans",
+    "subagent-driven-development"
+  ],
+  "nixkit": {
+    "repository": "https://github.com/its-nix/kit.git",
+    "commit": "92338765a1cc942b2a20dda3f1e220d6be0225e1",
+    "snapshot_commit": "da5f36fc4c470fa28ffdcab1a6c6aaa3750bded3",
+    "sources_sha256": "6493103af689bdf4bae5455e1d901646fe079e51a69c53b6f5bcf57c62786d21"
+  },
+  "request_evidence": {
+    "kind": "request/proposal",
+    "platform": "discord",
+    "author_id": "454290355320520714",
+    "channel_id": "1563181903253737542",
+    "message_id": "1563496182829948941",
+    "quote": "sync it",
+    "timestamp": "2026-10-24T10:15:38.341000+00:00"
+  },
+  "status": "pending_approval"
+}
