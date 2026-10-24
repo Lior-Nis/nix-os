@@ -138,6 +138,8 @@ EXPECTED_NEW_PROPOSAL_SHA256 = {
     "meabeclickgrowth-customer-research-e85f3cbc": "dc0058708aefc89b3d7b5b3299f0d82bf90fb5e381ec785291a3560b72fd1746",
     "meabeclickgrowth-social-media-content-calendar-0319e113": "9bcebf18e107574437e6ebdd610ed86fbb9d02cd5920ab63a63ef5604c3a578f",
 }
+SCOUT_APPROVAL_COMMIT = "80acfdec871514d5cd3c0d16d36dfb54001768b8"
+SCOUT_APPROVED_AT = "2026-10-25T00:28:00+03:00"
 EXPECTED_PROPOSED_PACK_ADDITIONS = {profile: [] for profile in EXPECTED_PROFILES}
 EXPECTED_APPROVED_PACK_ADDITIONS = {profile: (["product-development"] if profile == "lnx" else []) for profile in EXPECTED_PROFILES}
 PRODUCT_PROPOSAL_ID = "lnx-product-development-92338765"
@@ -533,8 +535,25 @@ def _validate_skills(root: Path, manifest: dict[str, Any], errors: list[str]) ->
             if hashlib.sha256(canonical).hexdigest() != expected_digest:
                 errors.append(f"proposal {proposal_id} must preserve its complete canonical reviewed record")
     approval_files = {path.name for path in (root / "skills/approvals").glob("*.json")}
-    if approval_files != {"lnx-caveman-d8ede5cf.json", "lnx-watch-a9cb5b57.json"}:
-        errors.append("single-skill approvals must preserve only the existing Caveman and Watch receipts at proposal stage")
+    expected_new_receipts = {f"{proposal_id}.json" for proposal_id in EXPECTED_NEW_PROPOSAL_SHA256}
+    expected_approval_files = {"lnx-caveman-d8ede5cf.json", "lnx-watch-a9cb5b57.json"} | expected_new_receipts
+    if approval_files != expected_approval_files:
+        errors.append("single-skill approvals must exactly match the historical and approved scout proposal receipts")
+    proposal_scopes = {proposal_id: (profile, name) for (profile, name), proposal_id in PROPOSALS.items()}
+    for proposal_id in EXPECTED_NEW_PROPOSAL_SHA256:
+        profile, name = proposal_scopes[proposal_id]
+        receipt = _load_json_object(root / f"skills/approvals/{proposal_id}.json", f"approval receipt {proposal_id}", errors)
+        expected_receipt = {
+            "schema_version": 1,
+            "proposal_id": proposal_id,
+            "profile": profile,
+            "skills": [name],
+            "approved_by": "Lior",
+            "approved_at": SCOUT_APPROVED_AT,
+            "manifest_commit": SCOUT_APPROVAL_COMMIT,
+        }
+        if receipt and receipt != expected_receipt:
+            errors.append(f"approval receipt {proposal_id} must exactly bind Lior's approved proposal commit and scope")
     if packs.get("proposed_pack_additions") != EXPECTED_PROPOSED_PACK_ADDITIONS:
         errors.append("product-development must no longer remain a pending LNX pack proposal")
     if packs.get("approved_pack_additions") != EXPECTED_APPROVED_PACK_ADDITIONS:

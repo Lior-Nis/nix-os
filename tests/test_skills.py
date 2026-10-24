@@ -116,7 +116,8 @@ class PackContractTests(unittest.TestCase):
             self.assertEqual((proposal_id, profile, name, "candidate"), (proposal["proposal_id"], proposal["profile"], proposal["name"], proposal["status"]))
             actual_digest = hashlib.sha256(json.dumps(proposal, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
             self.assertEqual(digest, actual_digest, proposal_id)
-        self.assertEqual({"lnx-caveman-d8ede5cf.json", "lnx-watch-a9cb5b57.json"}, {path.name for path in (ROOT / "skills/approvals").glob("*.json")})
+        expected_receipts = {"lnx-caveman-d8ede5cf.json", "lnx-watch-a9cb5b57.json"} | {f"{proposal_id}.json" for proposal_id in expected}
+        self.assertEqual(expected_receipts, {path.name for path in (ROOT / "skills/approvals").glob("*.json")})
 
     def test_lnx_caveman_proposal_matches_pinned_source_and_policy(self):
         installer = load_module("skill_installer_caveman_proposal", ROOT / "scripts/install-skills.py")
