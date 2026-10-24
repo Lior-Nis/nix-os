@@ -142,7 +142,6 @@ SECRET_PATTERNS = {
         r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{20,30}\.[A-Za-z0-9_-]{6,8}\."
         r"[A-Za-z0-9_-]{25,45}(?![A-Za-z0-9_-])"
     ),
-    "Discord webhook credential": re.compile(r"https://(?:(?:canary|ptb)\.)?discord(?:app)?\.com/api/webhooks/[0-9]{17,20}/[A-Za-z0-9._-]{30,}"),
     "Discord webhook token": re.compile(r"(?i)\bdiscord[_ -]?webhook(?:[_ -]?token)?\s*[:=]\s*[A-Za-z0-9._-]{30,}"),
     "xox workspace token": re.compile(r"\bxox[bp]-[A-Za-z0-9-]{20,}\b"),
 }
@@ -153,6 +152,7 @@ DISCORD_WEBHOOK_HOSTS = {
     "discord.com", "canary.discord.com", "ptb.discord.com",
     "discordapp.com", "canary.discordapp.com", "ptb.discordapp.com",
 }
+DISCORD_WEBHOOK_PATH = re.compile(r"/api/webhooks/[0-9]{17,20}/[A-Za-z0-9._-]{30,}")
 
 
 def _contains_discord_webhook_url(text: str) -> bool:
@@ -168,7 +168,7 @@ def _contains_discord_webhook_url(text: str) -> bool:
             parsed.scheme.lower() in {"http", "https"}
             and hostname in DISCORD_WEBHOOK_HOSTS
             and (port is None or port == 443)
-            and parsed.path.startswith("/api/webhooks/")
+            and DISCORD_WEBHOOK_PATH.fullmatch(parsed.path)
         ):
             return True
     return False
@@ -517,6 +517,8 @@ def _validate_files(root: Path, errors: list[str]) -> None:
         for label, pattern in SECRET_PATTERNS.items():
             if pattern.search(text):
                 errors.append(f"possible {label} found in {rel}")
+        if _contains_discord_webhook_url(text):
+            errors.append(f"possible Discord webhook credential found in {rel}")
         position = 0
         for line in text.splitlines(keepends=True):
             lowered = line.lower()

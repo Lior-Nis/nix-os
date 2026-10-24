@@ -244,10 +244,27 @@ def _install_collector_atomic(destination: Path, source: Path) -> CollectorIdent
         current = os.lstat(temporary)
         if not stat.S_ISREG(current.st_mode) or (current.st_dev, current.st_ino) != owned:
             raise Refusal("collector temporary inode changed before atomic replace")
-        os.replace(temporary, destination)
+        try:
+            os.link(temporary, destination, follow_symlinks=False)
+        except FileExistsError as exc:
+            raise Refusal(
+                f"collector destination appeared during publication; preserved it and refused overwrite: {destination}; "
+                "manual recovery required"
+            ) from exc
         installed = os.lstat(destination)
         if not stat.S_ISREG(installed.st_mode) or (installed.st_dev, installed.st_ino) != owned:
-            raise Refusal("collector destination inode changed during atomic install")
+            raise Refusal("collector destination inode changed during no-clobber install; manual recovery required")
+        directory_fd = os.open(destination.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+        os.unlink(temporary)
+        directory_fd = os.open(destination.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
         identity = CollectorIdentity(
             installed.st_dev,
             installed.st_ino,
@@ -275,13 +292,13 @@ def _rollback(
     base: Path,
     attempted: list[tuple[str, dict]],
     created: list[tuple[str, str, str]],
-    delivery_edits: list[tuple[str, str, str, str]],
+    delivery_edits: list[tuple[str, str, str, str, str]],
     collector_dest: Path,
     collector_identity: CollectorIdentity | None,
 ) -> list[str]:
     failures: list[str] = []
     created_keys = {(profile, identifier) for profile, identifier, _ in created}
-    for profile, identifier, name, prior in reversed(delivery_edits):
+    for profile, identifier, name, prior, applied in reversed(delivery_edits):
         if (profile, identifier) in created_keys:
             continue
         try:
@@ -289,12 +306,18 @@ def _rollback(
             current = next((job for job in jobs if job.get("id") == identifier and job.get("name") == name), None)
             if current is None:
                 raise Refusal(f"cannot find pre-existing aggregator {name} during delivery rollback")
-            if _delivery(current) != [prior]:
+            current_delivery = _delivery(current)
+            if current_delivery == [applied]:
                 _run_hermes(binary, profile, ["cron", "edit", identifier, "--deliver", prior])
                 jobs = _read_jobs(_job_store(base, profile))
                 current = next((job for job in jobs if job.get("id") == identifier and job.get("name") == name), None)
                 if current is None or _delivery(current) != [prior]:
                     raise Refusal(f"delivery rollback readback mismatch for {name}")
+            elif current_delivery != [prior]:
+                raise Refusal(
+                    f"delivery for {name} changed concurrently to {current_delivery!r}; "
+                    "preserved concurrent value; manual recovery required"
+                )
         except (OSError, KeyError, TypeError, Refusal) as exc:
             failures.append(str(exc))
 
@@ -342,7 +365,7 @@ def main() -> int:
     attempted: list[tuple[str, dict]] = []
     created: list[tuple[str, str, str]] = []
     baseline_ids: dict[str, set[str]] = {}
-    delivery_edits: list[tuple[str, str, str, str]] = []
+    delivery_edits: list[tuple[str, str, str, str, str]] = []
     collector_identity: CollectorIdentity | None = None
     collector_dest = Path("/")
     collector_source = Path("/")
@@ -396,9 +419,9 @@ def main() -> int:
                         raise Refusal(f"Hermes returned pre-existing job ID after creating {desired['name']}")
                     created.append((profile, identifier, desired["name"]))
                     refreshed = _read_jobs(_job_store(base, profile))
-                    returned = [job for job in refreshed if job.get("id") == identifier]
-                    current = returned[0] if len(returned) == 1 else None
-                    if current is None or current.get("name") != desired["name"] or not _is_exact(current, desired):
+                    name_matches = [job for job in refreshed if job.get("name") == desired["name"]]
+                    current = name_matches[0] if len(name_matches) == 1 else None
+                    if current is None or current.get("id") != identifier or not _is_exact(current, desired):
                         raise Refusal(f"Hermes readback mismatch after creating {desired['name']}")
                     existing_by_profile[profile] = refreshed
                 if args.enable_delivery and desired["kind"] == "aggregator" and _delivery(current) != [desired["delivery_enabled"]]:
@@ -408,7 +431,7 @@ def main() -> int:
                     prior = _delivery(current)
                     if len(prior) != 1:
                         raise Refusal("aggregator prior delivery is not singular")
-                    delivery_edits.append((profile, identifier, desired["name"], prior[0]))
+                    delivery_edits.append((profile, identifier, desired["name"], prior[0], desired["delivery_enabled"]))
                     _run_hermes(binary, profile, ["cron", "edit", identifier, "--deliver", desired["delivery_enabled"]])
                     refreshed = _read_jobs(_job_store(base, profile))
                     current = next((job for job in refreshed if job.get("name") == desired["name"]), None)

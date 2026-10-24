@@ -181,6 +181,19 @@ class RepositoryContractTests(unittest.TestCase):
             self.assertTrue(any("xox workspace" in error and "more-notes" in error for error in errors), errors)
             self.assertTrue(any("absolute /home" in error for error in errors), errors)
 
+    def test_verifier_rejects_case_insensitive_discordapp_webhook_with_443(self):
+        verifier = load_verifier()
+        with tempfile.TemporaryDirectory() as tmp:
+            copy = Path(tmp) / "repo"
+            shutil.copytree(ROOT, copy, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+            credential = "HTTPS://PTB.DiscordApp.Com:443/api/webhooks/" + "2" * 18 + "/" + "X" * 60
+            (copy / "mixed-case-webhook.txt").write_text(credential, encoding="utf-8")
+            errors = verifier.validate_repository(copy)
+            self.assertTrue(
+                any("Discord webhook credential" in error and "mixed-case-webhook.txt" in error for error in errors),
+                errors,
+            )
+
     def test_verifier_rejects_unsafe_profile_mapping_and_workspace_traversal(self):
         verifier = load_verifier()
         with tempfile.TemporaryDirectory() as tmp:

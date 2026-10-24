@@ -512,6 +512,22 @@ class ScoutSetupTests(unittest.TestCase):
                 self.setup._install_collector_atomic(destination, source)
             self.assertEqual("attacker", temporary.read_text(encoding="utf-8"))
 
+    def test_collector_publication_preserves_destination_created_after_preflight(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); source = root / "source.py"; destination = root / "collector.py"
+            source.write_text("safe", encoding="utf-8")
+            real_link = os.link
+
+            def race(source_path, destination_path, **kwargs):
+                destination.write_text("concurrent", encoding="utf-8")
+                return real_link(source_path, destination_path, **kwargs)
+
+            with mock.patch.object(self.setup.os, "link", side_effect=race):
+                with self.assertRaisesRegex(self.setup.Refusal, "preserved it.*manual recovery required"):
+                    self.setup._install_collector_atomic(destination, source)
+            self.assertEqual("concurrent", destination.read_text(encoding="utf-8"))
+            self.assertFalse(destination.with_suffix(".tmp").exists())
+
     def test_collector_rollback_preserves_replacement_same_content_inode(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); source = root / "source.py"; destination = root / "collector.py"
@@ -597,10 +613,26 @@ class ScoutSetupTests(unittest.TestCase):
             concurrent = [job for job in all_jobs if job.get("id") == "cccccccccccc"]
             self.assertEqual(1, len(concurrent), all_jobs)
             self.assertEqual(self.setup.EXPECTED_JOBS[1]["name"], concurrent[0]["name"])
+            self.assertFalse({"000000000001", "000000000002"} & {job.get("id") for job in all_jobs}, all_jobs)
             self.assertFalse((home / ".hermes/scripts/skill-scout-collect.py").exists())
             calls = [json.loads(line) for line in log.read_text().splitlines()]
             self.assertEqual({"000000000001", "000000000002"}, {call[-1] for call in calls if call[2:4] == ["cron", "remove"]})
             self.assertNotIn("cccccccccccc", {call[-1] for call in calls if call[2:4] == ["cron", "remove"]})
+
+    def test_delivery_rollback_preserves_concurrent_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); state = root / "state"; state.mkdir()
+            current = {"id": "abcdef123456", "name": "nix-skill-scout-aggregate", "deliver": ["telegram:concurrent"]}
+            (state / "default.json").write_text(json.dumps([current]), encoding="utf-8")
+            with mock.patch.dict(os.environ, {"HERMES_SCOUT_TEST_STORE": str(state), "NIX_OS_SCOUT_TEST_MODE": "1"}):
+                failures = self.setup._rollback(
+                    "/missing/hermes", root, [], [],
+                    [("default", current["id"], current["name"], "local", "telegram:6926015052")],
+                    root / "collector.py", None,
+                )
+            preserved = json.loads((state / "default.json").read_text(encoding="utf-8"))[0]
+            self.assertEqual(["telegram:concurrent"], preserved["deliver"])
+            self.assertTrue(any("preserved concurrent value; manual recovery required" in failure for failure in failures), failures)
 
     def test_preview_create_readback_idempotence_and_drift_refusal(self):
         with tempfile.TemporaryDirectory() as tmp:
