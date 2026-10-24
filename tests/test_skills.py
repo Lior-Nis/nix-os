@@ -885,6 +885,14 @@ class ScoutTests(unittest.TestCase):
             self.assertEqual("invalid", result["status"])
             self.assertTrue(any("nesting" in error for error in result["errors"]))
 
+    def test_aggregate_prompt_requires_concise_semantic_deduplication(self):
+        prompt = (ROOT / "automation/skill-scout/aggregate-prompt.md").read_text(encoding="utf-8")
+        self.assertIn("exactly one best candidate per capability", prompt)
+        self.assertIn("Do not print raw evidence URLs", prompt)
+        self.assertIn("under 20 lines", prompt)
+        self.assertIn("Union the relevant `reported_by` profiles", prompt)
+        self.assertIn("Never install", prompt)
+
     def test_scout_prompt_is_self_contained_and_names_every_field(self):
         prompt = (ROOT / "automation/skill-scout/scout-prompt.md").read_text(encoding="utf-8")
         for field in self.collect.PACKET_FIELDS | self.collect.CANDIDATE_FIELDS | set(self.collect.SCORE_LIMITS) | set(self.collect.HARD_GATES):
