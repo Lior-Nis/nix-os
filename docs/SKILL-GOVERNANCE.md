@@ -23,7 +23,9 @@ Every one of the 41 skills in the pinned NixKit source manifest belongs semantic
 - **Task-only:** may be considered for a bounded, approved task but is not continuously loaded.
 - **Excluded:** conflicts with Hermes-native workflows, duplicates stronger controls, or is intentionally outside the operating model.
 
-The baseline is `verification-before-completion`. LNX adds orchestration and handoff. Project leads add ideation, domain/spec/ticket/codebase design, review reception, handoff, and public research. Engineering adds execution/worktree/branch completion, review reception, and codebase design. UX persistently receives only `frontend-design`; Growth receives public research.
+The baseline is `verification-before-completion`. LNX adds orchestration and handoff. Project leads add ideation, domain/spec/ticket/codebase design, review reception, and handoff. Engineering adds execution/worktree/branch completion, review reception, and codebase design. UX persistently receives only `frontend-design`.
+
+The NixKit root skill named `research` is excluded from persistent packs. Hermes already uses `skills/research/` as a category directory containing narrower reviewed research skills, so installing a different root skill at that pathname would violate non-duplication and no-overwrite guarantees. Project leads and Growth retain their existing role-appropriate Hermes research-category skills; the empty `public-research` pack records that intentional compatibility boundary.
 
 Two otherwise useful skills remain task-only because their pinned skill text delegates to mutable dependencies at runtime: `web-design-guidelines` fetches latest rules, and `find-docs` invokes `npx ctx7@latest`. Persistent assignment would undermine the immutable-source policy. They can move into a role pack only after an immutable dependency policy is implemented and reviewed.
 
