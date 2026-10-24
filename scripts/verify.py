@@ -40,7 +40,7 @@ EXPECTED_PROFILES = {
     "meabeclickeng", "meabeclickgrowth",
 }
 EXPECTED_PROJECTS = {"pulse", "algua", "meabeclick"}
-NIXKIT_COMMIT = "3e68b83a0c88fb0d895a4de44b5ba817518321b6"
+NIXKIT_COMMIT = "5d9ac621d4b2862c94ff8aa419f2f9fc6c9f68f4"
 NIXKIT_SOURCES_SHA256 = "8c465cac697c5dc90a37e3a75242bac2f178c8768d7181883a3b9d673670b656"
 NIXKIT_SKILLS = {
     "using-superpowers", "brainstorming", "writing-plans", "executing-plans",

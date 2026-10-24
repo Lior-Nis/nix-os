@@ -2,7 +2,7 @@
   "schema_version": 1,
   "nixkit": {
     "repository": "https://github.com/its-nix/kit.git",
-    "commit": "3e68b83a0c88fb0d895a4de44b5ba817518321b6",
+    "commit": "5d9ac621d4b2862c94ff8aa419f2f9fc6c9f68f4",
     "sources_sha256": "8c465cac697c5dc90a37e3a75242bac2f178c8768d7181883a3b9d673670b656",
     "node_runtime": "24.22.1"
   },
