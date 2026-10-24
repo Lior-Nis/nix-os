@@ -46,7 +46,7 @@
     "meabeclickgrowth": ["baseline-evidence", "public-research"]
   },
   "approved_additions": {
-    "lnx": [],
+    "lnx": ["caveman"],
     "pulse": [],
     "algua": [],
     "meabeclick": [],

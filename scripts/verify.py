@@ -78,6 +78,15 @@ EXPECTED_PACK_ASSIGNMENTS = {
     "meabeclickeng": ["baseline-evidence", "engineering-delivery"],
     "meabeclickgrowth": ["baseline-evidence", "public-research"],
 }
+EXPECTED_APPROVED_ADDITIONS = {
+    "lnx": ["caveman"],
+    "pulse": [],
+    "algua": [],
+    "meabeclick": [],
+    "meabeclickux": [],
+    "meabeclickeng": [],
+    "meabeclickgrowth": [],
+}
 HARD_GATES = {"relevance", "provenance", "reliability", "safety_privacy", "license", "hermes_compatibility", "non_duplication"}
 SCORE_LIMITS = {
     "role_value": 30, "evidence_quality": 20, "security_provenance": 20,
@@ -376,8 +385,8 @@ def _validate_skills(root: Path, manifest: dict[str, Any], errors: list[str]) ->
     if packs.get("profiles") != EXPECTED_PACK_ASSIGNMENTS:
         errors.append("profile pack assignments must match all seven explicit role mappings")
     approved_additions = packs.get("approved_additions")
-    if approved_additions != {profile: [] for profile in EXPECTED_PROFILES}:
-        errors.append("initial approved_additions must be empty for every profile; future additions require a reviewed verifier/manifest PR and Lior approval")
+    if approved_additions != EXPECTED_APPROVED_ADDITIONS:
+        errors.append("approved additions must match the exact reviewed profile-specific set")
     if any(name in {"global", "universal", "all", "*"} for name in (packs.get("packs") or {})):
         errors.append("wildcard/global/universal skill packs are forbidden")
     persistent = set().union(*(set(values) for values in EXPECTED_PACKS.values()))

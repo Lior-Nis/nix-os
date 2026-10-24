@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "proposal_id": "lnx-caveman-d8ede5cf",
+  "profile": "lnx",
+  "name": "caveman",
+  "summary": "Adds a terse answer-first response style that removes ceremony while preserving technical facts, exact identifiers, commands, paths, numbers, errors, and necessary safety language.",
+  "rationale": "Lior explicitly requested Caveman for LNX only because LNX responses are too long. The skill directly addresses that preference without granting tools, credentials, network access, or authority to other profiles.",
+  "source_url": "https://github.com/JuliusBrussee/caveman/tree/d8ede5cf0c27cc86a074c3224bcbba280a76c60e/skills/caveman",
+  "repository": "JuliusBrussee/caveman",
+  "skill_path": "skills/caveman",
+  "revision": "d8ede5cf0c27cc86a074c3224bcbba280a76c60e",
+  "license": "Apache-2.0, verified directly from the immutable LICENSE at the pinned revision.",
+  "evidence_urls": [
+    "https://github.com/JuliusBrussee/caveman/tree/d8ede5cf0c27cc86a074c3224bcbba280a76c60e/skills/caveman",
+    "https://github.com/JuliusBrussee/caveman/blob/d8ede5cf0c27cc86a074c3224bcbba280a76c60e/LICENSE",
+    "https://github.com/JuliusBrussee/caveman/blob/d8ede5cf0c27cc86a074c3224bcbba280a76c60e/skills/caveman/README.md"
+  ],
+  "risks": [
+    "Persistent terse mode can overcompress nuanced explanations; the skill explicitly restores plain prose for security, irreversible actions, ambiguous sequences, user confusion, and external persisted content.",
+    "The upstream repository contains hooks, binaries, and additional components, but NixKit installs only the selected caveman skill directory as an isolated profile-local copy.",
+    "The selected skill mentions ultracave and megacave aliases, but those sibling skills are not part of this approval and will not be installed; basic Caveman behavior is unaffected.",
+    "Response style remains model-dependent and published token savings for basic caveman mode are modest."
+  ],
+  "score_components": {
+    "role_value": 30,
+    "evidence_quality": 18,
+    "security_provenance": 19,
+    "hermes_compatibility": 15,
+    "maintenance": 8,
+    "documentation_license": 4
+  },
+  "score": 94,
+  "gates": {
+    "relevance": true,
+    "provenance": true,
+    "reliability": true,
+    "safety_privacy": true,
+    "license": true,
+    "hermes_compatibility": true,
+    "non_duplication": true
+  },
+  "gate_evidence": {
+    "relevance": "Lior explicitly requested this exact skill for LNX only to make responses shorter.",
+    "provenance": "The NixKit catalog pins JuliusBrussee/caveman to full commit d8ede5cf0c27cc86a074c3224bcbba280a76c60e; GitHub reports the commit signature as verified.",
+    "reliability": "The public repository is active and widely adopted, with current CI and extensive tests; the selected skill is a small declarative instruction set rather than executable code.",
+    "safety_privacy": "The selected skill directory contains only SKILL.md and README.md. It requests no credentials, network access, filesystem access, or external side effects, and preserves full prose for safety-critical situations.",
+    "license": "The pinned root LICENSE contains the Apache License 2.0 text and is included as immutable same-revision evidence.",
+    "hermes_compatibility": "The pinned repository includes a Hermes profile and the selected skill uses standard SKILL.md frontmatter and plain behavioral instructions; NixKit installs it as an isolated Hermes copy.",
+    "non_duplication": "No active LNX skill provides the same persistent answer-first terse-response mode. General style preferences and existing skills do not duplicate its explicit payload-preservation and safety exceptions."
+  },
+  "status": "candidate"
+}
