@@ -27,6 +27,7 @@ REQUIRED_FILES = {
     "skills/packs.json",
     "skills/proposal.schema.json",
     "skills/approval.schema.json",
+    "skills/proposals/lnx-watch-a9cb5b57.json",
     "automation/skill-scout/jobs.json",
     "automation/skill-scout/report.schema.json",
     "automation/skill-scout/scout-prompt.md",
@@ -42,8 +43,8 @@ EXPECTED_PROFILES = {
     "meabeclickeng", "meabeclickgrowth",
 }
 EXPECTED_PROJECTS = {"pulse", "algua", "meabeclick"}
-NIXKIT_COMMIT = "5d9ac621d4b2862c94ff8aa419f2f9fc6c9f68f4"
-NIXKIT_SOURCES_SHA256 = "8c465cac697c5dc90a37e3a75242bac2f178c8768d7181883a3b9d673670b656"
+NIXKIT_COMMIT = "a9cb5b576097301ee63485649d5703db7479ad8f"
+NIXKIT_SOURCES_SHA256 = "6493103af689bdf4bae5455e1d901646fe079e51a69c53b6f5bcf57c62786d21"
 CANONICAL_SCHEMA_SHA256 = {
     "skills/proposal.schema.json": "d3c84a31c6460bd566ec7e8e5c0c7cabf106100e336b4c81ea05fbb2a6d28ce1",
     "skills/approval.schema.json": "eeb84ee9c84b3f45eff0ae807586d0a6cc2d35309b46fb7f7fbca696acfda1b7",
@@ -60,6 +61,8 @@ NIXKIT_SKILLS = {
     "remotion-best-practices", "auto-editor", "auto-editor-effects", "auto-editor-export",
     "auto-editor-transcribe", "obsidian-markdown", "qmd", "gws-shared", "gws-drive",
     "gws-docs", "gws-drive-upload", "gws-docs-write", "find-docs",
+    "lnx-grilling", "lnx-grill-me", "lnx-domain-modeling", "lnx-grill-with-docs",
+    "lnx-to-spec", "lnx-writing-for-agents", "nix-idea-to-mvp", "watch",
 }
 EXPECTED_PACKS = {
     "baseline-evidence": ["verification-before-completion"],
@@ -79,7 +82,7 @@ EXPECTED_PACK_ASSIGNMENTS = {
     "meabeclickgrowth": ["baseline-evidence", "public-research"],
 }
 EXPECTED_APPROVED_ADDITIONS = {
-    "lnx": ["caveman"],
+    "lnx": ["caveman", "watch"],
     "pulse": [],
     "algua": [],
     "meabeclick": [],
@@ -387,6 +390,44 @@ def _validate_skills(root: Path, manifest: dict[str, Any], errors: list[str]) ->
     approved_additions = packs.get("approved_additions")
     if approved_additions != EXPECTED_APPROVED_ADDITIONS:
         errors.append("approved additions must match the exact reviewed profile-specific set")
+    watch_proposal = _load_json_object(root / "skills/proposals/lnx-watch-a9cb5b57.json", "Watch proposal", errors)
+    watch_revision = NIXKIT_COMMIT
+    watch_source = f"https://github.com/its-nix/kit/tree/{watch_revision}/skills/watch"
+    watch_license = f"https://github.com/its-nix/kit/blob/{watch_revision}/skills/watch/LICENSE"
+    watch_notice = f"https://github.com/its-nix/kit/blob/{watch_revision}/skills/watch/NOTICE.md"
+    if watch_proposal:
+        identity = tuple(watch_proposal.get(field) for field in ("proposal_id", "profile", "name", "repository", "skill_path", "revision", "source_url", "status"))
+        expected_identity = ("lnx-watch-a9cb5b57", "lnx", "watch", "its-nix/kit", "skills/watch", watch_revision, watch_source, "candidate")
+        if identity != expected_identity:
+            errors.append("Watch proposal identity must bind the exact local repository, revision, path, and candidate status")
+        evidence = watch_proposal.get("evidence_urls")
+        if not isinstance(evidence, list) or not {watch_source, watch_license, watch_notice} <= set(evidence):
+            errors.append("Watch proposal must include immutable tree, LICENSE, and NOTICE evidence")
+        components = watch_proposal.get("score_components")
+        if not isinstance(components, dict) or set(components) != set(SCORE_LIMITS) or any(isinstance(components[key], bool) or not isinstance(components[key], int) or not 0 <= components[key] <= SCORE_LIMITS[key] for key in SCORE_LIMITS) or watch_proposal.get("score") != sum(components.values()) or watch_proposal.get("score", 0) < 80:
+            errors.append("Watch proposal must have a valid conservative score of at least 80")
+        if watch_proposal.get("gates") != {gate: True for gate in HARD_GATES} or not isinstance(watch_proposal.get("gate_evidence"), dict) or set(watch_proposal["gate_evidence"]) != HARD_GATES or any(not isinstance(value, str) or not value.strip() for value in watch_proposal["gate_evidence"].values()):
+            errors.append("Watch proposal must pass all hard gates with evidence")
+        risk_text = " ".join(watch_proposal.get("risks", [])).lower() if isinstance(watch_proposal.get("risks"), list) else ""
+        if any(term not in risk_text for term in ("youtube", "dependencies", "model provider", "2 gib", "four hours", "cached", "login", "cookies", "proxy", "paywall")):
+            errors.append("Watch proposal must document all reviewed acquisition, dependency, egress, resource, model, and access risks")
+        provenance = str((watch_proposal.get("gate_evidence") or {}).get("provenance", ""))
+        if "64685da3912a54d5f672c4bdce0e89b69b4cd6c8" not in provenance:
+            errors.append("Watch proposal must record the immutable audited Watch Git tree")
+    watch_receipt_path = root / "skills/approvals/lnx-watch-a9cb5b57.json"
+    if watch_receipt_path.exists():
+        watch_receipt = _load_json_object(watch_receipt_path, "Watch approval receipt", errors)
+        expected_receipt = {
+            "schema_version": 1,
+            "proposal_id": "lnx-watch-a9cb5b57",
+            "profile": "lnx",
+            "skills": ["watch"],
+            "approved_by": "Lior",
+            "approved_at": "2026-10-24T16:20:00+03:00",
+            "manifest_commit": "999cc615cd45c11b5ba10f9d02ff837171c68584",
+        }
+        if watch_receipt != expected_receipt:
+            errors.append("Watch approval receipt must exactly bind Lior's decision to the reviewed proposal/manifest commit")
     if any(name in {"global", "universal", "all", "*"} for name in (packs.get("packs") or {})):
         errors.append("wildcard/global/universal skill packs are forbidden")
     persistent = set().union(*(set(values) for values in EXPECTED_PACKS.values()))
@@ -401,9 +442,14 @@ def _validate_skills(root: Path, manifest: dict[str, Any], errors: list[str]) ->
         if persistent & task or persistent & omit or task & omit:
             errors.append("persistent, task-only, and excluded classifications must be disjoint")
         if persistent | task | omit != NIXKIT_SKILLS:
-            errors.append("all 41 NixKit skills must be classified exactly once semantically")
+            errors.append("all 49 NixKit skills must be classified exactly once semantically")
         if not {"web-design-guidelines", "find-docs"} <= task:
             errors.append("mutable-latest web-design-guidelines and find-docs must remain task-only")
+        namespaced = {"lnx-grilling", "lnx-grill-me", "lnx-domain-modeling", "lnx-grill-with-docs", "lnx-to-spec", "lnx-writing-for-agents", "nix-idea-to-mvp"}
+        if not namespaced <= task:
+            errors.append("the seven new namespaced NixKit skills must remain explicitly task-only")
+        if "watch" not in task:
+            errors.append("watch must remain task-only while separately approved for LNX")
     governance = packs.get("governance")
     if not isinstance(governance, dict) or set(governance.get("hard_gates", [])) != HARD_GATES:
         errors.append("skill governance must declare all seven hard gates")

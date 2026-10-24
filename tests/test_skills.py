@@ -26,11 +26,11 @@ def load_module(name: str, path: Path):
 class PackContractTests(unittest.TestCase):
     def test_exact_profiles_pin_and_complete_skill_classification(self):
         packs = json.loads((ROOT / "skills/packs.json").read_text(encoding="utf-8"))
-        self.assertEqual("5d9ac621d4b2862c94ff8aa419f2f9fc6c9f68f4", packs["nixkit"]["commit"])
+        self.assertEqual("a9cb5b576097301ee63485649d5703db7479ad8f", packs["nixkit"]["commit"])
         self.assertEqual(64, len(packs["nixkit"]["sources_sha256"]))
         self.assertEqual("24.22.1", packs["nixkit"]["node_runtime"])
         self.assertEqual(PROFILES, set(packs["profiles"]))
-        self.assertEqual(["caveman"], packs["approved_additions"]["lnx"])
+        self.assertEqual(["caveman", "watch"], packs["approved_additions"]["lnx"])
         self.assertTrue(all(not additions for profile, additions in packs["approved_additions"].items() if profile != "lnx"))
         self.assertNotIn("global", packs["packs"])
         self.assertEqual([], packs["packs"]["public-research"])
@@ -50,13 +50,14 @@ class PackContractTests(unittest.TestCase):
         self.assertFalse(persistent & task_only)
         self.assertFalse(persistent & excluded)
         self.assertFalse(task_only & excluded)
-        self.assertEqual(41, len(persistent | task_only | excluded))
+        self.assertEqual(49, len(persistent | task_only | excluded))
+        self.assertTrue({"lnx-grilling", "lnx-grill-me", "lnx-domain-modeling", "lnx-grill-with-docs", "lnx-to-spec", "lnx-writing-for-agents", "nix-idea-to-mvp", "watch"} <= task_only)
 
     def test_lnx_caveman_proposal_matches_pinned_source_and_policy(self):
         installer = load_module("skill_installer_caveman_proposal", ROOT / "scripts/install-skills.py")
         manifest = json.loads((ROOT / "skills/packs.json").read_text(encoding="utf-8"))
         proposal = json.loads((ROOT / "skills/proposals/lnx-caveman-d8ede5cf.json").read_text(encoding="utf-8"))
-        catalog = {"caveman": ("JuliusBrussee/caveman", "d8ede5cf0c27cc86a074c3224bcbba280a76c60e")}
+        catalog = {"caveman": ("JuliusBrussee/caveman", "d8ede5cf0c27cc86a074c3224bcbba280a76c60e", None)}
         installer._validate_proposal(
             proposal,
             "lnx-caveman-d8ede5cf",
@@ -72,12 +73,48 @@ class PackContractTests(unittest.TestCase):
             catalog,
         )
 
+    def test_lnx_watch_proposal_matches_exact_local_source_and_policy(self):
+        installer = load_module("skill_installer_watch_proposal", ROOT / "scripts/install-skills.py")
+        proposal = json.loads((ROOT / "skills/proposals/lnx-watch-a9cb5b57.json").read_text(encoding="utf-8"))
+        catalog = {"watch": ("its-nix/kit", installer.NIXKIT_COMMIT, "skills/watch")}
+        installer._validate_proposal(proposal, "lnx-watch-a9cb5b57", "lnx", {"watch"}, catalog)
+        self.assertGreaterEqual(proposal["score"], 80)
+        risk_text = " ".join(proposal["risks"]).lower()
+        for required in ("youtube", "dependencies", "model provider", "2 gib", "four hours", "cached", "login", "cookies", "proxy", "paywall"):
+            self.assertIn(required, risk_text)
+        wrong_path = json.loads(json.dumps(proposal))
+        wrong_path["skill_path"] = "skills/other"
+        wrong_path["source_url"] = wrong_path["source_url"].replace("skills/watch", "skills/other")
+        with self.assertRaisesRegex(installer.Refusal, "exact audited repository path"):
+            installer._validate_proposal(wrong_path, "lnx-watch-a9cb5b57", "lnx", {"watch"}, catalog)
+
+    def test_source_catalog_accepts_only_exact_audited_local_discriminator(self):
+        installer = load_module("skill_installer_local_catalog", ROOT / "scripts/install-skills.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "sources.json"
+            remote = sorted(installer.NIXKIT_SKILLS - {"watch"})
+            valid = [{"repo": "example/catalog", "ref": "a" * 40, "skills": remote}, {"local": "skills", "skills": ["watch"]}]
+            path.write_text(json.dumps(valid), encoding="utf-8")
+            catalog = installer._source_catalog(path)
+            self.assertEqual(("its-nix/kit", installer.NIXKIT_COMMIT, "skills/watch"), catalog["watch"])
+            mutations = (
+                [{"repo": "example/catalog", "ref": "a" * 40, "skills": remote + ["watch"]}],
+                [valid[0], {"local": "skills", "skills": ["watch"], "ref": "a" * 40}],
+                [valid[0], {"local": "other", "skills": ["watch"]}],
+                [valid[0], {"local": "skills", "skills": ["watch", "caveman"]}],
+            )
+            for changed in mutations:
+                path.write_text(json.dumps(changed), encoding="utf-8")
+                with self.assertRaises(installer.Refusal):
+                    installer._source_catalog(path)
+
     def test_installer_compile_time_pin_and_topology_match_canonical_manifest(self):
         installer = load_module("skill_installer_contract", ROOT / "scripts/install-skills.py")
         manifest = json.loads((ROOT / "skills/packs.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["nixkit"]["repository"], installer.NIXKIT_REPOSITORY)
         self.assertEqual(manifest["nixkit"]["commit"], installer.NIXKIT_COMMIT)
         self.assertEqual(manifest["nixkit"]["sources_sha256"], installer.NIXKIT_SOURCES_SHA256)
+        self.assertEqual({"skills/watch": "64685da3912a54d5f672c4bdce0e89b69b4cd6c8"}, installer.NIXKIT_LOCAL_TREES)
         self.assertEqual(manifest["nixkit"]["node_runtime"], installer.NODE_RUNTIME)
         self.assertEqual(manifest["packs"], installer.EXPECTED_PACKS)
         self.assertEqual(manifest["profiles"], installer.EXPECTED_ASSIGNMENTS)
@@ -110,12 +147,20 @@ class SkillInstallerTests(unittest.TestCase):
             for skill in values
         } | set(packs["task_only"]) | set(packs["excluded"]))
         source_skills.remove("agent-browser")
+        source_skills.remove("watch")
         sources = [
             {"repo": "example/source", "ref": "b" * 40, "skills": source_skills},
             {"repo": "vercel-labs/agent-browser", "ref": "dac13bb87468fe9d74a040d862720f6cc17a9565", "skills": ["agent-browser"]},
+            {"local": "skills", "skills": ["watch"]},
         ]
         (kit / "sources.json").write_text(json.dumps(sources), encoding="utf-8")
         (kit / "install.mjs").write_text("// fixture: execution is intercepted by fake npx\n", encoding="utf-8")
+        (kit / ".gitignore").write_text("/skills/watch/ignored.payload\n", encoding="utf-8")
+        (kit / "skills/watch").mkdir(parents=True)
+        (kit / "skills/watch/SKILL.md").write_text("---\nname: watch\n---\n", encoding="utf-8")
+        helper = kit / "skills/watch/helper.py"
+        helper.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+        helper.chmod(0o755)
         bin_dir = base / "bin"
         bin_dir.mkdir()
         fake = bin_dir / "npx"
@@ -131,6 +176,7 @@ class SkillInstallerTests(unittest.TestCase):
         subprocess.run(["git", "add", "."], cwd=kit, check=True)
         subprocess.run(["git", "commit", "-qm", "fixture"], cwd=kit, check=True)
         commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=kit, text=True).strip()
+        watch_tree = subprocess.check_output(["git", "rev-parse", f"{commit}:skills/watch"], cwd=kit, text=True).strip()
         packs["nixkit"]["commit"] = commit
         import hashlib
         packs["nixkit"]["sources_sha256"] = hashlib.sha256((kit / "sources.json").read_bytes()).hexdigest()
@@ -139,8 +185,9 @@ class SkillInstallerTests(unittest.TestCase):
         (fixture_root / "skills").mkdir()
         script = fixture_root / "scripts/install-skills.py"
         source = self.script.read_text(encoding="utf-8")
-        source = source.replace("5d9ac621d4b2862c94ff8aa419f2f9fc6c9f68f4", commit)
-        source = source.replace("8c465cac697c5dc90a37e3a75242bac2f178c8768d7181883a3b9d673670b656", packs["nixkit"]["sources_sha256"])
+        source = source.replace("a9cb5b576097301ee63485649d5703db7479ad8f", commit)
+        source = source.replace("6493103af689bdf4bae5455e1d901646fe079e51a69c53b6f5bcf57c62786d21", packs["nixkit"]["sources_sha256"])
+        source = source.replace("64685da3912a54d5f672c4bdce0e89b69b4cd6c8", watch_tree)
         script.write_text(source, encoding="utf-8")
         manifest = fixture_root / "skills/packs.json"
         manifest.write_text(json.dumps(packs), encoding="utf-8")
@@ -199,6 +246,22 @@ class SkillInstallerTests(unittest.TestCase):
             self.assertNotEqual(0, result.returncode)
             self.assertIn("approval", result.stderr)
 
+    def test_rejects_ignored_file_inside_pinned_local_tree_without_invoking_nixkit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            home, hermes_home, kit, manifest, script, fixture_root, env = self._fixture(base)
+            ignored = kit / "skills/watch/ignored.payload"
+            ignored.write_text("not in reviewed Git tree", encoding="utf-8")
+            self.assertEqual("", subprocess.check_output(
+                ["git", "status", "--porcelain", "--untracked-files=all"], cwd=kit, text=True
+            ))
+            command = ["python3", str(script), "--nixkit", str(kit), "--profile", "pulse"]
+            result = subprocess.run(command, cwd=fixture_root, env=env, text=True, capture_output=True)
+            self.assertEqual(2, result.returncode)
+            self.assertIn("file set differs from Git tree", result.stderr)
+            self.assertFalse((base / "calls.json").exists(), "NixKit must not run after exact-tree refusal")
+            self.assertFalse(hermes_home.exists(), "refused payload must not be copied into a profile")
+
     def test_two_commit_approval_loads_manifest_and_proposal_from_ancestor(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
@@ -230,6 +293,79 @@ class SkillInstallerTests(unittest.TestCase):
             dirty = subprocess.run(command, cwd=fixture_root, env=env, text=True, capture_output=True)
             self.assertNotEqual(0, dirty.returncode); self.assertIn("dirty", dirty.stderr)
 
+    def test_main_requires_exact_disjoint_multi_receipt_coverage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            home, hermes_home, kit, manifest_path, script, fixture_root, env = self._fixture(base)
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["approved_additions"]["lnx"] = ["caveman", "watch"]
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            kit_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=kit, text=True).strip()
+
+            def proposal(proposal_id, profile, name, repository, revision, skill_path):
+                source = f"https://github.com/{repository}/tree/{revision}/{skill_path}"
+                return {
+                    "schema_version": 1, "proposal_id": proposal_id, "profile": profile, "name": name,
+                    "summary": f"Audited {name} skill", "rationale": "Fills a reviewed role gap",
+                    "source_url": source, "repository": repository, "skill_path": skill_path,
+                    "revision": revision, "license": "MIT",
+                    "evidence_urls": [source, f"https://github.com/{repository}/blob/{revision}/LICENSE"],
+                    "risks": [],
+                    "score_components": {"role_value": 27, "evidence_quality": 18, "security_provenance": 18, "hermes_compatibility": 14, "maintenance": 9, "documentation_license": 4},
+                    "score": 90, "gates": {gate: True for gate in ("relevance", "provenance", "reliability", "safety_privacy", "license", "hermes_compatibility", "non_duplication")},
+                    "gate_evidence": {gate: "Reviewed evidence" for gate in ("relevance", "provenance", "reliability", "safety_privacy", "license", "hermes_compatibility", "non_duplication")},
+                    "status": "candidate",
+                }
+
+            proposals = fixture_root / "skills/proposals"
+            proposals.mkdir()
+            records = {
+                "lnx-caveman": proposal("lnx-caveman", "lnx", "caveman", "example/source", "b" * 40, "skills/caveman"),
+                "lnx-watch": proposal("lnx-watch", "lnx", "watch", "its-nix/kit", kit_commit, "skills/watch"),
+                "pulse-watch": proposal("pulse-watch", "pulse", "watch", "its-nix/kit", kit_commit, "skills/watch"),
+                "lnx-cross-skill": proposal("lnx-cross-skill", "lnx", "caveman", "example/source", "b" * 40, "skills/caveman"),
+            }
+            for proposal_id, record in records.items():
+                (proposals / f"{proposal_id}.json").write_text(json.dumps(record), encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=fixture_root, check=True)
+            subprocess.run(["git", "commit", "-qm", "propose two skills"], cwd=fixture_root, check=True)
+            manifest_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=fixture_root, text=True).strip()
+
+            approvals = fixture_root / "skills/approvals"
+            approvals.mkdir()
+            def receipt(proposal_id, profile, skills):
+                return {"schema_version": 1, "proposal_id": proposal_id, "profile": profile, "skills": skills, "approved_by": "Lior", "approved_at": "2026-10-24T15:00:00Z", "manifest_commit": manifest_commit}
+            receipt_records = {
+                "lnx-caveman": receipt("lnx-caveman", "lnx", ["caveman"]),
+                "lnx-watch": receipt("lnx-watch", "lnx", ["watch"]),
+                "pulse-watch": receipt("pulse-watch", "pulse", ["watch"]),
+                "lnx-cross-skill": receipt("lnx-cross-skill", "lnx", ["watch"]),
+            }
+            for proposal_id, record in receipt_records.items():
+                (approvals / f"{proposal_id}.json").write_text(json.dumps(record), encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=fixture_root, check=True)
+            subprocess.run(["git", "commit", "-qm", "record separate approvals"], cwd=fixture_root, check=True)
+
+            base_command = ["python3", str(script), "--nixkit", str(kit), "--profile", "lnx", "--skill", "caveman", "--skill", "watch"]
+            caveman = str(approvals / "lnx-caveman.json")
+            watch = str(approvals / "lnx-watch.json")
+            success = subprocess.run(base_command + ["--approval", caveman, "--approval", watch], cwd=fixture_root, env=env, text=True, capture_output=True)
+            self.assertEqual(0, success.returncode, success.stderr)
+            self.assertIn("caveman", success.stdout)
+            self.assertIn("watch", success.stdout)
+
+            cases = {
+                "missing": (["--approval", caveman], "exactly cover"),
+                "duplicate-overlap": (["--approval", caveman, "--approval", caveman, "--approval", watch], "disjoint"),
+                "cross-profile": (["--approval", caveman, "--approval", str(approvals / "pulse-watch.json")], "misbound"),
+                "cross-skill": (["--approval", caveman, "--approval", str(approvals / "lnx-cross-skill.json")], "identity/status/skills"),
+            }
+            for label, (arguments, message) in cases.items():
+                with self.subTest(label=label):
+                    result = subprocess.run(base_command + arguments, cwd=fixture_root, env=env, text=True, capture_output=True)
+                    self.assertEqual(2, result.returncode)
+                    self.assertIn(message, result.stderr)
+
     def test_proposal_requires_catalog_binding_and_exact_same_origin_license_url(self):
         installer = load_module("skill_installer_provenance", self.script)
         revision = "dac13bb87468fe9d74a040d862720f6cc17a9565"
@@ -244,10 +380,10 @@ class SkillInstallerTests(unittest.TestCase):
             "score": 90, "gates": {name: True for name in installer.HARD_GATES},
             "gate_evidence": {name: "Reviewed evidence" for name in installer.HARD_GATES}, "status": "candidate",
         }
-        catalog = {"agent-browser": (repository, revision)}
+        catalog = {"agent-browser": (repository, revision, None)}
         installer._validate_proposal(proposal, "pulse-agent-browser", "pulse", {"agent-browser"}, catalog)
         with self.assertRaisesRegex(installer.Refusal, "uniquely belong"):
-            installer._validate_proposal(proposal, "pulse-agent-browser", "pulse", {"agent-browser"}, {"agent-browser": ("evil/repo", revision)})
+            installer._validate_proposal(proposal, "pulse-agent-browser", "pulse", {"agent-browser"}, {"agent-browser": ("evil/repo", revision, None)})
         proposal["evidence_urls"][1] = f"https://github.com.evil.invalid/{repository}/blob/{revision}/LICENSE"
         with self.assertRaisesRegex(installer.Refusal, "same-origin"):
             installer._validate_proposal(proposal, "pulse-agent-browser", "pulse", {"agent-browser"}, catalog)
@@ -264,7 +400,7 @@ class SkillInstallerTests(unittest.TestCase):
             "score": 90, "gates": {gate: True for gate in installer.HARD_GATES},
             "gate_evidence": {gate: "Reviewed" for gate in installer.HARD_GATES}, "status": "candidate",
         }
-        catalog = {"useful": (repository, revision)}
+        catalog = {"useful": (repository, revision, None)}
         installer._validate_proposal(proposal, "pulse-useful", "pulse", {"useful"}, catalog)
         mutations = {
             "string-risks": lambda p: p.update(risks="not-a-list"),

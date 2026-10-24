@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "proposal_id": "lnx-watch-a9cb5b57",
+  "profile": "lnx",
+  "name": "watch",
+  "summary": "Adds a bounded, local-first workflow for turning an anonymous public YouTube video or an authorized existing local video into timestamped transcript and frame evidence.",
+  "rationale": "LNX needs reviewable evidence from public video without granting a browser login, cookies, proxying, paywall bypass, cloud transcription, or software-install authority. Watch provides a narrow acquisition and evidence-bundling workflow with explicit resource limits, immutable local provenance, and a clear model-data egress boundary.",
+  "source_url": "https://github.com/its-nix/kit/tree/a9cb5b576097301ee63485649d5703db7479ad8f/skills/watch",
+  "repository": "its-nix/kit",
+  "skill_path": "skills/watch",
+  "revision": "a9cb5b576097301ee63485649d5703db7479ad8f",
+  "license": "MIT for the derived Watch implementation, with immutable LICENSE and NOTICE evidence at the pinned NixKit revision; NOTICE identifies bradautomates/claude-video v0.3.2 commit 03ceb42f7fa2c4439aca01752118044baabffb8f and the substantive rewrite/removals.",
+  "evidence_urls": [
+    "https://github.com/its-nix/kit/tree/a9cb5b576097301ee63485649d5703db7479ad8f/skills/watch",
+    "https://github.com/its-nix/kit/blob/a9cb5b576097301ee63485649d5703db7479ad8f/skills/watch/LICENSE",
+    "https://github.com/its-nix/kit/blob/a9cb5b576097301ee63485649d5703db7479ad8f/skills/watch/NOTICE.md",
+    "https://github.com/its-nix/kit/blob/a9cb5b576097301ee63485649d5703db7479ad8f/skills/watch/SKILL.md"
+  ],
+  "risks": [
+    "YouTube behavior and yt-dlp compatibility can change; the skill fails closed when anonymous acquisition no longer works and permits only separately reviewed operator-managed yt-dlp updates.",
+    "The workflow depends on locally installed Python 3.11, Node.js 24, yt-dlp, ffmpeg, ffprobe, and the openai-whisper CLI; the skill neither installs nor updates these dependencies.",
+    "Acquisition and transcription are local, but transcripts or selected frames inspected by the host agent/model may cross the configured model provider data boundary; strict zero-egress analysis requires a separately reviewed local vision/model path and is not claimed.",
+    "YouTube media acquisition is bounded to 2 GiB aggregate transaction-owned media and four hours, so longer or larger sources are intentionally refused or produce only already-acquired partial evidence.",
+    "Whisper runs only with an already cached supported official checkpoint whose complete bytes match the reviewed SHA-256; a missing or mismatched model fails rather than downloading one.",
+    "The workflow supports no login, cookies, browser credentials, CAPTCHA solving, proxy use, private/member/age/DRM access, or paywall bypass; restricted sources require an authorized existing local file.",
+    "Video metadata, captions, transcript text, and pixels are untrusted evidence and can contain prompt injection or false claims; operators must cite timestamps and independently verify consequential claims."
+  ],
+  "score_components": {
+    "role_value": 28,
+    "evidence_quality": 18,
+    "security_provenance": 19,
+    "hermes_compatibility": 13,
+    "maintenance": 7,
+    "documentation_license": 5
+  },
+  "score": 90,
+  "gates": {
+    "relevance": true,
+    "provenance": true,
+    "reliability": true,
+    "safety_privacy": true,
+    "license": true,
+    "hermes_compatibility": true,
+    "non_duplication": true
+  },
+  "gate_evidence": {
+    "relevance": "LNX benefits from a reusable path to inspect public or authorized local video as timestamped evidence while preserving the operating model's bounded-task and human-approval boundaries.",
+    "provenance": "The sole local source record is exactly {local: skills, skills: [watch]}; Nix OS maps it to its-nix/kit commit a9cb5b576097301ee63485649d5703db7479ad8f and repository path skills/watch. The immutable Git tree object for that path is 64685da3912a54d5f672c4bdce0e89b69b4cd6c8.",
+    "reliability": "The pinned tree includes implementation modules and a dedicated unittest suite covering acquisition, captions, media budgets, frame selection, local Whisper checks, result states, and failure cleanup. Outputs are persistent evidence bundles with explicit COMPLETE, PARTIAL, FAILED, or BLOCKED status.",
+    "safety_privacy": "The skill is anonymous/local-first, ignores yt-dlp user configuration, disables remote components and proxy environment use, never reads cookies or credentials, never self-installs, applies fixed 2 GiB/four-hour media bounds, and documents that downstream model analysis may create a separate data-egress boundary.",
+    "license": "The immutable skills/watch/LICENSE contains the MIT terms and the immutable NOTICE.md records upstream attribution, exact upstream revision, and removed cloud/authentication/bypass behavior.",
+    "hermes_compatibility": "The skill uses standard SKILL.md frontmatter and invokes repository-contained Python 3.11 scripts. NixKit's Hermes path makes a detached transactionally staged, hash-verified copy; required external binaries are explicit local prerequisites rather than hidden installation actions.",
+    "non_duplication": "No currently assigned LNX skill provides bounded YouTube/local-video acquisition, local caption/Whisper transcription, timestamped frame extraction, and a persistent evidence bundle. General research and media-generation skills do not duplicate this evidence workflow."
+  },
+  "status": "candidate"
+}
