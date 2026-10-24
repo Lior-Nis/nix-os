@@ -25,7 +25,7 @@ def load_module(name: str, path: Path):
 class PackContractTests(unittest.TestCase):
     def test_exact_profiles_pin_and_complete_skill_classification(self):
         packs = json.loads((ROOT / "skills/packs.json").read_text(encoding="utf-8"))
-        self.assertEqual("4c86d1d9c9bceec88011fd40c977b92bb51f3a57", packs["nixkit"]["commit"])
+        self.assertEqual("cd1379bc7878b97b8a637728021b6e33a199154f", packs["nixkit"]["commit"])
         self.assertEqual(64, len(packs["nixkit"]["sources_sha256"]))
         self.assertEqual("24.22.1", packs["nixkit"]["node_runtime"])
         self.assertEqual(PROFILES, set(packs["profiles"]))
