@@ -553,6 +553,30 @@ class ScoutTests(unittest.TestCase):
             self.assertEqual("ok", result["status"])
             self.assertEqual(["skills/one", "skills/two"], [item["skill_path"] for item in result["candidates"]])
 
+    def test_collector_merges_role_specific_reports_for_same_skill(self):
+        week = "2026-W43"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = self._candidate()
+            second = self._candidate()
+            second["rationale"] = "A different profile-specific role gap"
+            second["score_components"]["role_value"] = 28
+            second["score"] = 91
+            second["license"] = "MIT; verified at the pinned revision."
+            second["risks"] = ["Profile-specific risk"]
+            second["evidence_urls"].append(
+                f"https://github.com/example/useful/blob/{'a' * 40}/skills/useful/SKILL.md"
+            )
+            self._write_week(root, week, {"lnx": [first], "pulse": [second]})
+            result = self.collect.collect_packets(root, week)
+            self.assertEqual("ok", result["status"], result)
+            self.assertEqual(1, len(result["candidates"]))
+            merged = result["candidates"][0]
+            self.assertEqual(["lnx", "pulse"], merged["reported_by"])
+            self.assertEqual(91, merged["score"])
+            self.assertEqual(["Profile-specific risk"], merged["risks"])
+            self.assertEqual(3, len(merged["evidence_urls"]))
+
     def test_collector_rejects_conflicting_duplicate_evidence(self):
         week = "2026-W43"
         with tempfile.TemporaryDirectory() as tmp:
@@ -594,7 +618,7 @@ class ScoutTests(unittest.TestCase):
             "sk-" + "A" * 40, "ghp_" + "A" * 30, "github" + "_pat_" + "B" * 60,
             "AKIA" + "A" * 16, discord, webhook, mixed_case_webhook, "discord_webhook_token=" + "T" * 60, "xox" + "b-" + "1" * 12 + "-" + "C" * 30,
             "xox" + "p-" + "2" * 12 + "-" + "D" * 30, "-----BEGIN" + " PRIVATE KEY-----",
-            "private/customer-payments/data.json", "bad\u0001control",
+            "private/customers/payments/data.json", "bad\u0001control",
         )
         for payload in payloads:
             with self.subTest(payload=payload[:12]), tempfile.TemporaryDirectory() as tmp:
@@ -606,6 +630,16 @@ class ScoutTests(unittest.TestCase):
                 self.assertNotIn(payload, self.collect.render_for_aggregator(result))
         ordinary = "https://github.com/example/repo/commit/" + "a" * 40
         self.assertEqual([], self.collect._screen_text(ordinary, "ordinary"))
+
+    def test_collector_allows_public_customer_research_skill_metadata(self):
+        week = "2026-W43"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            candidate = self._candidate(name="customer-research", path="skills/customer-research")
+            self._write_week(root, week, {"lnx": [candidate]})
+            result = self.collect.collect_packets(root, week)
+            self.assertEqual("ok", result["status"], result)
+            self.assertEqual(["customer-research"], [item["name"] for item in result["candidates"]])
 
     def test_collector_rejects_oversized_packet_and_bounds_rendering(self):
         week = "2026-W43"

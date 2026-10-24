@@ -56,7 +56,10 @@ SECRET_PATTERNS = {
     "Stripe key": re.compile(r"\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b"),
     "Google API key": re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"),
 }
-PROTECTED_PATH = re.compile(r"(?i)(?:^|[/_.-])(?:students?|customers?|payments?|pricing|cardholders?|invoices?)(?:[/_.-]|$)")
+PROTECTED_PATH = re.compile(
+    r"(?i)(?:^|[/\\])(?:students?|customers?|payments?|pricing|cardholders?|invoices?)"
+    r"(?:[/\\]|\.(?:csv|json|jsonl|db|sqlite3?|sql|xlsx?|parquet|zip|tar|gz)(?:$|[^A-Za-z0-9]))"
+)
 HTTP_URL = re.compile(r"(?i)https?://[^\s<>\"']+")
 DISCORD_WEBHOOK_HOSTS = {
     "discord.com", "canary.discord.com", "ptb.discord.com",
@@ -108,7 +111,10 @@ def _screen_text(text: str, location: str) -> list[str]:
     for label, pattern in SECRET_PATTERNS.items():
         if pattern.search(text):
             errors.append(f"{location}: possible {label} is forbidden")
-    if PROTECTED_PATH.search(text):
+    # Public provenance URLs can legitimately contain names such as
+    # `customer-research`; screen only non-URL text for local data paths.
+    non_url_text = HTTP_URL.sub("", text)
+    if PROTECTED_PATH.search(non_url_text):
         errors.append(f"{location}: protected student/customer/payment/pricing path indicator is forbidden")
     return errors
 
@@ -325,12 +331,30 @@ def collect_packets(packet_dir: Path, week: str) -> dict:
         if existing is None:
             deduplicated[key] = candidate
             continue
-        existing_evidence = {field: value for field, value in existing.items() if field != "reported_by"}
-        candidate_evidence = {field: value for field, value in candidate.items() if field != "reported_by"}
-        if existing_evidence != candidate_evidence:
+        existing_license = existing["license"].split(";", 1)[0].strip().casefold()
+        candidate_license = candidate["license"].split(";", 1)[0].strip().casefold()
+        if existing["name"] != candidate["name"] or existing_license != candidate_license:
             conflicts.append(f"conflicting evidence for {key[0]}@{key[1]}:{key[2]}")
             continue
-        existing["reported_by"] = sorted(set(existing["reported_by"] + candidate["reported_by"]))
+
+        # Role-specific rationale, scores, and gate evidence naturally differ
+        # when two scouts assess the same immutable skill. Keep the stronger
+        # validated report, retain both reporters, and union bounded evidence.
+        reporters = sorted(set(existing["reported_by"] + candidate["reported_by"]))
+        evidence_urls = sorted(set(existing["evidence_urls"] + candidate["evidence_urls"]))
+        risks = sorted(set(existing["risks"] + candidate["risks"]))
+        if len(evidence_urls) > MAX_EVIDENCE_URLS or len(risks) > MAX_RISKS:
+            conflicts.append(f"combined evidence exceeds limits for {key[0]}@{key[1]}:{key[2]}")
+            continue
+        preferred = max(
+            (existing, candidate),
+            key=lambda item: (item["score"], item["reported_by"][0]),
+        )
+        merged = dict(preferred)
+        merged["reported_by"] = reporters
+        merged["evidence_urls"] = evidence_urls
+        merged["risks"] = risks
+        deduplicated[key] = merged
     if conflicts:
         return {"schema_version": 1, "week": week, "status": "invalid", "errors": sorted(set(conflicts)), "candidates": []}
     output = sorted(deduplicated.values(), key=lambda item: (_dedupe_key(item), item["name"]))
