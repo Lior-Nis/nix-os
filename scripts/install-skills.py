@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 ROOT = Path(__file__).resolve().parents[1]
 CANONICAL_MANIFEST = ROOT / "skills/packs.json"
 PROFILE_MAP = {"lnx":"default","pulse":"pulse","algua":"algua","meabeclick":"meabeclick","meabeclickux":"meabeclickux","meabeclickeng":"meabeclickeng","meabeclickgrowth":"meabeclickgrowth"}
+PROFILES = set(PROFILE_MAP)
 NIXKIT_REPOSITORY = "https://github.com/its-nix/kit.git"
 NIXKIT_COMMIT = "5d9ac621d4b2862c94ff8aa419f2f9fc6c9f68f4"
 NIXKIT_SOURCES_SHA256 = "8c465cac697c5dc90a37e3a75242bac2f178c8768d7181883a3b9d673670b656"
@@ -44,6 +45,10 @@ PROPOSAL_ID = re.compile(r"^[a-z0-9][a-z0-9.-]+$")
 REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 SKILL_PATH = re.compile(r"^(?!/)(?!.*(?:^|/)\.\.(?:/|$))[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$")
 RFC3339 = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$")
+MAX_TEXT = 4_096
+MAX_URL = 2_048
+MAX_EVIDENCE_URLS = 100
+MAX_RISKS = 50
 
 class Refusal(RuntimeError): pass
 
@@ -101,11 +106,11 @@ def _valid_datetime(value:object)->bool:
 
 def _validate_proposal(p:dict,proposal_id:str,profile:str,skills:set[str],catalog:dict[str,tuple[str,str]])->None:
  required={"schema_version","proposal_id","profile","name","summary","rationale","source_url","repository","skill_path","revision","license","evidence_urls","risks","score_components","score","gates","gate_evidence","status"}
- if set(p)!=required or p.get("schema_version")!=1 or p.get("proposal_id")!=proposal_id or p.get("profile")!=profile or p.get("status")!="candidate" or {p.get("name")}!=skills: raise Refusal("committed proposal identity/status/skills do not match approval")
+ if set(p)!=required or p.get("schema_version")!=1 or not isinstance(p.get("proposal_id"),str) or not PROPOSAL_ID.fullmatch(p["proposal_id"]) or p.get("proposal_id")!=proposal_id or p.get("profile") not in PROFILES or p.get("profile")!=profile or p.get("status")!="candidate" or not isinstance(p.get("name"),str) or not SKILL.fullmatch(p["name"]) or {p["name"]}!=skills: raise Refusal("committed proposal identity/status/skills do not match approval")
  if not isinstance(p.get("repository"),str) or not REPOSITORY.fullmatch(p["repository"]) or not isinstance(p.get("skill_path"),str) or not SKILL_PATH.fullmatch(p["skill_path"]) or not SHA.fullmatch(str(p.get("revision",""))): raise Refusal("committed proposal repository/path/revision is invalid")
  if catalog.get(p["name"])!=(p["repository"],p["revision"]): raise Refusal("approved skill does not uniquely belong to the proposal repository and pinned revision")
  source=f"https://github.com/{p['repository']}/tree/{p['revision']}/{p.get('skill_path','')}"
- if p.get("source_url")!=source: raise Refusal("committed proposal source evidence is not immutable and exact")
+ if not isinstance(p.get("source_url"),str) or len(p["source_url"])>MAX_URL or p["source_url"]!=source: raise Refusal("committed proposal source evidence is not immutable and exact")
  license_prefixes=(f"/{p['repository']}/blob/{p['revision']}/",f"/{p['repository']}/tree/{p['revision']}/")
  def license_url(u:object)->bool:
   if not isinstance(u,str): return False
@@ -114,12 +119,15 @@ def _validate_proposal(p:dict,proposal_id:str,profile:str,skills:set[str],catalo
   if not any(parsed.path.startswith(prefix) for prefix in license_prefixes): return False
   relative=next(parsed.path[len(prefix):] for prefix in license_prefixes if parsed.path.startswith(prefix))
   return any(re.fullmatch(r"(?:LICENSE|COPYING|NOTICE)(?:[._-].*)?",part,re.I) for part in relative.split("/") if part)
- if not isinstance(p.get("evidence_urls"),list) or not p["evidence_urls"] or any(not isinstance(u,str) or urlsplit(u).scheme!="https" or not urlsplit(u).netloc for u in p["evidence_urls"]) or source not in p["evidence_urls"] or not any(license_url(u) for u in p["evidence_urls"]): raise Refusal("committed proposal lacks immutable same-origin source/license evidence")
+ evidence=p.get("evidence_urls")
+ if not isinstance(evidence,list) or not 2<=len(evidence)<=MAX_EVIDENCE_URLS or any(not isinstance(u,str) or not u.strip() or len(u)>MAX_URL or urlsplit(u).scheme!="https" or not urlsplit(u).netloc or urlsplit(u).username is not None or urlsplit(u).password is not None for u in evidence) or source not in evidence or not any(license_url(u) for u in evidence): raise Refusal("committed proposal lacks immutable same-origin source/license evidence")
+ risks=p.get("risks")
+ if not isinstance(risks,list) or len(risks)>MAX_RISKS or any(not isinstance(risk,str) or not risk.strip() or len(risk)>MAX_TEXT for risk in risks): raise Refusal("committed proposal risks are invalid")
  components=p.get("score_components"); score=p.get("score")
- if not isinstance(components,dict) or set(components)!=set(SCORE_LIMITS) or any(isinstance(components[k],bool) or not isinstance(components[k],int) or not 0<=components[k]<=SCORE_LIMITS[k] for k in SCORE_LIMITS) or not isinstance(score,int) or score<80 or score!=sum(components.values()): raise Refusal("committed proposal score is invalid")
- if p.get("gates")!={k:True for k in HARD_GATES} or not isinstance(p.get("gate_evidence"),dict) or set(p["gate_evidence"])!=HARD_GATES or any(not isinstance(v,str) or not v.strip() for v in p["gate_evidence"].values()): raise Refusal("committed proposal gates/evidence are invalid")
+ if not isinstance(components,dict) or set(components)!=set(SCORE_LIMITS) or any(isinstance(components[k],bool) or not isinstance(components[k],int) or not 0<=components[k]<=SCORE_LIMITS[k] for k in SCORE_LIMITS) or isinstance(score,bool) or not isinstance(score,int) or not 80<=score<=100 or score!=sum(components.values()): raise Refusal("committed proposal score is invalid")
+ if p.get("gates")!={k:True for k in HARD_GATES} or not isinstance(p.get("gate_evidence"),dict) or set(p["gate_evidence"])!=HARD_GATES or any(not isinstance(v,str) or not v.strip() or len(v)>MAX_TEXT for v in p["gate_evidence"].values()): raise Refusal("committed proposal gates/evidence are invalid")
  for field in ("summary","rationale","license"):
-  if not isinstance(p.get(field),str) or not p[field].strip(): raise Refusal(f"committed proposal {field} is invalid")
+  if not isinstance(p.get(field),str) or not p[field].strip() or len(p[field])>MAX_TEXT: raise Refusal(f"committed proposal {field} is invalid")
 
 def _approval(path:Path,profile:str,current:dict,requested:set[str],catalog:dict[str,tuple[str,str]])->None:
  for governance_file in (Path("skills/packs.json"), Path("scripts/install-skills.py")): _tracked_clean(governance_file)

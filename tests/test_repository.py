@@ -94,7 +94,12 @@ class RepositoryContractTests(unittest.TestCase):
             report_path = copy / "automation/skill-scout/report.schema.json"
             report = json.loads(report_path.read_text(encoding="utf-8"))
             report["$defs"]["score_components"]["properties"]["role_value"]["maximum"] = 31
+            report["$defs"]["gate_evidence"]["properties"]["relevance"]["maxLength"] = 999
             report_path.write_text(json.dumps(report), encoding="utf-8")
+            proposal_path = copy / "skills/proposal.schema.json"
+            proposal = json.loads(proposal_path.read_text(encoding="utf-8"))
+            proposal["properties"]["risks"]["maxItems"] = 51
+            proposal_path.write_text(json.dumps(proposal), encoding="utf-8")
             jobs_path = copy / "automation/skill-scout/jobs.json"
             jobs = json.loads(jobs_path.read_text(encoding="utf-8"))
             jobs["jobs"][0]["delivery"] = "telegram:unexpected"
@@ -102,6 +107,8 @@ class RepositoryContractTests(unittest.TestCase):
             errors = verifier.validate_repository(copy)
             self.assertTrue(any("Node 24.22.1" in error for error in errors), errors)
             self.assertTrue(any("role_value" in error and "0-30" in error for error in errors), errors)
+            self.assertTrue(any("gate_evidence" in error and "fail closed" in error for error in errors), errors)
+            self.assertTrue(any("risks must be a bounded list" in error for error in errors), errors)
             self.assertTrue(any("job manifest must exactly" in error for error in errors), errors)
 
     def test_verifier_rejects_secret_runtime_name_and_absolute_home(self):
@@ -126,6 +133,10 @@ class RepositoryContractTests(unittest.TestCase):
             (copy / "cron/jobs.json").write_text("{}", encoding="utf-8")
             leaked_token = "sk-" + "A" * 40
             (copy / "notes").write_text(leaked_token, encoding="utf-8")
+            fine_grained = "github" + "_pat_" + "B" * 60
+            webhook = "https://discord.com/api/webhooks/" + "1" * 18 + "/" + "W" * 60
+            workspace_token = "xox" + "b-" + "1" * 12 + "-" + "C" * 30
+            (copy / "more-notes").write_text("\n".join((fine_grained, webhook, workspace_token)), encoding="utf-8")
             absolute_home = "/" + "home/example/private"
             (copy / "docs/unsafe.md").write_text(
                 f"path: {absolute_home}\ncredential: {leaked_token}\n",
@@ -142,6 +153,9 @@ class RepositoryContractTests(unittest.TestCase):
             self.assertTrue(any("binary repository file" in error and "binary-fixture" in error for error in errors), errors)
             self.assertTrue(any("cron/jobs.json" in error for error in errors), errors)
             self.assertTrue(any("OpenAI-style key" in error and "notes" in error for error in errors), errors)
+            self.assertTrue(any("GitHub token" in error and "more-notes" in error for error in errors), errors)
+            self.assertTrue(any("Discord webhook" in error and "more-notes" in error for error in errors), errors)
+            self.assertTrue(any("xox workspace" in error and "more-notes" in error for error in errors), errors)
             self.assertTrue(any("absolute /home" in error for error in errors), errors)
 
     def test_verifier_rejects_unsafe_profile_mapping_and_workspace_traversal(self):

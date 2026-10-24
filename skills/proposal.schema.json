@@ -18,7 +18,7 @@
     "revision": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
     "license": {"type": "string", "minLength": 1, "maxLength": 4096},
     "evidence_urls": {"type": "array", "minItems": 2, "maxItems": 100, "items": {"type": "string", "maxLength": 2048, "pattern": "^https://"}},
-    "risks": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "risks": {"type": "array", "maxItems": 50, "items": {"type": "string", "minLength": 1, "maxLength": 4096}},
     "score_components": {"$ref": "#/$defs/score_components"},
     "score": {"type": "integer", "minimum": 80, "maximum": 100},
     "gates": {"$ref": "#/$defs/gates"},
@@ -58,13 +58,13 @@
       "additionalProperties": false,
       "required": ["relevance", "provenance", "reliability", "safety_privacy", "license", "hermes_compatibility", "non_duplication"],
       "properties": {
-        "relevance": {"type": "string", "minLength": 1},
-        "provenance": {"type": "string", "minLength": 1},
-        "reliability": {"type": "string", "minLength": 1},
-        "safety_privacy": {"type": "string", "minLength": 1},
-        "license": {"type": "string", "minLength": 1},
-        "hermes_compatibility": {"type": "string", "minLength": 1},
-        "non_duplication": {"type": "string", "minLength": 1}
+        "relevance": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "provenance": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "reliability": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "safety_privacy": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "license": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "hermes_compatibility": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "non_duplication": {"type": "string", "minLength": 1, "maxLength": 4096}
       }
     }
   }

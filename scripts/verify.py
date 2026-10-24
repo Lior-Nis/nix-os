@@ -128,13 +128,16 @@ ABSOLUTE_HOME = re.compile(r"(?<![A-Za-z0-9_])/(?:home|Users)/[^\s`'\"/]+")
 LEGACY_TERMS = ("paper" + "clip", "n" + "8n", "s" + "lack")
 SECRET_PATTERNS = {
     "private key": re.compile(r"-----BEGIN(?: [A-Z0-9]+)* PRIVATE KEY-----"),
-    "GitHub token": re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"),
+    "GitHub token": re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b"),
     "OpenAI-style key": re.compile(r"\bsk-[A-Za-z0-9_-]{32,}\b"),
     "AWS access key": re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"),
     "Discord bot token": re.compile(
         r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{20,30}\.[A-Za-z0-9_-]{6,8}\."
         r"[A-Za-z0-9_-]{25,45}(?![A-Za-z0-9_-])"
     ),
+    "Discord webhook credential": re.compile(r"https://(?:(?:canary|ptb)\.)?discord(?:app)?\.com/api/webhooks/[0-9]{17,20}/[A-Za-z0-9._-]{30,}"),
+    "Discord webhook token": re.compile(r"(?i)\bdiscord[_ -]?webhook(?:[_ -]?token)?\s*[:=]\s*[A-Za-z0-9._-]{30,}"),
+    "xox workspace token": re.compile(r"\bxox[bp]-[A-Za-z0-9-]{20,}\b"),
 }
 HERMES_PROFILE_NAME = re.compile(r"^[a-z0-9]+$")
 SQLITE_SIDECAR = re.compile(r"^.+\.(?:db|sqlite|sqlite3)-(?:wal|shm|journal)$")
@@ -281,7 +284,7 @@ def _validate_evidence_schema(schema: dict[str, Any], relative: str, errors: lis
         if not isinstance(contract, dict) or set(contract.get("required", [])) != HARD_GATES or set((contract.get("properties") or {})) != HARD_GATES or contract.get("additionalProperties") is not False:
             errors.append(f"{relative} {definition} fields must be the exact seven hard gates")
             continue
-        expected = {"type": "string", "minLength": 1} if evidence else {"const": True}
+        expected = {"type": "string", "minLength": 1, "maxLength": 4096} if evidence else {"const": True}
         if any(contract["properties"].get(gate) != expected for gate in HARD_GATES):
             errors.append(f"{relative} {definition} values do not fail closed")
     candidate = definitions.get("candidate") if report else schema
@@ -302,6 +305,13 @@ def _validate_evidence_schema(schema: dict[str, Any], relative: str, errors: lis
     expected_url_items = {"type": "string", "maxLength": 2048, "pattern": "^https://"}
     if not isinstance(evidence_urls, dict) or evidence_urls.get("minItems") != 2 or evidence_urls.get("maxItems") != 100 or evidence_urls.get("items") != expected_url_items:
         errors.append(f"{relative} evidence_urls must require bounded HTTPS source and license evidence")
+    risks = properties.get("risks")
+    expected_risks = {"type": "array", "maxItems": 50, "items": {"type": "string", "minLength": 1, "maxLength": 4096}}
+    if risks != expected_risks:
+        errors.append(f"{relative} risks must be a bounded list of bounded nonempty strings")
+    for field in ("summary", "rationale", "license"):
+        if properties.get(field) != {"type": "string", "minLength": 1, "maxLength": 4096}:
+            errors.append(f"{relative} {field} must be a bounded nonempty string")
     source_url = properties.get("source_url")
     if not isinstance(source_url, dict) or source_url.get("maxLength") != 2048 or "github\\.com" not in source_url.get("pattern", "") or "[a-f0-9]{40}" not in source_url.get("pattern", ""):
         errors.append(f"{relative} source_url must require immutable GitHub revision evidence")
@@ -312,8 +322,9 @@ def _validate_evidence_schema(schema: dict[str, Any], relative: str, errors: lis
         if set(schema.get("required", [])) != packet_fields or set((schema.get("properties") or {})) != packet_fields:
             errors.append(f"{relative} packet fields must be exact")
         checked = schema.get("properties", {}).get("checked_sources", {})
-        if checked.get("minItems") != 1 or checked.get("items", {}).get("pattern") != "^https://":
-            errors.append(f"{relative} checked_sources must require HTTPS evidence")
+        expected_checked = {"type": "array", "minItems": 1, "maxItems": 100, "items": {"type": "string", "maxLength": 2048, "pattern": "^https://"}}
+        if checked != expected_checked:
+            errors.append(f"{relative} checked_sources must require bounded HTTPS evidence")
         if schema.get("properties", {}).get("rejected_count") != {"type": "integer", "minimum": 0}:
             errors.append(f"{relative} rejected_count must be nonnegative")
 

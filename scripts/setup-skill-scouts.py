@@ -86,7 +86,21 @@ def _delivery(job: dict) -> list[str]:
     return [value] if isinstance(value, str) else value
 
 
+def _is_operational(job: dict) -> bool:
+    if job.get("enabled") is False:
+        return False
+    for field in ("state", "status"):
+        if field not in job:
+            continue
+        value = job[field]
+        if not isinstance(value, str) or value.lower() not in {"active", "scheduled", "running", "enabled"}:
+            return False
+    return True
+
+
 def _is_exact(actual: dict, desired: dict) -> bool:
+    if not _is_operational(actual):
+        return False
     if actual.get("name") != desired["name"] or _schedule_value(actual) != desired["schedule"]:
         return False
     if actual.get("prompt") != _prompt(desired):
@@ -107,13 +121,14 @@ def _is_exact(actual: dict, desired: dict) -> bool:
     return len(_delivery(actual)) == 1 and _delivery(actual)[0] in allowed_delivery
 
 
-def _run_hermes(binary: str, profile: str, args: list[str]) -> None:
+def _run_hermes(binary: str, profile: str, args: list[str]) -> str:
     env = os.environ.copy()
     env["TZ"] = "Asia/Jerusalem"
     result = subprocess.run([binary, "-p", profile, *args], text=True, capture_output=True, env=env, check=False)
     if result.returncode:
         detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
         raise Refusal(f"Hermes {profile} {' '.join(args)} failed: {detail}")
+    return result.stdout.strip()
 
 
 def _create_args(job: dict) -> list[str]:
@@ -166,9 +181,9 @@ def _require_clean_governance() -> None:
             raise Refusal(f"canonical scout governance file must be tracked and committed: {relative}")
 
 
-def _install_collector_atomic(destination: Path, source: Path) -> None:
+def _install_collector_atomic(destination: Path, source: Path) -> bool:
     if destination.exists():
-        return
+        return False
     temporary = destination.with_suffix(".tmp")
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     if hasattr(os, "O_NOFOLLOW"):
@@ -197,6 +212,7 @@ def _install_collector_atomic(destination: Path, source: Path) -> None:
             raise Refusal("collector temporary inode changed before atomic replace")
         os.replace(temporary, destination)
         owned = None
+        return True
     except FileExistsError as exc:
         raise Refusal(f"collector temporary path already exists: {temporary}") from exc
     finally:
@@ -211,11 +227,86 @@ def _install_collector_atomic(destination: Path, source: Path) -> None:
                 pass
 
 
+def _rollback(
+    binary: str,
+    base: Path,
+    attempted: list[tuple[str, dict]],
+    created: list[tuple[str, str, str]],
+    baseline_ids: dict[str, set[str]],
+    delivery_edits: list[tuple[str, str, str, str]],
+    collector_dest: Path,
+    collector_source: Path,
+    collector_installed: bool,
+) -> list[str]:
+    failures: list[str] = []
+    created_keys = {(profile, identifier) for profile, identifier, _ in created}
+    for profile, identifier, name, prior in reversed(delivery_edits):
+        if (profile, identifier) in created_keys:
+            continue
+        try:
+            jobs = _read_jobs(_job_store(base, profile))
+            current = next((job for job in jobs if job.get("id") == identifier and job.get("name") == name), None)
+            if current is None:
+                raise Refusal(f"cannot find pre-existing aggregator {name} during delivery rollback")
+            if _delivery(current) != [prior]:
+                _run_hermes(binary, profile, ["cron", "edit", identifier, "--deliver", prior])
+                jobs = _read_jobs(_job_store(base, profile))
+                current = next((job for job in jobs if job.get("id") == identifier and job.get("name") == name), None)
+                if current is None or _delivery(current) != [prior]:
+                    raise Refusal(f"delivery rollback readback mismatch for {name}")
+        except (OSError, KeyError, TypeError, Refusal) as exc:
+            failures.append(str(exc))
+
+    removable = {(profile, identifier, name) for profile, identifier, name in created}
+    for profile, desired in attempted:
+        try:
+            for job in _read_jobs(_job_store(base, profile)):
+                identifier = job.get("id")
+                if (
+                    isinstance(identifier, str)
+                    and identifier
+                    and identifier not in baseline_ids.get(profile, set())
+                    and job.get("name") == desired["name"]
+                ):
+                    removable.add((profile, identifier, desired["name"]))
+        except (OSError, KeyError, TypeError, Refusal) as exc:
+            failures.append(f"cannot discover created {desired['name']} for rollback: {exc}")
+    for profile, identifier, name in reversed(sorted(removable)):
+        try:
+            _run_hermes(binary, profile, ["cron", "remove", identifier])
+            if any(job.get("id") == identifier for job in _read_jobs(_job_store(base, profile))):
+                raise Refusal(f"job still present after rollback: {name} ({identifier})")
+        except (OSError, KeyError, TypeError, Refusal) as exc:
+            failures.append(str(exc))
+
+    if collector_installed:
+        try:
+            if collector_dest.exists() or collector_dest.is_symlink():
+                current = os.lstat(collector_dest)
+                if not stat.S_ISREG(current.st_mode) or collector_dest.read_bytes() != collector_source.read_bytes():
+                    raise Refusal("collector identity/content changed; refusing rollback removal")
+                collector_dest.unlink()
+            if collector_dest.exists() or collector_dest.is_symlink():
+                raise Refusal("collector remains after rollback")
+        except (OSError, Refusal) as exc:
+            failures.append(str(exc))
+    return failures
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--enable-delivery", action="store_true", help="Switch only the aggregator to its reviewed Telegram target")
     args = parser.parse_args()
+    attempted: list[tuple[str, dict]] = []
+    created: list[tuple[str, str, str]] = []
+    baseline_ids: dict[str, set[str]] = {}
+    delivery_edits: list[tuple[str, str, str, str]] = []
+    collector_installed = False
+    collector_dest = Path("/")
+    collector_source = Path("/")
+    base = Path("/")
+    binary = os.environ.get("HERMES_BIN", "hermes")
     try:
         _validate_test_store_override()
         spec = _load(AUTOMATION / "jobs.json")
@@ -242,6 +333,7 @@ def main() -> int:
             _run_hermes(binary, profile, ["cron", "list", "--all"])
             existing = _read_jobs(_job_store(base, profile))
             existing_by_profile[profile] = existing
+            baseline_ids[profile] = {job["id"] for job in existing if isinstance(job.get("id"), str)}
             for desired in wanted:
                 matches = [job for job in existing if job.get("name") == desired["name"]]
                 if len(matches) > 1:
@@ -250,22 +342,30 @@ def main() -> int:
                     raise Refusal(f"same-name cron drift detected for {desired['name']}; refusing overwrite")
 
         collector_dest.parent.mkdir(parents=True, exist_ok=True)
-        _install_collector_atomic(collector_dest, collector_source)
+        collector_installed = _install_collector_atomic(collector_dest, collector_source)
 
         for profile, wanted in by_profile.items():
             for desired in wanted:
                 current = next((job for job in existing_by_profile[profile] if job.get("name") == desired["name"]), None)
                 if current is None:
+                    attempted.append((profile, desired))
                     _run_hermes(binary, profile, _create_args(desired))
                     refreshed = _read_jobs(_job_store(base, profile))
                     current = next((job for job in refreshed if job.get("name") == desired["name"]), None)
-                    if current is None or not _is_exact(current, desired):
+                    identifier = current.get("id") if current is not None else None
+                    if isinstance(identifier, str) and identifier and identifier not in baseline_ids[profile]:
+                        created.append((profile, identifier, desired["name"]))
+                    if current is None or not isinstance(identifier, str) or not identifier or not _is_exact(current, desired):
                         raise Refusal(f"Hermes readback mismatch after creating {desired['name']}")
                     existing_by_profile[profile] = refreshed
                 if args.enable_delivery and desired["kind"] == "aggregator" and _delivery(current) != [desired["delivery_enabled"]]:
                     identifier = current.get("id")
                     if not isinstance(identifier, str) or not identifier:
                         raise Refusal("aggregator has no stable job id for delivery edit")
+                    prior = _delivery(current)
+                    if len(prior) != 1:
+                        raise Refusal("aggregator prior delivery is not singular")
+                    delivery_edits.append((profile, identifier, desired["name"], prior[0]))
                     _run_hermes(binary, profile, ["cron", "edit", identifier, "--deliver", desired["delivery_enabled"]])
                     refreshed = _read_jobs(_job_store(base, profile))
                     current = next((job for job in refreshed if job.get("name") == desired["name"]), None)
@@ -274,7 +374,11 @@ def main() -> int:
         print("Skill-scout jobs reconciled and read back successfully.")
         return 0
     except (OSError, KeyError, TypeError, Refusal) as exc:
-        print(f"Refusing: {exc}", file=sys.stderr)
+        rollback_failures = _rollback(binary, base, attempted, created, baseline_ids, delivery_edits, collector_dest, collector_source, collector_installed) if (attempted or delivery_edits or collector_installed) else []
+        detail = f"Refusing: {exc}"
+        if rollback_failures:
+            detail += "; rollback failures: " + " | ".join(rollback_failures)
+        print(detail, file=sys.stderr)
         return 2
 
 

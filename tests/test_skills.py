@@ -220,6 +220,51 @@ class SkillInstallerTests(unittest.TestCase):
         with self.assertRaisesRegex(installer.Refusal, "same-origin"):
             installer._validate_proposal(proposal, "pulse-agent-browser", "pulse", {"agent-browser"}, catalog)
 
+    def test_proposal_runtime_enforces_all_bounded_schema_fields(self):
+        installer = load_module("skill_installer_bounds", self.script)
+        revision = "a" * 40; repository = "example/useful"; source = f"https://github.com/{repository}/tree/{revision}/skills/useful"
+        proposal = {
+            "schema_version": 1, "proposal_id": "pulse-useful", "profile": "pulse", "name": "useful",
+            "summary": "Useful", "rationale": "Needed", "source_url": source, "repository": repository,
+            "skill_path": "skills/useful", "revision": revision, "license": "MIT",
+            "evidence_urls": [source, f"https://github.com/{repository}/blob/{revision}/LICENSE"], "risks": [],
+            "score_components": {"role_value": 27, "evidence_quality": 18, "security_provenance": 18, "hermes_compatibility": 14, "maintenance": 9, "documentation_license": 4},
+            "score": 90, "gates": {gate: True for gate in installer.HARD_GATES},
+            "gate_evidence": {gate: "Reviewed" for gate in installer.HARD_GATES}, "status": "candidate",
+        }
+        catalog = {"useful": (repository, revision)}
+        installer._validate_proposal(proposal, "pulse-useful", "pulse", {"useful"}, catalog)
+        mutations = {
+            "string-risks": lambda p: p.update(risks="not-a-list"),
+            "overlong-summary": lambda p: p.update(summary="x" * (installer.MAX_TEXT + 1)),
+            "overlong-gate-evidence": lambda p: p["gate_evidence"].update(relevance="x" * (installer.MAX_TEXT + 1)),
+            "one-evidence-url": lambda p: p.update(evidence_urls=[source]),
+        }
+        for label, mutate in mutations.items():
+            changed = json.loads(json.dumps(proposal)); mutate(changed)
+            with self.subTest(label=label), self.assertRaises(installer.Refusal):
+                installer._validate_proposal(changed, "pulse-useful", "pulse", {"useful"}, catalog)
+
+    def test_proposal_and_report_schema_limits_match_runtime(self):
+        installer = load_module("skill_installer_schema_limits", self.script)
+        collector = load_module("skill_collector_schema_limits", ROOT / "automation/skill-scout/collect.py")
+        for relative, candidate in (
+            ("skills/proposal.schema.json", None),
+            ("automation/skill-scout/report.schema.json", "candidate"),
+        ):
+            schema = json.loads((ROOT / relative).read_text(encoding="utf-8"))
+            contract = schema if candidate is None else schema["$defs"][candidate]
+            self.assertEqual(installer.MAX_TEXT, collector.MAX_TEXT)
+            self.assertEqual(installer.MAX_RISKS, collector.MAX_RISKS)
+            self.assertEqual(installer.MAX_EVIDENCE_URLS, collector.MAX_EVIDENCE_URLS)
+            self.assertEqual(installer.MAX_TEXT, contract["properties"]["summary"]["maxLength"])
+            self.assertEqual(installer.MAX_RISKS, contract["properties"]["risks"]["maxItems"])
+            self.assertEqual(installer.MAX_TEXT, contract["properties"]["risks"]["items"]["maxLength"])
+            self.assertEqual(installer.MAX_EVIDENCE_URLS, contract["properties"]["evidence_urls"]["maxItems"])
+            self.assertEqual(2, contract["properties"]["evidence_urls"]["minItems"])
+            for gate in installer.HARD_GATES:
+                self.assertEqual(installer.MAX_TEXT, schema["$defs"]["gate_evidence"]["properties"][gate]["maxLength"])
+
     def test_proposal_schema_has_no_unvalidated_optional_popularity_field(self):
         schema = json.loads((ROOT / "skills/proposal.schema.json").read_text(encoding="utf-8"))
         self.assertNotIn("popularity_evidence", schema["properties"])
@@ -375,7 +420,13 @@ class ScoutTests(unittest.TestCase):
     def test_collector_screens_secrets_controls_and_protected_paths_before_forwarding(self):
         week = "2026-W43"
         discord = "M" * 24 + "." + "N" * 6 + "." + "P" * 30
-        payloads = ("sk-" + "A" * 40, "ghp_" + "A" * 30, "AKIA" + "A" * 16, discord, "-----BEGIN" + " PRIVATE KEY-----", "private/customer-payments/data.json", "bad\u0001control")
+        webhook = "https://discord.com/api/webhooks/" + "1" * 18 + "/" + "W" * 60
+        payloads = (
+            "sk-" + "A" * 40, "ghp_" + "A" * 30, "github" + "_pat_" + "B" * 60,
+            "AKIA" + "A" * 16, discord, webhook, "discord_webhook_token=" + "T" * 60, "xox" + "b-" + "1" * 12 + "-" + "C" * 30,
+            "xox" + "p-" + "2" * 12 + "-" + "D" * 30, "-----BEGIN" + " PRIVATE KEY-----",
+            "private/customer-payments/data.json", "bad\u0001control",
+        )
         for payload in payloads:
             with self.subTest(payload=payload[:12]), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp); candidate = self._candidate(); candidate["summary"] = payload
@@ -384,6 +435,22 @@ class ScoutTests(unittest.TestCase):
                 self.assertEqual("invalid", result["status"])
                 self.assertEqual([], result["candidates"])
                 self.assertNotIn(payload, self.collect.render_for_aggregator(result))
+        ordinary = "https://github.com/example/repo/commit/" + "a" * 40
+        self.assertEqual([], self.collect._screen_text(ordinary, "ordinary"))
+
+    def test_collector_rejects_oversized_packet_and_bounds_rendering(self):
+        week = "2026-W43"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); self._write_week(root, week)
+            packet = self._packet("lnx", week, [self._candidate()])
+            packet["candidates"][0]["gate_evidence"]["relevance"] = "x" * 200_000
+            (root / "lnx.json").write_text(json.dumps(packet), encoding="utf-8")
+            result = self.collect.collect_packets(root, week)
+            self.assertEqual("invalid", result["status"])
+            self.assertTrue(any("size limit" in error for error in result["errors"]), result)
+            rendered = self.collect.render_for_aggregator({"week": week, "status": "invalid", "errors": ["x" * (self.collect.MAX_RENDER_BYTES + 1)], "candidates": []})
+            self.assertLessEqual(len(rendered.encode("utf-8")), self.collect.MAX_RENDER_BYTES)
+            self.assertNotIn("x" * 1000, rendered)
 
     def test_collector_rejects_deep_json_as_invalid_without_crashing(self):
         week = "2026-W43"
@@ -443,6 +510,62 @@ class ScoutSetupTests(unittest.TestCase):
             with self.assertRaisesRegex(self.setup.Refusal, "already exists"):
                 self.setup._install_collector_atomic(destination, source)
             self.assertEqual("attacker", temporary.read_text(encoding="utf-8"))
+
+    def test_exact_job_requires_enabled_operational_state(self):
+        desired = self.setup.EXPECTED_JOBS[0]
+        actual = {
+            "id": "fixture", "name": desired["name"], "schedule": {"kind": "cron", "value": desired["schedule"]},
+            "prompt": self.setup._prompt(desired), "deliver": ["local"], "continuity": False, "script": None,
+        }
+        self.assertTrue(self.setup._is_exact(actual, desired))  # real legacy persisted shape
+        for field, value in (("enabled", True), ("state", "scheduled"), ("status", "active")):
+            changed = dict(actual); changed[field] = value
+            self.assertTrue(self.setup._is_exact(changed, desired), (field, value))
+        for field, value in (("enabled", False), ("state", "paused"), ("status", "disabled")):
+            changed = dict(actual); changed[field] = value
+            self.assertFalse(self.setup._is_exact(changed, desired), (field, value))
+
+    def test_apply_rolls_back_new_jobs_and_collector_on_second_readback_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp); home = base / "home"; state = base / "state"; log = base / "calls.jsonl"; counter = base / "count"
+            state.mkdir()
+            preexisting = [{"id": "keep-me", "name": "unrelated-user-job", "enabled": False}]
+            (state / "pulse.json").write_text(json.dumps(preexisting), encoding="utf-8")
+            fake = base / "hermes"
+            fake.write_text(textwrap.dedent("""\
+                #!/usr/bin/env python3
+                import json, os, pathlib, sys
+                args=sys.argv[1:]; profile=args[1]; cmd=args[2:]
+                root=pathlib.Path(os.environ['FAKE_STATE']); f=root/f'{profile}.json'; jobs=json.loads(f.read_text()) if f.exists() else []
+                with pathlib.Path(os.environ['FAKE_LOG']).open('a') as out: out.write(json.dumps(args)+'\\n')
+                if cmd[:2]==['cron','list']:
+                    raise SystemExit(0)
+                if cmd[:2]==['cron','create']:
+                    count_path=pathlib.Path(os.environ['FAKE_COUNT']); count=int(count_path.read_text())+1 if count_path.exists() else 1; count_path.write_text(str(count))
+                    def value(flag, default=None): return cmd[cmd.index(flag)+1] if flag in cmd else default
+                    job={'id':f'new-{count}', 'name':value('--name'), 'schedule':{'kind':'cron','value':cmd[2]}, 'prompt':cmd[3], 'deliver':[value('--deliver','local')], 'continuity':'--continuity' in cmd, 'script':value('--script')}
+                    if count==2: job['enabled']=False
+                    jobs.append(job); f.write_text(json.dumps(jobs)); print(job['id']); raise SystemExit(0)
+                if cmd[:2]==['cron','remove']:
+                    identifier=cmd[2]; jobs=[job for job in jobs if job.get('id')!=identifier]; f.write_text(json.dumps(jobs)); raise SystemExit(0)
+                if cmd[:2]==['cron','edit']:
+                    identifier=cmd[2]; job=next(job for job in jobs if job.get('id')==identifier); job['deliver']=[cmd[cmd.index('--deliver')+1]]; f.write_text(json.dumps(jobs)); raise SystemExit(0)
+                raise SystemExit('unexpected '+repr(cmd))
+            """), encoding="utf-8")
+            fake.chmod(0o755)
+            env = os.environ.copy(); env.update({
+                "HOME": str(home), "HERMES_HOME": str(home / ".hermes"), "HERMES_BIN": str(fake),
+                "FAKE_STATE": str(state), "FAKE_LOG": str(log), "FAKE_COUNT": str(counter),
+                "HERMES_SCOUT_TEST_STORE": str(state), "NIX_OS_SCOUT_TEST_MODE": "1",
+            })
+            result = subprocess.run(["python3", str(ROOT / "scripts/setup-skill-scouts.py"), "--apply"], cwd=ROOT, env=env, text=True, capture_output=True)
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("readback mismatch", result.stderr)
+            all_jobs = [job for path in state.glob("*.json") for job in json.loads(path.read_text())]
+            self.assertEqual(preexisting, all_jobs)
+            self.assertFalse((home / ".hermes/scripts/skill-scout-collect.py").exists())
+            calls = [json.loads(line) for line in log.read_text().splitlines()]
+            self.assertEqual({"new-1", "new-2"}, {call[-1] for call in calls if call[2:4] == ["cron", "remove"]})
 
     def test_preview_create_readback_idempotence_and_drift_refusal(self):
         with tempfile.TemporaryDirectory() as tmp:

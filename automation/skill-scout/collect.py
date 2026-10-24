@@ -31,17 +31,24 @@ REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 WEEK = re.compile(r"^[0-9]{4}-W[0-9]{2}$")
 SKILL_PATH = re.compile(r"^(?!/)(?!.*(?:^|/)\.\.(?:/|$))[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$")
 RFC3339 = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$")
-MAX_PACKET_BYTES = 262_144
+MAX_PACKET_BYTES = 131_072
 MAX_CANDIDATES = 50
+MAX_AGGREGATE_CANDIDATES = 100
 MAX_TEXT = 4_096
 MAX_URL = 2_048
+MAX_EVIDENCE_URLS = 100
+MAX_RISKS = 50
+MAX_RENDER_BYTES = 262_144
 MAX_JSON_DEPTH = 100
 SECRET_PATTERNS = {
     "private key": re.compile(r"-----BEGIN(?: [A-Z0-9]+)* PRIVATE KEY-----"),
-    "GitHub token": re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"),
+    "GitHub token": re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b"),
     "OpenAI key": re.compile(r"\bsk-[A-Za-z0-9_-]{32,}\b"),
     "AWS access key": re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"),
     "Discord bot token": re.compile(r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{20,30}\.[A-Za-z0-9_-]{6,8}\.[A-Za-z0-9_-]{25,45}(?![A-Za-z0-9_-])"),
+    "Discord webhook credential": re.compile(r"https://(?:(?:canary|ptb)\.)?discord(?:app)?\.com/api/webhooks/[0-9]{17,20}/[A-Za-z0-9._-]{30,}"),
+    "Discord webhook token": re.compile(r"(?i)\bdiscord[_ -]?webhook(?:[_ -]?token)?\s*[:=]\s*[A-Za-z0-9._-]{30,}"),
+    "xox workspace token": re.compile(r"\bxox[bp]-[A-Za-z0-9-]{20,}\b"),
     "bearer/token value": re.compile(r"(?i)\b(?:bearer\s+|api[_-]?key\s*[:=]\s*|access[_-]?token\s*[:=]\s*|secret[_-]?key\s*[:=]\s*)[A-Za-z0-9_./+\-=]{16,}"),
     "credential query parameter": re.compile(r"(?i)[?&](?:api[_-]?key|access[_-]?token|auth(?:orization)?|bearer|client[_-]?secret|secret|token|key)=[^&#\s]{8,}"),
     "JWT": re.compile(r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?![A-Za-z0-9_-])"),
@@ -65,7 +72,7 @@ def _is_https_url(value: object) -> bool:
 
 
 def _valid_nonempty_strings(value: object) -> bool:
-    return isinstance(value, list) and bool(value) and len(value) <= 100 and all(isinstance(item, str) and bool(item.strip()) and len(item) <= MAX_URL for item in value)
+    return isinstance(value, list) and bool(value) and len(value) <= MAX_EVIDENCE_URLS and all(isinstance(item, str) and bool(item.strip()) and len(item) <= MAX_URL for item in value)
 
 
 def _screen_text(text: str, location: str) -> list[str]:
@@ -142,8 +149,8 @@ def _validate_candidate(value: object, location: str) -> tuple[dict, list[str]]:
         if value.get("source_url") != expected_source:
             errors.append(f"{location}: source_url must exactly pin repository/revision/skill_path")
     evidence_urls = value.get("evidence_urls")
-    if not _valid_nonempty_strings(evidence_urls) or not all(_is_https_url(url) for url in evidence_urls or []):
-        errors.append(f"{location}: evidence_urls must be a nonempty list of https URLs")
+    if not _valid_nonempty_strings(evidence_urls) or len(evidence_urls or []) < 2 or not all(_is_https_url(url) for url in evidence_urls or []):
+        errors.append(f"{location}: evidence_urls must contain 2-100 bounded https URLs")
     elif all(isinstance(value.get(field), str) for field in ("repository", "revision", "skill_path")):
         source = _github_url(value["repository"], "tree", value["revision"], value["skill_path"])
         prefixes = (f"/{value['repository']}/blob/{value['revision']}/", f"/{value['repository']}/tree/{value['revision']}/")
@@ -160,7 +167,7 @@ def _validate_candidate(value: object, location: str) -> tuple[dict, list[str]]:
         if source not in evidence_urls or not license_evidence:
             errors.append(f"{location}: evidence_urls require same-repository/revision source and license evidence")
     risks = value.get("risks")
-    if not isinstance(risks, list) or len(risks) > 50 or any(not isinstance(risk, str) or not risk.strip() or len(risk) > MAX_TEXT for risk in risks):
+    if not isinstance(risks, list) or len(risks) > MAX_RISKS or any(not isinstance(risk, str) or not risk.strip() or len(risk) > MAX_TEXT for risk in risks):
         errors.append(f"{location}: risks must be a list of nonempty strings")
 
     components = value.get("score_components")
@@ -191,7 +198,7 @@ def _validate_candidate(value: object, location: str) -> tuple[dict, list[str]]:
         errors.append(f"{location}: every hard gate must pass")
     gate_evidence = value.get("gate_evidence")
     if not isinstance(gate_evidence, dict) or set(gate_evidence) != set(HARD_GATES) or any(
-        not isinstance(gate_evidence.get(gate), str) or not gate_evidence[gate].strip() for gate in HARD_GATES
+        not isinstance(gate_evidence.get(gate), str) or not gate_evidence[gate].strip() or len(gate_evidence[gate]) > MAX_TEXT for gate in HARD_GATES
     ):
         errors.append(f"{location}: gate_evidence must contain a nonempty string for every hard gate")
     return dict(value), errors
@@ -301,13 +308,21 @@ def collect_packets(packet_dir: Path, week: str) -> dict:
     if conflicts:
         return {"schema_version": 1, "week": week, "status": "invalid", "errors": sorted(set(conflicts)), "candidates": []}
     output = sorted(deduplicated.values(), key=lambda item: (_dedupe_key(item), item["name"]))
-    return {"schema_version": 1, "week": week, "status": "ok", "errors": [], "candidates": output}
+    if len(output) > MAX_AGGREGATE_CANDIDATES:
+        return {"schema_version": 1, "week": week, "status": "invalid", "errors": ["candidate aggregate exceeds size limit"], "candidates": []}
+    result = {"schema_version": 1, "week": week, "status": "ok", "errors": [], "candidates": output}
+    if len(json.dumps(result, sort_keys=True).encode("utf-8")) > MAX_RENDER_BYTES:
+        return {"schema_version": 1, "week": week, "status": "invalid", "errors": ["candidate aggregate exceeds rendered size limit"], "candidates": []}
+    return result
 
 
 def render_for_aggregator(result: dict) -> str:
     if result.get("status") == "ok" and not result.get("candidates"):
         return "[SILENT]"
-    return json.dumps(result, indent=2, sort_keys=True)
+    rendered = json.dumps(result, indent=2, sort_keys=True)
+    if len(rendered.encode("utf-8")) > MAX_RENDER_BYTES:
+        rendered = json.dumps({"schema_version": 1, "week": result.get("week"), "status": "invalid", "errors": ["collector output exceeds rendered size limit"], "candidates": []}, indent=2, sort_keys=True)
+    return rendered
 
 
 def main() -> int:
