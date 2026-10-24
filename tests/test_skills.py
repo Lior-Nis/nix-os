@@ -26,12 +26,16 @@ def load_module(name: str, path: Path):
 class PackContractTests(unittest.TestCase):
     def test_exact_profiles_pin_and_complete_skill_classification(self):
         packs = json.loads((ROOT / "skills/packs.json").read_text(encoding="utf-8"))
-        self.assertEqual("a9cb5b576097301ee63485649d5703db7479ad8f", packs["nixkit"]["commit"])
+        self.assertEqual("92338765a1cc942b2a20dda3f1e220d6be0225e1", packs["nixkit"]["commit"])
+        self.assertEqual("6493103af689bdf4bae5455e1d901646fe079e51a69c53b6f5bcf57c62786d21", packs["nixkit"]["sources_sha256"])
         self.assertEqual(64, len(packs["nixkit"]["sources_sha256"]))
         self.assertEqual("24.22.1", packs["nixkit"]["node_runtime"])
         self.assertEqual(PROFILES, set(packs["profiles"]))
         self.assertEqual(["caveman", "watch"], packs["approved_additions"]["lnx"])
         self.assertTrue(all(not additions for profile, additions in packs["approved_additions"].items() if profile != "lnx"))
+        self.assertTrue(all(not values for values in packs["proposed_pack_additions"].values()))
+        self.assertEqual(["product-development"], packs["approved_pack_additions"]["lnx"])
+        self.assertTrue(all(not values for profile, values in packs["approved_pack_additions"].items() if profile != "lnx"))
         self.assertNotIn("global", packs["packs"])
         self.assertEqual([], packs["packs"]["public-research"])
         self.assertIn("research", packs["excluded"])
@@ -51,7 +55,36 @@ class PackContractTests(unittest.TestCase):
         self.assertFalse(persistent & excluded)
         self.assertFalse(task_only & excluded)
         self.assertEqual(49, len(persistent | task_only | excluded))
-        self.assertTrue({"lnx-grilling", "lnx-grill-me", "lnx-domain-modeling", "lnx-grill-with-docs", "lnx-to-spec", "lnx-writing-for-agents", "nix-idea-to-mvp", "watch"} <= task_only)
+        self.assertIn("watch", task_only)
+
+    def test_product_pack_is_exact_approved_and_only_changes_lnx_effective_set(self):
+        packs = json.loads((ROOT / "skills/packs.json").read_text(encoding="utf-8"))
+        expected = ["lnx-grilling", "lnx-grill-me", "lnx-domain-modeling", "lnx-grill-with-docs", "lnx-to-spec", "lnx-writing-for-agents", "nix-idea-to-mvp", "writing-plans", "subagent-driven-development"]
+        self.assertEqual(expected, packs["packs"]["product-development"])
+        self.assertEqual(["baseline-evidence", "orchestrator-control"], packs["profiles"]["lnx"])
+        self.assertNotIn("verification-before-completion", expected)
+        for profile in PROFILES:
+            effective = {skill for pack in packs["profiles"][profile] + packs["approved_pack_additions"][profile] for skill in packs["packs"][pack]}
+            baseline = {skill for pack in packs["profiles"][profile] for skill in packs["packs"][pack]}
+            if profile == "lnx":
+                self.assertEqual(baseline | set(expected), effective, profile)
+            else:
+                self.assertEqual(baseline, effective, profile)
+
+    def test_product_pack_proposal_exactly_binds_request_and_pins(self):
+        proposal = json.loads((ROOT / "skills/pack-proposals/lnx-product-development-92338765.json").read_text(encoding="utf-8"))
+        self.assertEqual("lnx-product-development-92338765", proposal["proposal_id"])
+        self.assertEqual("lnx", proposal["profile"])
+        self.assertEqual("product-development", proposal["pack"])
+        self.assertEqual("92338765a1cc942b2a20dda3f1e220d6be0225e1", proposal["nixkit"]["commit"])
+        self.assertEqual("da5f36fc4c470fa28ffdcab1a6c6aaa3750bded3", proposal["nixkit"]["snapshot_commit"])
+        self.assertEqual("6493103af689bdf4bae5455e1d901646fe079e51a69c53b6f5bcf57c62786d21", proposal["nixkit"]["sources_sha256"])
+        self.assertEqual({"kind": "request/proposal", "platform": "discord", "author_id": "454290355320520714", "channel_id": "1563181903253737542", "message_id": "1563496182829948941", "quote": "sync it", "timestamp": "2026-10-24T10:15:38.341000+00:00"}, proposal["request_evidence"])
+        self.assertEqual("pending_approval", proposal["status"])
+        receipt = json.loads((ROOT / "skills/pack-approvals/lnx-product-development-92338765.json").read_text(encoding="utf-8"))
+        self.assertEqual("083d008d3a83cd178e1f79bf962967ae7054fc0e", receipt["proposal_git_commit"])
+        self.assertEqual("06db117e1d84486a50f7beaae32f83fc3540ca8fd01eb5dc7fcf0f9e62100288", receipt["proposal_file_sha256"])
+        self.assertEqual({"kind": "approval", "platform": "discord", "author_id": "454290355320520714", "channel_id": "1563181903253737542", "message_id": "1563556252829622396", "quote": "approve lnx-product-development-92338765 at 083d008d3a83cd178e1f79bf962967ae7054fc0e", "timestamp": "2026-10-24T14:14:20.145000+00:00"}, receipt["approval_evidence"])
 
     def test_lnx_caveman_proposal_matches_pinned_source_and_policy(self):
         installer = load_module("skill_installer_caveman_proposal", ROOT / "scripts/install-skills.py")
@@ -65,19 +98,29 @@ class PackContractTests(unittest.TestCase):
             {"caveman"},
             catalog,
         )
-        installer._approval(
-            ROOT / "skills/approvals/lnx-caveman-d8ede5cf.json",
-            "lnx",
-            manifest,
-            {"caveman"},
-            catalog,
-        )
+        with mock.patch.object(installer, "_tracked_clean"):
+            installer._approval(
+                ROOT / "skills/approvals/lnx-caveman-d8ede5cf.json",
+                "lnx",
+                manifest,
+                {"caveman"},
+                catalog,
+            )
 
     def test_lnx_watch_proposal_matches_exact_local_source_and_policy(self):
         installer = load_module("skill_installer_watch_proposal", ROOT / "scripts/install-skills.py")
         proposal = json.loads((ROOT / "skills/proposals/lnx-watch-a9cb5b57.json").read_text(encoding="utf-8"))
         catalog = {"watch": ("its-nix/kit", installer.NIXKIT_COMMIT, "skills/watch")}
         installer._validate_proposal(proposal, "lnx-watch-a9cb5b57", "lnx", {"watch"}, catalog)
+        manifest = json.loads((ROOT / "skills/packs.json").read_text(encoding="utf-8"))
+        with mock.patch.object(installer, "_tracked_clean"):
+            installer._approval(
+                ROOT / "skills/approvals/lnx-watch-a9cb5b57.json",
+                "lnx",
+                manifest,
+                {"watch"},
+                catalog,
+            )
         self.assertGreaterEqual(proposal["score"], 80)
         risk_text = " ".join(proposal["risks"]).lower()
         for required in ("youtube", "dependencies", "model provider", "2 gib", "four hours", "cached", "login", "cookies", "proxy", "paywall"):
@@ -114,6 +157,7 @@ class PackContractTests(unittest.TestCase):
         self.assertEqual(manifest["nixkit"]["repository"], installer.NIXKIT_REPOSITORY)
         self.assertEqual(manifest["nixkit"]["commit"], installer.NIXKIT_COMMIT)
         self.assertEqual(manifest["nixkit"]["sources_sha256"], installer.NIXKIT_SOURCES_SHA256)
+        self.assertEqual("28826444de3e78455b399e3de18c0b1d79aff038f2432ecca1975fec1e5c82b8", installer.NIXKIT_INSTALLER_SHA256)
         self.assertEqual({"skills/watch": "64685da3912a54d5f672c4bdce0e89b69b4cd6c8"}, installer.NIXKIT_LOCAL_TREES)
         self.assertEqual(manifest["nixkit"]["node_runtime"], installer.NODE_RUNTIME)
         self.assertEqual(manifest["packs"], installer.EXPECTED_PACKS)
@@ -148,8 +192,11 @@ class SkillInstallerTests(unittest.TestCase):
         } | set(packs["task_only"]) | set(packs["excluded"]))
         source_skills.remove("agent-browser")
         source_skills.remove("watch")
+        snapshot_skills = ["lnx-grilling", "lnx-grill-me", "lnx-domain-modeling", "lnx-grill-with-docs", "lnx-to-spec", "lnx-writing-for-agents", "nix-idea-to-mvp"]
+        source_skills = [skill for skill in source_skills if skill not in snapshot_skills]
         sources = [
             {"repo": "example/source", "ref": "b" * 40, "skills": source_skills},
+            {"repo": "its-nix/kit", "ref": "da5f36fc4c470fa28ffdcab1a6c6aaa3750bded3", "skills": snapshot_skills},
             {"repo": "vercel-labs/agent-browser", "ref": "dac13bb87468fe9d74a040d862720f6cc17a9565", "skills": ["agent-browser"]},
             {"local": "skills", "skills": ["watch"]},
         ]
@@ -185,17 +232,45 @@ class SkillInstallerTests(unittest.TestCase):
         (fixture_root / "skills").mkdir()
         script = fixture_root / "scripts/install-skills.py"
         source = self.script.read_text(encoding="utf-8")
-        source = source.replace("a9cb5b576097301ee63485649d5703db7479ad8f", commit)
+        source = source.replace("92338765a1cc942b2a20dda3f1e220d6be0225e1", commit)
         source = source.replace("6493103af689bdf4bae5455e1d901646fe079e51a69c53b6f5bcf57c62786d21", packs["nixkit"]["sources_sha256"])
+        fixture_installer_sha = hashlib.sha256((kit / "install.mjs").read_bytes()).hexdigest()
+        source = source.replace("28826444de3e78455b399e3de18c0b1d79aff038f2432ecca1975fec1e5c82b8", fixture_installer_sha)
         source = source.replace("64685da3912a54d5f672c4bdce0e89b69b4cd6c8", watch_tree)
         script.write_text(source, encoding="utf-8")
         manifest = fixture_root / "skills/packs.json"
-        manifest.write_text(json.dumps(packs), encoding="utf-8")
+        proposal_manifest = json.loads(json.dumps(packs))
+        proposal_manifest["proposed_pack_additions"]["lnx"] = ["product-development"]
+        proposal_manifest["approved_pack_additions"]["lnx"] = []
+        manifest.write_text(json.dumps(proposal_manifest), encoding="utf-8")
+        proposal = json.loads((ROOT / "skills/pack-proposals/lnx-product-development-92338765.json").read_text(encoding="utf-8"))
+        proposal["nixkit"]["commit"] = commit
+        proposal["nixkit"]["sources_sha256"] = packs["nixkit"]["sources_sha256"]
+        proposal_path = fixture_root / "skills/pack-proposals/lnx-product-development-92338765.json"
+        proposal_path.parent.mkdir(parents=True)
+        proposal_path.write_text(json.dumps(proposal), encoding="utf-8")
         subprocess.run(["git", "init", "-q"], cwd=fixture_root, check=True)
         subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=fixture_root, check=True)
         subprocess.run(["git", "config", "user.name", "Test"], cwd=fixture_root, check=True)
         subprocess.run(["git", "add", "."], cwd=fixture_root, check=True)
-        subprocess.run(["git", "commit", "-qm", "canonical fixture"], cwd=fixture_root, check=True)
+        subprocess.run(["git", "commit", "-qm", "canonical proposal fixture"], cwd=fixture_root, check=True)
+        proposal_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=fixture_root, text=True).strip()
+        proposal_hash = hashlib.sha256(subprocess.check_output(["git", "show", f"{proposal_commit}:skills/pack-proposals/lnx-product-development-92338765.json"], cwd=fixture_root)).hexdigest()
+        source = source.replace("083d008d3a83cd178e1f79bf962967ae7054fc0e", proposal_commit)
+        source = source.replace("06db117e1d84486a50f7beaae32f83fc3540ca8fd01eb5dc7fcf0f9e62100288", proposal_hash)
+        script.write_text(source, encoding="utf-8")
+        manifest.write_text(json.dumps(packs), encoding="utf-8")
+        receipt = json.loads((ROOT / "skills/pack-approvals/lnx-product-development-92338765.json").read_text(encoding="utf-8"))
+        receipt["proposal_git_commit"] = proposal_commit
+        receipt["proposal_file_sha256"] = proposal_hash
+        receipt["nixkit"]["commit"] = commit
+        receipt["nixkit"]["sources_sha256"] = packs["nixkit"]["sources_sha256"]
+        receipt["approval_evidence"]["quote"] = f"approve lnx-product-development-92338765 at {proposal_commit}"
+        receipt_path = fixture_root / "skills/pack-approvals/lnx-product-development-92338765.json"
+        receipt_path.parent.mkdir(parents=True)
+        receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=fixture_root, check=True)
+        subprocess.run(["git", "commit", "-qm", "activate canonical fixture"], cwd=fixture_root, check=True)
         env = os.environ.copy()
         env.update({"HOME": str(home), "HERMES_HOME": str(hermes_home), "NIXKIT_LOG": str(base / "calls.json"), "PATH": str(bin_dir) + os.pathsep + env["PATH"]})
         return home, hermes_home, kit, manifest, script, fixture_root, env
@@ -208,7 +283,7 @@ class SkillInstallerTests(unittest.TestCase):
             preview = subprocess.run(command, cwd=fixture_root, env=env, text=True, capture_output=True)
             self.assertEqual(0, preview.returncode, preview.stderr)
             self.assertIn("PREVIEW", preview.stdout)
-            self.assertIn('"npx" "--yes" "node@24.22.1"', preview.stdout)
+            self.assertIn(json.dumps(str(base / "bin/npx")) + ' "--yes" "node@24.22.1"', preview.stdout)
             self.assertIn(json.dumps(str(kit / "install.mjs")), preview.stdout)
             self.assertFalse((base / "calls.json").exists())
             self.assertFalse(hermes_home.exists())
@@ -226,6 +301,24 @@ class SkillInstallerTests(unittest.TestCase):
             refused = subprocess.run(command + ["--apply"], cwd=fixture_root, env=env, text=True, capture_output=True)
             self.assertNotEqual(0, refused.returncode)
             self.assertIn("including untracked", refused.stderr)
+
+    def test_hidden_installer_mutations_are_rejected_before_npx_or_profile_writes(self):
+        for flag in ("--assume-unchanged", "--skip-worktree"):
+            with self.subTest(flag=flag), tempfile.TemporaryDirectory() as tmp:
+                base = Path(tmp)
+                home, hermes_home, kit, manifest, script, fixture_root, env = self._fixture(base)
+                subprocess.run(["git", "update-index", flag, "install.mjs"], cwd=kit, check=True)
+                (kit / "install.mjs").write_text("throw new Error('unreviewed payload');\n", encoding="utf-8")
+                self.assertEqual("", subprocess.check_output(
+                    ["git", "status", "--porcelain", "--untracked-files=all"], cwd=kit, text=True
+                ))
+                command = ["python3", str(script), "--nixkit", str(kit), "--profile", "pulse"]
+                for mode in ([], ["--apply"]):
+                    result = subprocess.run(command + mode, cwd=fixture_root, env=env, text=True, capture_output=True)
+                    self.assertEqual(2, result.returncode, result.stdout + result.stderr)
+                    self.assertIn("install.mjs bytes do not match", result.stderr)
+                self.assertFalse((base / "calls.json").exists(), "npx must not run for hidden installer mutations")
+                self.assertFalse(hermes_home.exists(), "refused installer must not create profile state")
 
     def test_rejects_dirty_checkout_symlink_home_and_unapproved_addition(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -261,6 +354,132 @@ class SkillInstallerTests(unittest.TestCase):
             self.assertIn("file set differs from Git tree", result.stderr)
             self.assertFalse((base / "calls.json").exists(), "NixKit must not run after exact-tree refusal")
             self.assertFalse(hermes_home.exists(), "refused payload must not be copied into a profile")
+
+    def test_pack_cannot_be_folded_into_baseline(self):
+        installer = load_module("skill_installer_pack_baseline", self.script)
+        manifest = json.loads((ROOT / "skills/packs.json").read_text(encoding="utf-8"))
+        manifest["profiles"]["lnx"].append("product-development")
+        with self.assertRaises(installer.Refusal):
+            installer._canonical_manifest(manifest)
+
+    def test_pending_pack_rejects_orphan_receipt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            home, hermes_home, kit, manifest_path, script, fixture_root, env = self._fixture(base)
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["proposed_pack_additions"]["lnx"] = ["product-development"]
+            manifest["approved_pack_additions"]["lnx"] = []
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            receipt = fixture_root / "skills/pack-approvals/lnx-product-development-92338765.json"
+            receipt.write_text("{}", encoding="utf-8")
+            result = subprocess.run(
+                ["python3", str(script), "--nixkit", str(kit), "--profile", "pulse"],
+                cwd=fixture_root, env=env, text=True, capture_output=True,
+            )
+            self.assertEqual(2, result.returncode)
+            self.assertIn("pack-approvals", result.stderr)
+
+    def test_only_exact_committed_pack_approval_enables_product_development(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            home, hermes_home, kit, manifest_path, script, fixture_root, env = self._fixture(base)
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            receipt_path = fixture_root / "skills/pack-approvals/lnx-product-development-92338765.json"
+            command = ["python3", str(script), "--nixkit", str(kit), "--profile", "lnx"]
+            valid = subprocess.run(command, cwd=fixture_root, env=env, text=True, capture_output=True)
+            self.assertEqual(0, valid.returncode, valid.stderr)
+            for skill in manifest["packs"]["product-development"]:
+                self.assertIn(f'"{skill}"', valid.stdout)
+
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            correct_hash = receipt["proposal_file_sha256"]
+            receipt["proposal_file_sha256"] = "0" * 64
+            receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=fixture_root, check=True)
+            subprocess.run(["git", "commit", "-qm", "forged proposal hash"], cwd=fixture_root, check=True)
+            forged_hash = subprocess.run(command, cwd=fixture_root, env=env, text=True, capture_output=True)
+            self.assertEqual(2, forged_hash.returncode)
+            self.assertIn("canonical proposal commit and file hash", forged_hash.stderr)
+
+            receipt["proposal_file_sha256"] = correct_hash
+            receipt["approval_evidence"]["message_id"] = "1563556252829622397"
+            receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=fixture_root, check=True)
+            subprocess.run(["git", "commit", "-qm", "alter approval message id"], cwd=fixture_root, check=True)
+            forged_message = subprocess.run(command, cwd=fixture_root, env=env, text=True, capture_output=True)
+            self.assertEqual(2, forged_message.returncode)
+            self.assertIn("exact verified Discord message ID, timestamp", forged_message.stderr)
+
+            receipt["approval_evidence"]["message_id"] = "1563556252829622396"
+            receipt["approval_evidence"]["timestamp"] = "2026-10-24T14:14:20.145001+00:00"
+            receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=fixture_root, check=True)
+            subprocess.run(["git", "commit", "-qm", "alter approval timestamp"], cwd=fixture_root, check=True)
+            forged_timestamp = subprocess.run(command, cwd=fixture_root, env=env, text=True, capture_output=True)
+            self.assertEqual(2, forged_timestamp.returncode)
+            self.assertIn("exact verified Discord message ID, timestamp", forged_timestamp.stderr)
+
+            receipt["approval_evidence"]["timestamp"] = "2026-10-24T14:14:20.145000+00:00"
+            receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=fixture_root, check=True)
+            subprocess.run(["git", "commit", "-qm", "restore exact approval"], cwd=fixture_root, check=True)
+            restored = subprocess.run(command, cwd=fixture_root, env=env, text=True, capture_output=True)
+            self.assertEqual(0, restored.returncode, restored.stderr)
+
+    def test_pack_approval_rejects_wrong_discord_author(self):
+        installer = load_module("skill_installer_wrong_approval_author", self.script)
+        proposal_id = "lnx-product-development-92338765"
+        commit = "a" * 40
+        evidence = {"kind": "approval", "platform": "discord", "author_id": "454290355320520715", "channel_id": "1563181903253737542", "message_id": "1563999999999999999", "quote": f"approve {proposal_id} at {commit}", "timestamp": "2026-10-24T16:00:00Z"}
+        with self.assertRaisesRegex(installer.Refusal, "verified Discord user"):
+            installer._validate_pack_approval_evidence(evidence, proposal_id, commit)
+
+    def test_pack_approval_rejects_explicit_non_approval_quote(self):
+        installer = load_module("skill_installer_non_approval_quote", self.script)
+        proposal_id = "lnx-product-development-92338765"
+        commit = "a" * 40
+        evidence = {"kind": "approval", "platform": "discord", "author_id": "454290355320520714", "channel_id": "1563181903253737542", "message_id": "1563999999999999999", "quote": f"do not approve {proposal_id} at {commit}", "timestamp": "2026-10-24T16:00:00Z"}
+        with self.assertRaisesRegex(installer.Refusal, "must exactly equal"):
+            installer._validate_pack_approval_evidence(evidence, proposal_id, commit)
+
+    def test_recursive_duplicate_frontmatter_refuses_before_nixkit_or_writes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            home, hermes_home, kit, manifest, script, fixture_root, env = self._fixture(base)
+            legacy = hermes_home / "profiles/pulse/skills/product-development/verification-before-completion"
+            legacy.mkdir(parents=True)
+            (legacy / "SKILL.md").write_text("---\nname: verification-before-completion\n---\nlegacy\n", encoding="utf-8")
+            canonical = hermes_home / "profiles/pulse/skills/verification-before-completion/SKILL.md"
+            result = subprocess.run(["python3", str(script), "--nixkit", str(kit), "--profile", "pulse", "--apply"], cwd=fixture_root, env=env, text=True, capture_output=True)
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("outside its sole canonical destination", result.stderr)
+            self.assertFalse((base / "calls.json").exists())
+            self.assertFalse(canonical.exists())
+            categorized = hermes_home / "skills/product-development/lnx-grilling"
+            categorized.mkdir(parents=True)
+            (categorized / "SKILL.md").write_text("---\nname: lnx-grilling\n---\nlegacy\n", encoding="utf-8")
+            installer = load_module("skill_installer_recursive_duplicate", script)
+            with self.assertRaisesRegex(installer.Refusal, "outside its sole canonical destination"):
+                installer._preflight_duplicate_names(hermes_home, {"lnx-grilling"})
+
+    def test_recursive_preflight_rejects_legacy_skill_directory_symlink(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); profile_home = root / "profile"; skills = profile_home / "skills"
+            target = root / "legacy-target"; target.mkdir(parents=True); skills.mkdir(parents=True)
+            (target / "SKILL.md").write_text("---\nname: lnx-grilling\n---\nlegacy\n", encoding="utf-8")
+            (skills / "legacy-category").symlink_to(target, target_is_directory=True)
+            installer = load_module("skill_installer_directory_symlink", self.script)
+            with self.assertRaisesRegex(installer.Refusal, "must not contain symlinks"):
+                installer._preflight_duplicate_names(profile_home, {"lnx-grilling"})
+
+    def test_recursive_preflight_rejects_legacy_skill_manifest_symlink(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); profile_home = root / "profile"; legacy = profile_home / "skills/legacy/lnx-grilling"
+            target = root / "legacy-SKILL.md"; target.write_text("---\nname: lnx-grilling\n---\nlegacy\n", encoding="utf-8")
+            legacy.mkdir(parents=True); (legacy / "SKILL.md").symlink_to(target)
+            installer = load_module("skill_installer_manifest_symlink", self.script)
+            with self.assertRaisesRegex(installer.Refusal, "must not contain symlinks"):
+                installer._preflight_duplicate_names(profile_home, {"lnx-grilling"})
 
     def test_two_commit_approval_loads_manifest_and_proposal_from_ancestor(self):
         with tempfile.TemporaryDirectory() as tmp:

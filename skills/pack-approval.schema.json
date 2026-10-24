@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://its-nix.example/schemas/pack-approval.schema.json",
+  "title": "Nix OS pack approval receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "proposal_id", "proposal_git_commit", "proposal_file_sha256", "profile", "pack", "ordered_skills", "nixkit", "approved_by", "approval_evidence"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "proposal_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9.-]+$"},
+    "proposal_git_commit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+    "proposal_file_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "profile": {"enum": ["lnx", "pulse", "algua", "meabeclick", "meabeclickux", "meabeclickeng", "meabeclickgrowth"]},
+    "pack": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
+    "ordered_skills": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"}},
+    "nixkit": {"$ref": "#/$defs/nixkit"},
+    "approved_by": {"const": "Lior"},
+    "approval_evidence": {"$ref": "#/$defs/evidence"}
+  },
+  "$defs": {
+    "nixkit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "commit", "snapshot_commit", "sources_sha256"],
+      "properties": {
+        "repository": {"const": "https://github.com/its-nix/kit.git"},
+        "commit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "snapshot_commit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "sources_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "platform", "author_id", "channel_id", "message_id", "quote", "timestamp"],
+      "properties": {
+        "kind": {"const": "approval"},
+        "platform": {"const": "discord"},
+        "author_id": {"const": "454290355320520714"},
+        "channel_id": {"const": "1563181903253737542"},
+        "message_id": {"type": "string", "pattern": "^[0-9]{17,20}$"},
+        "quote": {"type": "string", "pattern": "^approve [a-z0-9][a-z0-9.-]+ at [a-f0-9]{40}$", "description": "Must exactly equal: approve <proposal_id> at <proposal_git_commit>. Runtime validation binds both placeholders to this receipt."},
+        "timestamp": {"type": "string", "format": "date-time", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})$"}
+      }
+    }
+  }
+}

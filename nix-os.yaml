@@ -8,6 +8,8 @@
     "packs": "skills/packs.json",
     "proposal_schema": "skills/proposal.schema.json",
     "approval_schema": "skills/approval.schema.json",
+    "pack_proposal_schema": "skills/pack-proposal.schema.json",
+    "pack_approval_schema": "skills/pack-approval.schema.json",
     "scout_jobs": "automation/skill-scout/jobs.json",
     "scout_report_schema": "automation/skill-scout/report.schema.json"
   },
