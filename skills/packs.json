@@ -57,7 +57,7 @@
     "meabeclickgrowth": ["baseline-evidence", "public-research"]
   },
   "proposed_pack_additions": {
-    "lnx": ["product-development"],
+    "lnx": [],
     "pulse": [],
     "algua": [],
     "meabeclick": [],
@@ -66,7 +66,7 @@
     "meabeclickgrowth": []
   },
   "approved_pack_additions": {
-    "lnx": [],
+    "lnx": ["product-development"],
     "pulse": [],
     "algua": [],
     "meabeclick": [],

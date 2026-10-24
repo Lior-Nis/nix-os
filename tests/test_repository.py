@@ -31,6 +31,7 @@ REQUIRED = {
     "skills/pack-proposal.schema.json",
     "skills/pack-approval.schema.json",
     "skills/pack-proposals/lnx-product-development-92338765.json",
+    "skills/pack-approvals/lnx-product-development-92338765.json",
     "docs/SKILL-GOVERNANCE.md",
     "automation/skill-scout/jobs.json",
     "automation/skill-scout/report.schema.json",
@@ -87,6 +88,19 @@ class RepositoryContractTests(unittest.TestCase):
             receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
             errors = verifier.validate_repository(copy)
             self.assertTrue(any("Watch approval receipt" in error for error in errors), errors)
+
+    def test_verifier_rejects_product_approval_message_id_and_timestamp_drift(self):
+        verifier = load_verifier()
+        for field, value in (("message_id", "1563556252829622397"), ("timestamp", "2026-10-24T14:14:20.145001+00:00")):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as tmp:
+                copy = Path(tmp) / "repo"
+                shutil.copytree(ROOT, copy, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+                receipt_path = copy / "skills/pack-approvals/lnx-product-development-92338765.json"
+                receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+                receipt["approval_evidence"][field] = value
+                receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+                errors = verifier.validate_repository(copy)
+                self.assertTrue(any("verified Discord message ID/timestamp" in error for error in errors), errors)
 
     def test_verifier_rejects_invalid_lead_reference(self):
         verifier = load_verifier()

@@ -23,6 +23,7 @@ NIXKIT_REPOSITORY = "https://github.com/its-nix/kit.git"
 NIXKIT_COMMIT = "92338765a1cc942b2a20dda3f1e220d6be0225e1"
 NIXKIT_SNAPSHOT_COMMIT = "da5f36fc4c470fa28ffdcab1a6c6aaa3750bded3"
 NIXKIT_SOURCES_SHA256 = "6493103af689bdf4bae5455e1d901646fe079e51a69c53b6f5bcf57c62786d21"
+NIXKIT_INSTALLER_SHA256 = "28826444de3e78455b399e3de18c0b1d79aff038f2432ecca1975fec1e5c82b8"
 NIXKIT_LOCAL_TREES = {"skills/watch":"64685da3912a54d5f672c4bdce0e89b69b4cd6c8"}
 NODE_RUNTIME = "24.22.1"
 EXPECTED_PACKS = {
@@ -47,6 +48,9 @@ PRODUCT_DEVELOPMENT_SKILLS = EXPECTED_PACKS["product-development"]
 APPROVAL_AUTHORITY_DISCORD_ID = "454290355320520714"
 APPROVAL_CHANNEL_ID = "1563181903253737542"
 PRODUCT_REQUEST_EVIDENCE = {"kind":"request/proposal","platform":"discord","author_id":APPROVAL_AUTHORITY_DISCORD_ID,"channel_id":APPROVAL_CHANNEL_ID,"message_id":"1563496182829948941","quote":"sync it","timestamp":"2026-10-24T10:15:38.341000+00:00"}
+PRODUCT_PROPOSAL_COMMIT = "083d008d3a83cd178e1f79bf962967ae7054fc0e"
+PRODUCT_PROPOSAL_SHA256 = "06db117e1d84486a50f7beaae32f83fc3540ca8fd01eb5dc7fcf0f9e62100288"
+PRODUCT_APPROVAL_EVIDENCE = {"kind":"approval","platform":"discord","author_id":APPROVAL_AUTHORITY_DISCORD_ID,"channel_id":APPROVAL_CHANNEL_ID,"message_id":"1563556252829622396","quote":f"approve {PACK_PROPOSALS[('lnx','product-development')]} at {PRODUCT_PROPOSAL_COMMIT}","timestamp":"2026-10-24T14:14:20.145000+00:00"}
 HISTORICAL_APPROVAL_MANIFESTS = {
  "b7d9ba7ce3551e428b6f009c744ad3b71f821338": ("3f64702b483666b22468407d4e5c601911c6730f3f2bc182eacbfa2ca446feaa", ["caveman"]),
  "999cc615cd45c11b5ba10f9d02ff837171c68584": ("f143b7a554795331980742ebea23b39e61e13d8bbbd15321b653c28ab1082a30", ["caveman","watch"]),
@@ -129,6 +133,17 @@ def _verify_local_tree(checkout:Path,relative:str,expected_tree:str)->None:
    except OSError as exc: raise Refusal(f"cannot read pinned local source file {relative}/{child}: {exc}") from exc
   if actual_bytes!=expected_bytes: raise Refusal(f"pinned local source bytes differ from Git tree: {relative}/{child}")
 
+def _verify_installer(checkout:Path)->Path:
+ """Bind the executable installer bytes to the approved Git object and digest."""
+ installer=checkout/"install.mjs"
+ try: info=installer.lstat(); actual=installer.read_bytes()
+ except OSError as exc: raise Refusal(f"cannot read pinned NixKit install.mjs: {exc}") from exc
+ if not stat.S_ISREG(info.st_mode) or installer.is_symlink(): raise Refusal("NixKit install.mjs is missing or a symlink")
+ expected=_run_bytes(["git","show",f"{NIXKIT_COMMIT}:install.mjs"],checkout)
+ if actual!=expected or hashlib.sha256(actual).hexdigest()!=NIXKIT_INSTALLER_SHA256:
+  raise Refusal("NixKit install.mjs bytes do not match the pinned reviewed Git object")
+ return installer
+
 def _load_json(path:Path,label:str)->dict:
  try: value=json.loads(path.read_text(encoding="utf-8"))
  except (OSError,UnicodeError,json.JSONDecodeError) as exc: raise Refusal(f"cannot read {label}: {exc}") from exc
@@ -206,6 +221,7 @@ def _validate_pack_approval_evidence(value:object,proposal_id:str,proposal_git_c
  if value["channel_id"]!=APPROVAL_CHANNEL_ID: raise Refusal("pack approval evidence is not from the proposal channel")
  expected_quote=f"approve {proposal_id} at {proposal_git_commit}"
  if value["quote"]!=expected_quote: raise Refusal(f"pack approval evidence quote must exactly equal {expected_quote!r}")
+ if proposal_id==PACK_PROPOSALS[("lnx","product-development")] and (proposal_git_commit!=PRODUCT_PROPOSAL_COMMIT or value!=PRODUCT_APPROVAL_EVIDENCE): raise Refusal("product-development approval must match the exact verified Discord message ID, timestamp, and proposal commit")
 
 def _validate_pack_proposal(p:dict,proposal_id:str,profile:str,pack:str,catalog:dict[str,tuple[str,str,str|None]])->None:
  required={"schema_version","proposal_id","profile","pack","ordered_skills","nixkit","request_evidence","status"}
@@ -252,6 +268,7 @@ def _pack_approval(profile:str,pack:str,current:dict,catalog:dict[str,tuple[str,
  if set(receipt)!=required or receipt.get("schema_version")!=1 or receipt.get("proposal_id")!=proposal_id or receipt.get("profile")!=profile or receipt.get("pack")!=pack or receipt.get("ordered_skills")!=EXPECTED_PACKS[pack] or receipt.get("nixkit")!=expected_nixkit or receipt.get("approved_by")!="Lior": raise Refusal("malformed, forged, or misbound pack approval receipt")
  commit=receipt.get("proposal_git_commit"); digest=receipt.get("proposal_file_sha256")
  if not isinstance(commit,str) or not SHA.fullmatch(commit) or not isinstance(digest,str) or not re.fullmatch(r"[a-f0-9]{64}",digest): raise Refusal("pack approval proposal commit/hash is invalid")
+ if proposal_id==PACK_PROPOSALS[("lnx","product-development")] and (commit!=PRODUCT_PROPOSAL_COMMIT or digest!=PRODUCT_PROPOSAL_SHA256): raise Refusal("product-development approval does not bind the exact canonical proposal commit and file hash")
  evidence=receipt.get("approval_evidence"); _validate_pack_approval_evidence(evidence,proposal_id,commit)
  assert isinstance(evidence,dict)
  if (evidence["channel_id"],evidence["message_id"])==(PRODUCT_REQUEST_EVIDENCE["channel_id"],PRODUCT_REQUEST_EVIDENCE["message_id"]) or datetime.fromisoformat(evidence["timestamp"].replace("Z","+00:00"))<=datetime.fromisoformat(PRODUCT_REQUEST_EVIDENCE["timestamp"].replace("Z","+00:00")): raise Refusal("pack approval evidence must be distinct from and later than request/proposal evidence")
@@ -383,8 +400,7 @@ def main()->int:
   _validate_declared_pack_proposals(manifest,catalog)
   for approved_profile in PROFILES:
    for approved_pack in manifest["approved_pack_additions"][approved_profile]: _pack_approval(approved_profile,approved_pack,manifest,catalog)
-  installer=checkout/"install.mjs"
-  if not installer.is_file() or installer.is_symlink(): raise Refusal("NixKit install.mjs is missing or a symlink")
+  installer=_verify_installer(checkout)
   npx=shutil.which("npx")
   if npx is None or not os.access(npx,os.X_OK): raise Refusal("executable npx is required for the pinned Node runtime")
   effective_packs=manifest["profiles"][args.profile]+manifest["approved_pack_additions"][args.profile]
@@ -405,10 +421,11 @@ def main()->int:
    for relative in (Path("skills/packs.json"),Path("scripts/install-skills.py")): _tracked_clean(relative)
   hermes_home=Path(os.environ.get("HERMES_HOME",str(Path.home()/".hermes"))).expanduser().absolute(); profile_home=hermes_home if PROFILE_MAP[args.profile]=="default" else hermes_home/"profiles"/PROFILE_MAP[args.profile]; _check_no_symlink(profile_home)
   _preflight_duplicate_names(profile_home,baseline|additions)
-  command=["npx","--yes",f"node@{NODE_RUNTIME}",str(installer),"--apply","--skills","--agent","hermes","--prefix",str(profile_home)]
+  command=[npx,"--yes",f"node@{NODE_RUNTIME}",str(installer),"--apply","--skills","--agent","hermes","--prefix",str(profile_home)]
   for skill in sorted(baseline|additions): command.extend(["--skill",skill])
   print(("APPLY" if args.apply else "PREVIEW")+f" profile={args.profile} home={profile_home}"); print("command:"," ".join(json.dumps(v) for v in command))
   if not args.apply:return 0
+  _verify_installer(checkout)
   for relative,tree in NIXKIT_LOCAL_TREES.items(): _verify_local_tree(checkout,relative,tree)
   profile_home.mkdir(parents=True,exist_ok=True); result=subprocess.run(command,cwd=checkout,check=False)
   if result.returncode: raise Refusal(f"NixKit refused installation (exit {result.returncode}); existing conflicts were preserved")

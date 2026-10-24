@@ -32,6 +32,7 @@ REQUIRED_FILES = {
     "skills/pack-proposal.schema.json",
     "skills/pack-approval.schema.json",
     "skills/pack-proposals/lnx-product-development-92338765.json",
+    "skills/pack-approvals/lnx-product-development-92338765.json",
     "automation/skill-scout/jobs.json",
     "automation/skill-scout/report.schema.json",
     "automation/skill-scout/scout-prompt.md",
@@ -102,13 +103,21 @@ EXPECTED_APPROVED_ADDITIONS = {
     "meabeclickeng": [],
     "meabeclickgrowth": [],
 }
-EXPECTED_PROPOSED_PACK_ADDITIONS = {profile: (["product-development"] if profile == "lnx" else []) for profile in EXPECTED_PROFILES}
-EXPECTED_APPROVED_PACK_ADDITIONS = {profile: [] for profile in EXPECTED_PROFILES}
+EXPECTED_PROPOSED_PACK_ADDITIONS = {profile: [] for profile in EXPECTED_PROFILES}
+EXPECTED_APPROVED_PACK_ADDITIONS = {profile: (["product-development"] if profile == "lnx" else []) for profile in EXPECTED_PROFILES}
 PRODUCT_PROPOSAL_ID = "lnx-product-development-92338765"
+PRODUCT_PROPOSAL_COMMIT = "083d008d3a83cd178e1f79bf962967ae7054fc0e"
+PRODUCT_PROPOSAL_SHA256 = "06db117e1d84486a50f7beaae32f83fc3540ca8fd01eb5dc7fcf0f9e62100288"
 PRODUCT_REQUEST_EVIDENCE = {
     "kind": "request/proposal", "platform": "discord", "channel_id": "1563181903253737542",
     "author_id": "454290355320520714", "message_id": "1563496182829948941", "quote": "sync it",
     "timestamp": "2026-10-24T10:15:38.341000+00:00",
+}
+PRODUCT_APPROVAL_EVIDENCE = {
+    "kind": "approval", "platform": "discord", "channel_id": "1563181903253737542",
+    "author_id": "454290355320520714", "message_id": "1563556252829622396",
+    "quote": f"approve {PRODUCT_PROPOSAL_ID} at {PRODUCT_PROPOSAL_COMMIT}",
+    "timestamp": "2026-10-24T14:14:20.145000+00:00",
 }
 HARD_GATES = {"relevance", "provenance", "reliability", "safety_privacy", "license", "hermes_compatibility", "non_duplication"}
 SCORE_LIMITS = {
@@ -449,9 +458,9 @@ def _validate_skills(root: Path, manifest: dict[str, Any], errors: list[str]) ->
         if watch_receipt != expected_receipt:
             errors.append("Watch approval receipt must exactly bind Lior's decision to the reviewed proposal/manifest commit")
     if packs.get("proposed_pack_additions") != EXPECTED_PROPOSED_PACK_ADDITIONS:
-        errors.append("product-development must remain an exact pending LNX pack proposal")
+        errors.append("product-development must no longer remain a pending LNX pack proposal")
     if packs.get("approved_pack_additions") != EXPECTED_APPROVED_PACK_ADDITIONS:
-        errors.append("no pack addition may be approved without its committed proposal-bound receipt")
+        errors.append("product-development must be the exact receipt-backed approved LNX pack addition")
     if any(name in {"global", "universal", "all", "*"} for name in (packs.get("packs") or {})):
         errors.append("wildcard/global/universal skill packs are forbidden")
     persistent = set().union(*(set(values) for values in EXPECTED_PACKS.values()))
@@ -533,8 +542,26 @@ def _validate_skills(root: Path, manifest: dict[str, Any], errors: list[str]) ->
     if proposal_files != [f"{PRODUCT_PROPOSAL_ID}.json"]:
         errors.append("pack proposal directory must contain only the current canonical product-development proposal")
     approval_dir = root / "skills/pack-approvals"
-    if approval_dir.exists() and any(approval_dir.iterdir()):
-        errors.append("pending product-development proposal must not have a pack approval receipt")
+    approval_files = sorted(path.name for path in approval_dir.glob("*.json")) if approval_dir.is_dir() else []
+    if approval_files != [f"{PRODUCT_PROPOSAL_ID}.json"]:
+        errors.append("pack approval directory must contain only the canonical product-development receipt")
+    product_approval = _load_json_object(
+        approval_dir / f"{PRODUCT_PROPOSAL_ID}.json", "product-development pack approval", errors
+    )
+    expected_product_approval = {
+        "schema_version": 1,
+        "proposal_id": PRODUCT_PROPOSAL_ID,
+        "proposal_git_commit": PRODUCT_PROPOSAL_COMMIT,
+        "proposal_file_sha256": PRODUCT_PROPOSAL_SHA256,
+        "profile": "lnx",
+        "pack": "product-development",
+        "ordered_skills": EXPECTED_PACKS["product-development"],
+        "nixkit": expected_product_proposal["nixkit"],
+        "approved_by": "Lior",
+        "approval_evidence": PRODUCT_APPROVAL_EVIDENCE,
+    }
+    if product_approval != expected_product_approval:
+        errors.append("product-development approval must exactly bind the canonical proposal and verified Discord message ID/timestamp")
     try:
         scout_prompt = (root / "automation/skill-scout/scout-prompt.md").read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
